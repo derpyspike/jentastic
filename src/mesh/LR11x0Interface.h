@@ -31,6 +31,9 @@ template <class T> class LR11x0Interface : public RadioLibInterface
     void resetAGC() override;
 #endif
 
+    /** Nexus LCS: busy pin + software RX view (LRxxxx::getStatus is protected, Stat1 mode bits unconfirmed). */
+    uint8_t readChipState() override;
+
   protected:
     /**
      * Specific module instance

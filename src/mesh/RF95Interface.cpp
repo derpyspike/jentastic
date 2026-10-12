@@ -318,7 +318,19 @@ void RF95Interface::addReceiveMetadata(meshtastic_MeshPacket *mp)
     mp->rx_snr = lora->getSNR();
     mp->rx_rssi = lround(lora->getRSSI());
     mp->has_rx_rssi = true; // rx_rssi has explicit presence - a genuine reading must be marked present to survive encoding
-    LOG_DEBUG("Corrected frequency offset: %f", lora->getFrequencyError());
+    // Nexus port (Nexus-28001, 2026-08-16): see SX126xInterface.cpp for rationale.
+    mp->rx_frequency_error = lora->getFrequencyError();
+    LOG_DEBUG("Corrected frequency offset: %f", mp->rx_frequency_error);
+
+    // Nexus port (Nexus-28001, 2026-08-16): see SX126xInterface.cpp for CR rationale.
+    // RF95Interface uses indirect pointer (lora->) for RadioLib calls.
+    {
+        uint8_t rxCR = 0;
+        bool hasCRC = true;
+        if (lora->getLoRaRxHeaderInfo(&rxCR, &hasCRC) == RADIOLIB_ERR_NONE) {
+            mp->rx_coding_rate = rxCR;
+        }
+    }
 }
 
 int16_t RF95Interface::trySetStandby()
@@ -332,6 +344,32 @@ int16_t RF95Interface::trySetStandby()
     completeSending(); // If we were sending, not anymore
     RadioLibInterface::setStandby();
     return err;
+}
+
+uint8_t RF95Interface::readChipState()
+{
+    // SX127x has no BUSY pin (the module's GPIO slot holds DIO1), so go straight
+    // to REG_OP_MODE bits 2:0 - same register read pattern as getRSSI et al.
+    int16_t mode = module.SPIgetRegValue(RADIOLIB_SX127X_REG_OP_MODE, 2, 0);
+    if (mode < 0)
+        return CHIP_UNK;
+
+    switch (mode & 0b111) {
+    case RADIOLIB_SX127X_SLEEP:
+        return CHIP_SLP;
+    case RADIOLIB_SX127X_STANDBY:
+        return CHIP_STDBY;
+    case RADIOLIB_SX127X_FSTX:
+    case RADIOLIB_SX127X_FSRX:
+        return CHIP_FS;
+    case RADIOLIB_SX127X_TX:
+        return CHIP_TX;
+    case RADIOLIB_SX127X_RXCONTINUOUS:
+    case RADIOLIB_SX127X_RXSINGLE:
+        return CHIP_RX;
+    default:
+        return CHIP_UNK; // CAD or unexpected value
+    }
 }
 
 void RF95Interface::setStandby()

@@ -395,6 +395,10 @@ void nrf52Loop()
     }
     nrfx_wdt_channel_feed(&nrfx_wdt, nrfx_wdt_channel_id_nrf52_main);
 
+    if (nrf52Bluetooth) {
+        nrf52Bluetooth->tick();
+    }
+
     checkSDEvents();
     reportLittleFSCorruptionOnce();
 

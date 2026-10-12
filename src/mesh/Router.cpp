@@ -13,6 +13,7 @@
 #include "mesh-pb-constants.h"
 #include "meshUtils.h"
 #include "modules/RoutingModule.h"
+#include "modules/NexusModule.h"
 #include <ErriezCRC32.h>
 #include <pb_decode.h>
 #include <pb_encode.h>
@@ -268,6 +269,27 @@ bool Router::shouldDecrementHopLimit(const meshtastic_MeshPacket *p)
         return true;
     }
 
+#if HAS_NEXUS
+    // Nexus port: Zero-Hop preservation. If the previous relay is configured as a Nexus Zero-Hop
+    // node, preserve hop_limit (return false = don't decrement). Position/telemetry overrides
+    // consult the Nexus config (shouldPreservePosition/shouldPreserveTelemetry) and fall through
+    // to decrement when the operator has disabled preservation for that port class.
+    if (meshtastic::nexusModule && meshtastic::nexusModule->isZeroHopEnabled()) {
+        if (meshtastic::nexusModule->isZeroHopNode(p->relay_node)) {
+            bool isPos = (p->which_payload_variant == meshtastic_MeshPacket_decoded_tag &&
+                          p->decoded.portnum == meshtastic_PortNum_POSITION_APP);
+            bool isTele = (p->which_payload_variant == meshtastic_MeshPacket_decoded_tag &&
+                           p->decoded.portnum == meshtastic_PortNum_TELEMETRY_APP);
+            if (isPos && !meshtastic::nexusModule->shouldPreservePosition())
+                return true;
+            if (isTele && !meshtastic::nexusModule->shouldPreserveTelemetry())
+                return true;
+            LOG_DEBUG("Nexus Zero-Hop preservation for relay 0x%02X", p->relay_node);
+            return false;
+        }
+    }
+#endif
+
     // router_preserve_hops: not suitable right now - removed from config until
     // the right heuristics for when to preserve vs. exhaust hops are established.
     // #if HAS_TRAFFIC_MANAGEMENT
@@ -318,6 +340,12 @@ int32_t Router::runOnce()
  */
 void Router::enqueueReceivedMessage(meshtastic_MeshPacket *p)
 {
+#if HAS_NEXUS
+    // Nexus port: run the Nexus long-name tag hook on this packet before enqueueing.
+    if (meshtastic::nexusModule)
+        meshtastic::nexusModule->sniffPacket(*p);
+#endif
+
     // Try enqueue until successful
     while (!fromRadioQueue.enqueue(p, 0)) {
         meshtastic_MeshPacket *old_p;
@@ -549,6 +577,19 @@ ErrorCode Router::send(meshtastic_MeshPacket *p)
     // If we are the original transmitter, set the hop limit with which we start
     if (isFromUs(p))
         p->hop_start = p->hop_limit;
+
+    // Nexus: output firewall. Gated by /nexus FIREWALL OUTDROP and the
+    // relay_drop_mask bits. Lost in the Nexus-28001 rebase 
+    // — restored verbatim from Nexus-269. interceptOutgoing() lets the module
+    // mutate the packet (e.g. drop_relay routing) before it's encrypted.
+    if (meshtastic::nexusModule) {
+        if (meshtastic::nexusModule->shouldDropOutput(*p)) {
+            LOG_INFO("Nexus: Output Firewall blocking packet %u", p->id);
+            packetPool.release(p);
+            return meshtastic_Routing_Error_NONE;
+        }
+        meshtastic::nexusModule->interceptOutgoing(p);
+    }
 
     // If the packet hasn't yet been encrypted, do so now (it might already be encrypted if we are just forwarding it)
 
@@ -1626,6 +1667,17 @@ void Router::dispatchReceived(meshtastic_MeshPacket *p, RxSource src)
             skipHandle = true;
         }
 
+        // Nexus: input firewall for decoded packets. Gated by the /nexus FIREWALL
+        // DROP rules (DROPS / DROP / OUTDROP / PRALLOW / PRBLOCK). Runs after
+        // CORE_PORTNUMS_ONLY so the upstream gate fires first and Nexus picks up
+        // the operator-configured drops. Lost in the Nexus-28001 rebase 
+        // restored verbatim from Nexus-269.
+        if (!skipHandle && meshtastic::nexusModule && meshtastic::nexusModule->shouldDropPacket(*p)) {
+            LOG_DEBUG("Nexus: Dropping decoded packet (Dynamic Filter)");
+            cancelSending(p->from, p->id);
+            if (!meshtastic::nexusModule->skip_skip_handle) skipHandle = true;
+        }
+
 #if USERPREFS_BLOCK_POSITION_ON_EVENT_CHANNEL
         // Discard coordinate-bearing packets that arrive on the event ("everyone")
         // channel: don't process, store in NodeDB, or rebroadcast them.
@@ -1647,6 +1699,13 @@ void Router::dispatchReceived(meshtastic_MeshPacket *p, RxSource src)
 #endif
     } else {
         printPacket("packet decoding failed or skipped (no PSK?)", p);
+
+        // Nexus: input firewall for encrypted/private-channel packets.
+        if (!skipHandle && meshtastic::nexusModule && meshtastic::nexusModule->shouldDropPrivate(*p)) {
+            LOG_DEBUG("Nexus: Dropping encrypted packet (Private Filter)");
+            cancelSending(p->from, p->id);
+            if (!meshtastic::nexusModule->skip_skip_handle) skipHandle = true;
+        }
     }
 
     // call modules here
@@ -1712,6 +1771,7 @@ void Router::perhapsHandleReceived(meshtastic_MeshPacket *p)
     if (is_in_repeated(config.lora.ignore_incoming, p->from)) {
         clearRoutingAuthCache();
         LOG_DEBUG("Ignore msg, 0x%08x in ignore list", p->from);
+        if (meshtastic::nexusModule) meshtastic::nexusModule->fw_vanilla_ignored++;
         packetPool.release(p);
         return;
     }
@@ -1720,6 +1780,7 @@ void Router::perhapsHandleReceived(meshtastic_MeshPacket *p)
     if (nodeInfoLiteIsIgnored(node)) {
         clearRoutingAuthCache();
         LOG_DEBUG("Ignore msg, 0x%08x is ignored", p->from);
+        if (meshtastic::nexusModule) meshtastic::nexusModule->fw_vanilla_ignored++;
         packetPool.release(p);
         return;
     }
@@ -1758,8 +1819,74 @@ void Router::perhapsHandleReceived(meshtastic_MeshPacket *p)
         // is opaque to us and would otherwise skip shouldFilterReceived entirely, so the implicit
         // ACK that marks a DM "Delivered to mesh" never fires. The ACK is header-only (from/id), so
         // generate it here from the still-encrypted packet before opaque relay.
+        //
+        // Nexus: input firewall must see opaque traffic before relay. Without this gate, the
+        // v2.8.0 opaque-relay optimization (added upstream) bypasses the firewall hooks in
+        // dispatchReceived (lines ~1612/1644), so /nexus PRBLOCK / PRWHITELIST and the encrypted
+        // PRIVATE filter never fire for packets we can't decode. /nexus PRBLOCK ADD <hash> would
+        // store the value but the comparison would never run, and the packet would relay opaquely
+        // out from under the operator.
+        // where PRBLOCK ADD 0xC3 stopped dropping opaque traffic.)
+        //
+        // skip_skip_handle (SS) is honored here: if the operator set it, let the relay proceed
+        // even though the firewall says drop, mirroring the in-band dispatchReceived semantics.
+        // fw_drop_priv_blacklist / fw_drop_priv_whitelist / fw_drop_private still increment
+        // inside shouldDropPrivate() either way, so /nexus FWS keeps reporting truthfully.
+        bool firewallDropped =
+            meshtastic::nexusModule && !meshtastic::nexusModule->skip_skip_handle &&
+            meshtastic::nexusModule->shouldDropPrivate(*p);
+        if (firewallDropped) {
+            // Same log line as the in-band dispatchReceived drop path so operators can grep one
+            // string across both call sites. No implicit ACK: refusing to relay means downstream
+            // observers do not get a "delivered" signal, and the orig side retransmitting is the
+            // correct outcome for an operator-blocked channel.
+            LOG_DEBUG("Nexus: Dropping encrypted packet (Private Filter)");
+            packetPool.release(p);
+            return;
+        }
         if (isFromUs(p))
             perhapsGenerateImplicitAckForOwnOverheard(p);
+
+        // Nexus v66: forward opaque packets to the phone when the operator
+        // has enabled /nexus FEATURES FORWARD_OPAQUE_TO_PHONE (or the more
+        // restrictive FORWARD_FOREIGN_PKI_TO_PHONE). v2.7 surfaced these via
+        // RoutingModule::handleReceivedProtobuf -> service->handleFromRadio,
+        // but v2.8's OPAQUE_RELAY_ONLY short-circuit bypasses that path for
+        // relay efficiency, leaving the phone blind to encrypted traffic.
+        //
+        // Placement: AFTER firewall gate (don't surface dropped packets),
+        // AFTER implicit-ACK (independent concern), BEFORE relay (so the
+        // phone sees the packet regardless of whether relay actually fires;
+        // CLIENT_MUTE / ROLE-suppressed nodes still forward to phone, they
+        // just don't relay). allocCopy because p is freed on the early return
+        // below and handleFromRadio expects a packet the queue owns.
+        if (meshtastic::nexusModule && service) {
+            uint64_t feats = meshtastic::nexusModule->getNexusFeaturesHex();
+            bool shouldForward = false;
+            bool foreignPki = meshtastic::nexusModule->looksLikeForeignPKI(*p);
+            if (feats & meshtastic::FEATURE_FORWARD_OPAQUE_TO_PHONE) {
+                shouldForward = true;
+            } else if ((feats & meshtastic::FEATURE_FORWARD_FOREIGN_PKI_TO_PHONE) && foreignPki) {
+                shouldForward = true;
+            }
+            if (shouldForward) {
+                if (auto *copy = packetPool.allocCopy(*p)) {
+                    service->handleFromRadio(copy);
+                    // handleFromRadio doesn't take ownership — it makes its OWN
+                    // allocCopy inside for sendToPhone's queue handoff, then
+                    // returns. Without this release, every opaque/foreign-PKI
+                    // forward leaks one packetPool slot. After ~MAX_PACKETS_STATIC
+                    // forwards, allocCopy returns nullptr and the feature
+                    // silently stops working (no log, no FWS counter, no phone
+                    // delivery). Per the 28005 code review (Nexus-28006 fix).
+                    packetPool.release(copy);
+                    meshtastic::nexusModule->fw_forwarded_opaque++;
+                    if (foreignPki)
+                        meshtastic::nexusModule->fw_forwarded_foreign_pki++;
+                }
+            }
+        }
+
         relayOpaquePacket(p);
         packetPool.release(p);
         return;

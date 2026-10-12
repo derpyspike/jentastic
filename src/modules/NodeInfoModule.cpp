@@ -8,6 +8,7 @@
 #include "UptimeClock.h"
 #include "configuration.h"
 #include "gps/RTC.h"
+#include "modules/NexusModule.h"
 #include "main.h"
 #include <Throttle.h>
 #include <algorithm>
@@ -195,6 +196,8 @@ meshtastic_MeshPacket *NodeInfoModule::allocReply()
     } else {
         ignoreRequest = false; // Don't ignore requests anymore
         meshtastic_User u = owner;
+
+
 
         // FIXME: Clear the user.id field since it should be derived from node number on the receiving end
         // u.id[0] = '\0';

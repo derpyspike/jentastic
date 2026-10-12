@@ -17,6 +17,7 @@ extern "C" {
 #define USE_SSD1306
 
 // GPS
+#define HAS_GPS 0
 #undef GPS_RX_PIN
 #undef GPS_TX_PIN
 #define GPS_RX_PIN (20)
@@ -46,9 +47,14 @@ extern "C" {
 #define SX126X_BUSY LORA_BUSY
 #define SX126X_RESET LORA_RESET
 #define SX126X_RXEN LORA_RXEN
+#define SX126X_TXEN RADIOLIB_NC //missing on official repo
 
+#define SX126X_DIO2_AS_RF_SWITCH //missing on official repo
 #define SX126X_DIO3_TCXO_VOLTAGE (1.8)
 #define TCXO_OPTIONAL // make it so that the firmware can try both TCXO and XTAL
+
+#define SX126X_MAX_POWER 22
+
 
 #ifdef __cplusplus
 }

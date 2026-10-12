@@ -22,6 +22,8 @@ template <class T> class ServerAPI : public StreamAPI, private concurrency::OSTh
 
     virtual ~ServerAPI();
 
+    T& getClient() { return client; }
+
     /// override close to also shutdown the TCP link
     virtual void close();
 
@@ -49,6 +51,13 @@ template <class T> class ServerAPI : public StreamAPI, private concurrency::OSTh
  */
 template <class T, class U> class APIServerPort : public U, private concurrency::OSThread
 {
+  protected:    // Nexus-28002 (2026-08-20): MallocDeleter + openAPI + waitTime
+                // must be `protected` (not the default `private`) so that
+                // subclasses like WiFiServerPort can access them. Upstream
+                // at 90a6dec3f has them in the default (private) section,
+                // which breaks WiFiServerAPI.cpp:32/36 ('openAPI is private
+                // within this context'). Real upstream bug; should be
+                // upstreamed.
     /** The currently open port
      *
      * FIXME: We currently only allow one open TCP connection at a time, because we depend on the loop() call in this class to

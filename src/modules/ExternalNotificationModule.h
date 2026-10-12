@@ -79,6 +79,9 @@ class ExternalNotificationModule : public SinglePortModule, private concurrency:
 
     void stopNow();
 
+    void triggerNexusBell();
+    void playRTTTL(const char *melody);
+
     // Fire the configured message outputs for a non-message event such as a geofence crossing.
     void startNotification();
 

@@ -1,5 +1,6 @@
 #include "MQTT.h"
 #include "MeshService.h"
+#include "modules/NexusModule.h"
 #include "NodeDB.h"
 #include "PowerFSM.h"
 #include "ServiceEnvelope.h"
@@ -761,9 +762,35 @@ void MQTT::onSend(const meshtastic_MeshPacket &mp_encrypted, const meshtastic_Me
     if (mp_decoded.which_payload_variant == meshtastic_MeshPacket_decoded_tag) {
         // For uplinking other's packets, check if it's not OK to MQTT or if it's an older packet without the bitfield
         bool dontUplink = !mp_decoded.decoded.has_bitfield || !(mp_decoded.decoded.bitfield & BITFIELD_OK_TO_MQTT_MASK);
-        // Respect the DontMqttMeBro flag for other nodes' packets on public MQTT servers
-        if (!isFromUs(&mp_decoded) && !isMqttServerAddressPrivate && dontUplink) {
-            LOG_INFO("MQTT onSend - drop packet: DontMqttMeBro flag");
+        // Nexus port: MQTT override modes (set via NexusModule::mqtt_override_mode).
+        //   mode 0 = DEFAULT  : upstream's behavior (respect DontMqttMeBro unless private IP)
+        //   mode 1 = ALWAYS   : uplink everything regardless of DontMqttMeBro (e.g. for in-tent relays)
+        //   mode 2 = STRICT   : always respect DontMqttMeBro, even on private IPs (e.g. for paranoid setups)
+        // The block falls through to upstream's behavior when NexusModule is absent or mode==0,
+        // so the default Meshtastic build is unaffected.
+        bool allowUplink = true;
+        if (meshtastic::nexusModule) {
+            uint8_t mode = meshtastic::nexusModule->mqtt_override_mode;
+            if (mode == 1) {
+                allowUplink = true;
+                LOG_DEBUG("Nexus: MQTT Always-Upload Bypass active");
+            } else if (mode == 2) {
+                if (dontUplink && !isFromUs(&mp_decoded)) {
+                    allowUplink = false;
+                }
+            } else {
+                // mode == 0: upstream default
+                if (!isFromUs(&mp_decoded) && !isMqttServerAddressPrivate && dontUplink) {
+                    allowUplink = false;
+                }
+            }
+        } else {
+            if (!isFromUs(&mp_decoded) && !isMqttServerAddressPrivate && dontUplink) {
+                allowUplink = false;
+            }
+        }
+        if (!allowUplink) {
+            LOG_INFO("MQTT onSend - Not forwarding packet due to DontMqttMeBro flag (or Nexus Strict Mode)");
             return;
         }
 

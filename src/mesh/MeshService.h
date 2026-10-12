@@ -227,16 +227,19 @@ class MeshService
     /// Seconds since the packet arrived, or SINCE_UNKNOWN if it carries no trustworthy rx_time.
     uint32_t GetTimeSinceMeshPacket(const meshtastic_MeshPacket *mp);
 
+    /// Handle a packet that just arrived from the radio.  This method does _not_ free the provided packet.  If it
+    /// needs to keep the packet around it makes a copy. Pre-v66 this was private with a `friend class RoutingModule`
+    /// carve-out — Nexus v66's /nexus FEATURES FORWARD_OPAQUE_TO_PHONE needs Router to forward still-encrypted
+    /// packets into the phone pipeline from the OPAQUE_RELAY_ONLY short-circuit in Router.cpp, so promote to
+    /// public. The friend workaround predates that third caller and would only have grown.
+    int handleFromRadio(const meshtastic_MeshPacket *p);
+
   private:
 #if HAS_GPS
     /// Called when our gps position has changed - updates nodedb and sends Location message out into the mesh
     /// returns 0 to allow further processing
     int onGPSChanged(const meshtastic::GPSStatus *arg);
 #endif
-    /// Handle a packet that just arrived from the radio.  This method does _not_ free the provided packet.  If it
-    /// needs to keep the packet around it makes a copy
-    int handleFromRadio(const meshtastic_MeshPacket *p);
-    friend class RoutingModule;
 #ifdef PIO_UNIT_TESTING
     friend class MeshServicePhoneDeliveryTest;
 #endif

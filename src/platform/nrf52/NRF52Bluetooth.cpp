@@ -13,6 +13,14 @@
 #include <InternalFileSystem.h>
 #include <bluefruit.h>
 #include <utility/bonding.h>
+
+#ifdef NEXUS_ENABLE_AIRTAG
+extern bool nexus_airtag_enabled;
+extern uint8_t nexus_airtag_key[28];
+static bool inAirtagMode = false;
+static uint32_t lastModeSwitch = 0;
+#endif
+
 static BLEService meshBleService = BLEService(BLEUuid(MESH_SERVICE_UUID_16));
 static BLECharacteristic fromNum = BLECharacteristic(BLEUuid(FROMNUM_UUID_16));
 static BLECharacteristic fromRadio = BLECharacteristic(BLEUuid(FROMRADIO_UUID_16));
@@ -172,6 +180,41 @@ void onCccd(uint16_t conn_hdl, BLECharacteristic *chr, uint16_t cccd_value)
 }
 void startAdv(void)
 {
+#ifdef NEXUS_ENABLE_AIRTAG
+    if (nexus_airtag_enabled && inAirtagMode) {
+        LOG_INFO("Nexus: Starting AirTag Advertisement");
+        Bluefruit.Advertising.stop();
+        Bluefruit.Advertising.clearData();
+        Bluefruit.ScanResponse.clearData();
+        
+        // Apple AirTag Advertisement Payload (Type 0xFF Manufacturer Data)
+        // [0..1] Company ID: 0x004C (Apple)
+        // [2] Offline Finding Type: 0x12
+        // [3] Offline Finding Length: 0x19 (25 bytes)
+        // [4] Status: 0x00
+        // [5..26] Public Key (22 bytes)
+        // [27] Status Flag: 0x00
+        // [28] Hint: 0x00
+        
+        uint8_t adData[31];
+        adData[0] = 0x4C; adData[1] = 0x00; // Apple
+        adData[2] = 0x12;                  // Type
+        adData[3] = 0x19;                  // Len
+        adData[4] = 0x00;                  // Status
+        memcpy(&adData[5], nexus_airtag_key, 22); // Payload
+        adData[27] = 0x00;                 // Flag
+        adData[28] = 0x00;                 // Hint
+        
+        Bluefruit.Advertising.addData(BLE_GAP_AD_TYPE_MANUFACTURER_SPECIFIC_DATA, adData, 29);
+        Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+        
+        Bluefruit.Advertising.setInterval(160, 160); // Fast interval for tracker reliability (100ms)
+        Bluefruit.Advertising.restartOnDisconnect(true);
+        Bluefruit.Advertising.start(0);
+        return;
+    }
+#endif
+
     // Advertising packet
     Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
     // IncludeService UUID
@@ -558,4 +601,43 @@ void NRF52Bluetooth::sendLog(const uint8_t *logMessage, size_t length)
         logRadio.indicate(logMessage, (uint16_t)length);
     else
         logRadio.notify(logMessage, (uint16_t)length);
+}
+
+void NRF52Bluetooth::tick()
+{
+#ifdef NEXUS_ENABLE_AIRTAG
+    if (!nexus_airtag_enabled) {
+        if (inAirtagMode) {
+            inAirtagMode = false;
+            Bluefruit.Advertising.stop();
+            startAdv();
+        }
+        return;
+    }
+
+    // Do not switch modes if a phone is currently connected
+    if (isConnected()) {
+        if (inAirtagMode) {
+            inAirtagMode = false;
+            Bluefruit.Advertising.stop();
+            startAdv();
+        }
+        return;
+    }
+
+    uint32_t now = millis();
+    // Timing: 30 seconds Meshtastic, 10 seconds AirTag
+    uint32_t interval = inAirtagMode ? 10000 : 30000;
+
+    if (now - lastModeSwitch > interval) {
+        inAirtagMode = !inAirtagMode;
+        lastModeSwitch = now;
+        
+        LOG_INFO("Nexus: Switching BLE to %s mode", inAirtagMode ? "AirTag" : "Meshtastic");
+        
+        Bluefruit.Advertising.stop();
+        Bluefruit.Advertising.clearData();
+        startAdv();
+    }
+#endif
 }

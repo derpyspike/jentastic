@@ -14,14 +14,26 @@ class DeviceTelemetryModule : private concurrency::OSThread,
         CallbackObserver<DeviceTelemetryModule, const meshtastic::Status *>(this, &DeviceTelemetryModule::handleStatusUpdate);
 
   public:
+    // Nexus: external singleton accessor (mirrors PowerTelemetryModule::instance pattern).
+    // Used by getNexusDeviceTelemetry() in NexusModule.cpp so /nexus TELEMETRY can read
+    // battery / voltage / channel util / air util / uptime directly from the live module
+    // without depending on nodeDB->nodeTelemetry, which is gated by
+    // MESHTASTIC_EXCLUDE_TELEMETRYDB and is otherwise empty on memory-constrained variants.
+    static DeviceTelemetryModule *instance;
     DeviceTelemetryModule()
         : concurrency::OSThread("DeviceTelemetry"),
           ProtobufModule("DeviceTelemetry", meshtastic_PortNum_TELEMETRY_APP, &meshtastic_Telemetry_msg)
     {
+        instance = this;
         nodeStatusObserver.observe(&nodeStatus->onNewStatus);
         setIntervalFromNow(setStartDelay()); // Wait until NodeInfo is sent
     }
     virtual bool wantUIFrame() { return false; }
+
+    /** Called to get current Device telemetry data (battery, voltage, channel util, etc.)
+    @return true if it contains valid data
+    */
+    bool getDeviceTelemetry(meshtastic_Telemetry *m);
 
   protected:
     /** Called to handle a particular incoming message
@@ -36,7 +48,10 @@ class DeviceTelemetryModule : private concurrency::OSThread,
     bool sendTelemetry(NodeNum dest = NODENUM_BROADCAST, bool phoneOnly = false);
 
   private:
-    meshtastic_Telemetry getDeviceTelemetry();
+    // Build a fresh DeviceTelemetry snapshot (private helper used by sendTelemetry and
+    // allocReply). The public getDeviceTelemetry(meshtastic_Telemetry*) below wraps this
+    // and matches the PowerTelemetryModule / EnvironmentTelemetryModule out-param shape.
+    meshtastic_Telemetry buildDeviceTelemetry();
     meshtastic_Telemetry getLocalStatsTelemetry();
 
     void sendLocalStatsToPhone();

@@ -32,6 +32,18 @@ extern void drawCommonHeader(OLEDDisplay *display, int16_t x, int16_t y, const c
                              bool show_date);
 }
 
+PowerTelemetryModule *PowerTelemetryModule::instance = nullptr;
+
+PowerTelemetryModule::PowerTelemetryModule()
+    : concurrency::OSThread("PowerTelemetry"),
+      ProtobufModule("PowerTelemetry", meshtastic_PortNum_TELEMETRY_APP, &meshtastic_Telemetry_msg)
+{
+    instance = this;
+    lastMeasurementPacket = nullptr;
+    nodeStatusObserver.observe(&nodeStatus->onNewStatus);
+    setIntervalFromNow(10 * 1000);
+}
+
 int32_t PowerTelemetryModule::runOnce()
 {
     if (sleepOnNextExecution == true) {
@@ -231,6 +243,14 @@ bool PowerTelemetryModule::getPowerTelemetry(meshtastic_Telemetry *m)
 #endif
 
     return valid;
+}
+
+// Nexus: External helper for Shadow CLI
+bool getNexusPowerTelemetry(meshtastic_Telemetry *m) {
+    if (PowerTelemetryModule::instance) {
+        return PowerTelemetryModule::instance->getPowerTelemetry(m);
+    }
+    return false;
 }
 
 meshtastic_MeshPacket *PowerTelemetryModule::allocReply()

@@ -2,6 +2,18 @@
 #include "UptimeClock.h"
 #include "configuration.h"
 
+// Nexus-269: include the umbrella BEFORE the file-level gate at the next
+// line so that NEXUS_SENSOR_WEIGHTREDUCTION (set in the variant's
+// build_flags) can force MESHTASTIC_EXCLUDE_AIR_QUALITY_SENSOR=1 and
+// short-circuit this translation unit. Without this, the file-level
+// gate at line 4 fires when the macro is still undefined, so the file
+// body is included even when the umbrella wants to drop air quality.
+// The sensor-specific headers (PMSA003ISensor.h, etc.) all gate on
+// !MESHTASTIC_EXCLUDE_AIR_QUALITY_SENSOR too, so they would silently
+// skip the class definitions, leaving `addSensor<PMSA003ISensor>` etc.
+// unresolved.
+#include "NexusSensorBudget.h"
+
 #if HAS_TELEMETRY && !MESHTASTIC_EXCLUDE_AIR_QUALITY_SENSOR
 
 #include "../mesh/generated/meshtastic/telemetry.pb.h"

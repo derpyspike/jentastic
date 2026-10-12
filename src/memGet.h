@@ -13,6 +13,7 @@ class MemGet
     uint32_t getMinFreeHeap();
     // Largest block malloc() could still return, or 0 where the platform can't report it
     uint32_t getMaxAllocHeap();
+    uint32_t getMinFreeBlock(); // Fragmentation check
     uint32_t getFreePsram();
     uint32_t getPsramSize();
 };

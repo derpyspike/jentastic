@@ -31,6 +31,7 @@
 #include "mesh/generated/meshtastic/deviceonly_legacy.pb.h"
 #include "meshUtils.h"
 #include "modules/NeighborInfoModule.h"
+#include "modules/NexusModule.h"
 #include "target_specific.h"
 #if HAS_VARIABLE_HOPS
 #include "modules/HopScalingModule.h"
@@ -505,7 +506,13 @@ NodeDB::NodeDB()
     pickNewNodeNum();
 
     // Set our board type so we can share it with others
-    owner.hw_model = HW_VENDOR;
+    // Nexus port (Nexus-28001, 2026-08-18): preserve a persisted device-state
+    // hw_model override across reboot; this guard prevents the constructor
+    // from clobbering it back to HW_VENDOR after loadFromDisk() loaded the
+    // persisted value.
+    if (owner.hw_model == 0) {
+        owner.hw_model = HW_VENDOR;
+    }
     // Ensure user (nodeinfo) role is set to whatever we're configured to
     owner.role = config.device.role;
     // Ensure macaddr is set to our macaddr as it will be copied in our info below
@@ -572,6 +579,7 @@ NodeDB::NodeDB()
 
     resetRadioConfig(); // If bogus settings got saved, then fix them
     // nodeDB->LOG_DEBUG("region=%d, NODENUM=0x%x, dbsize=%d", config.lora.region, myNodeInfo.my_node_num, numMeshNodes);
+
 
     // Uncomment below to always enable UDP broadcasts
     // config.network.enabled_protocols = meshtastic_Config_NetworkConfig_ProtocolFlags_UDP_BROADCAST;
@@ -748,7 +756,15 @@ bool isFromUs(const meshtastic_MeshPacket *p)
 // Returns true if the packet is destined to us
 bool isToUs(const meshtastic_MeshPacket *p)
 {
-    return p->to == nodeDB->getNodeNum();
+    if (p->to == nodeDB->getNodeNum())
+        return true;
+#if HAS_NEXUS
+    // Nexus port: when the alternate local identity is active and the packet is
+    // addressed to it, treat it as destined to us.
+    if (meshtastic::nexusModule && meshtastic::nexusModule->v11_mode && p->to == meshtastic::nexusModule->v11_id)
+        return true;
+#endif
+    return false;
 }
 
 bool isBroadcast(uint32_t dest)
@@ -1175,6 +1191,7 @@ void NodeDB::installDefaultConfig(bool preserveKey = false)
     config.security.serial_enabled = true;
     config.security.admin_channel_enabled = false;
     resetRadioConfig(true); // This also triggers NodeInfo/Position requests since we're fresh
+
     strncpy(config.network.ntp_server, "meshtastic.pool.ntp.org", 32);
 
 #if (defined(T_DECK) || defined(T_WATCH_S3) || defined(UNPHONE) || defined(PICOMPUTER_S3) || defined(SENSECAP_INDICATOR) ||      \
@@ -2699,6 +2716,7 @@ void NodeDB::loadFromDisk()
     config.lora.tx_enabled = false;
 #endif
 
+#if !HAS_NEXUS
     // Always-apply LoRa overrides: applied after loading saved config so they
     // take effect even when NVS already has a valid config (e.g. region-locked
     // dev boards with no BLE/serial to set the region at runtime).
@@ -2727,6 +2745,7 @@ void NodeDB::loadFromDisk()
 #ifdef USERPREFS_LORACONFIG_OVERRIDE_FREQUENCY
     config.lora.override_frequency = USERPREFS_LORACONFIG_OVERRIDE_FREQUENCY;
 #endif
+#endif // !HAS_NEXUS
 
 #if USERPREFS_EVENT_MODE
     if (initializedEventConfig) {
@@ -3078,6 +3097,14 @@ bool NodeDB::saveProto(const char *filename, size_t protoSize, const pb_msgdesc_
         return true;
     }
 
+    // v64: per-subsystem freeze gate for uiconfig.proto. The file is saved
+    // directly via saveProto() (not saveToDisk()), so it doesn't go through
+    // the saveWhat mask filtering in saveToDiskNoRetry(). Gate it here.
+    if (meshtastic::freeze_config && strcmp(filename, uiconfigFileName) == 0) {
+        LOG_INFO("NodeDB: freeze_config active; dropping uiconfig.proto write");
+        return true;
+    }
+
     // do not try to save anything if power level is not safe. In many cases flash will be lock-protected
     // and all writes will fail anyway. Device should be sleeping at this point anyway.
     if (!powerHAL_isPowerLevelSafe()) {
@@ -3306,6 +3333,24 @@ bool NodeDB::saveToDiskNoRetry(int saveWhat)
     if (!powerHAL_isPowerLevelSafe()) {
         LOG_ERROR("saveToDiskNoRetry() on unsafe device power level");
         return false;
+    }
+
+    // v64: per-subsystem freeze gates. Each flag drops its segment from the
+    // write mask BEFORE the per-segment blocks below. `saveWhat` is left
+    // consistent so /nexus FREEZE STATUS reflects the gated state. DBFLUSH
+    // bypasses all four by temporarily clearing the flags in NexusCommands
+    // before calling saveToDisk().
+    if (meshtastic::freeze_config && (saveWhat & (SEGMENT_CONFIG | SEGMENT_MODULECONFIG | SEGMENT_CHANNELS))) {
+        LOG_INFO("NodeDB: freeze_config active; dropping config/module/channels from saveWhat");
+        saveWhat &= ~(SEGMENT_CONFIG | SEGMENT_MODULECONFIG | SEGMENT_CHANNELS);
+    }
+    if (meshtastic::freeze_device && (saveWhat & SEGMENT_DEVICESTATE)) {
+        LOG_INFO("NodeDB: freeze_device active; dropping device.proto from saveWhat");
+        saveWhat &= ~SEGMENT_DEVICESTATE;
+    }
+    if (meshtastic::freeze_nodedb && (saveWhat & SEGMENT_NODEDATABASE)) {
+        LOG_INFO("NodeDB: freeze_nodedb active; dropping nodes.proto from saveWhat");
+        saveWhat &= ~SEGMENT_NODEDATABASE;
     }
 
 #ifdef MESHTASTIC_ENCRYPTED_STORAGE

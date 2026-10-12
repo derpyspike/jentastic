@@ -19,14 +19,8 @@ class PowerTelemetryModule : private concurrency::OSThread,
         CallbackObserver<PowerTelemetryModule, const meshtastic::Status *>(this, &PowerTelemetryModule::handleStatusUpdate);
 
   public:
-    PowerTelemetryModule()
-        : concurrency::OSThread("PowerTelemetry"),
-          ProtobufModule("PowerTelemetry", meshtastic_PortNum_TELEMETRY_APP, &meshtastic_Telemetry_msg)
-    {
-        lastMeasurementPacket = nullptr;
-        nodeStatusObserver.observe(&nodeStatus->onNewStatus);
-        setIntervalFromNow(10 * 1000);
-    }
+    static PowerTelemetryModule *instance;
+    PowerTelemetryModule();
     virtual bool wantUIFrame() override;
 #if !HAS_SCREEN
     void drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
@@ -34,16 +28,17 @@ class PowerTelemetryModule : private concurrency::OSThread,
     virtual void drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y) override;
 #endif
 
+    /** Called to get current Power telemetry data
+    @return true if it contains valid data
+    */
+    bool getPowerTelemetry(meshtastic_Telemetry *m);
+
   protected:
     /** Called to handle a particular incoming message
     @return true if you've guaranteed you've handled this message and no other handlers should be considered for it
     */
     virtual bool handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshtastic_Telemetry *p) override;
     virtual int32_t runOnce() override;
-    /** Called to get current Power telemetry data
-    @return true if it contains valid data
-    */
-    bool getPowerTelemetry(meshtastic_Telemetry *m);
     virtual meshtastic_MeshPacket *allocReply() override;
     /**
      * Send our Telemetry into the mesh

@@ -27,4 +27,24 @@ WiFiServerAPI::WiFiServerAPI(WiFiClient &_client) : ServerAPI(_client)
 }
 
 WiFiServerPort::WiFiServerPort(int port) : APIServerPort(port) {}
+
+bool WiFiServerPort::hasActiveClient() {
+    return openAPI != nullptr;
+}
+
+String WiFiServerPort::getClientInfo() {
+    if (openAPI) {
+        return openAPI->getClient().remoteIP().toString() + ":" + String(openAPI->getClient().remotePort());
+    }
+    return "N/A";
+}
+
+bool hasWiFiClient() {
+    return apiPort && apiPort->hasActiveClient();
+}
+
+String getWiFiClientInfo() {
+    if (apiPort) return apiPort->getClientInfo();
+    return "N/A";
+}
 #endif

@@ -12,6 +12,7 @@
 #endif
 #if !MESHTASTIC_EXCLUDE_ADMIN
 #include "modules/AdminModule.h"
+#include "modules/NexusModule.h"
 #endif
 #if !MESHTASTIC_EXCLUDE_ATAK
 #include "modules/AtakPluginModule.h"
@@ -151,6 +152,13 @@ void setupModules()
 
 #if !MESHTASTIC_EXCLUDE_ADMIN
     adminModule = new AdminModule();
+#if HAS_NEXUS
+    // Nexus port: NexusModule handles long-name tag hooks, vault persistence, and the /nexus
+    // shadow-CLI dispatcher. It is only built when HAS_NEXUS is defined (per NexusModule.h
+    // compile-time guard). Other Nexus features in this file use `if (meshtastic::nexusModule)`
+    // guards so they're no-ops without the flag.
+    meshtastic::nexusModule = new meshtastic::NexusModule();
+#endif
 #endif
 #if !MESHTASTIC_EXCLUDE_NODEINFO
     nodeInfoModule = new NodeInfoModule();

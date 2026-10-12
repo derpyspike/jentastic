@@ -33,6 +33,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <PCF8xRTC.h>
 #endif
 
+#ifndef HAS_NEXUS
+#define HAS_NEXUS 1
+#endif
+
 /* Offer chance for variant-specific defines */
 #include "variant.h"
 

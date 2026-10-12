@@ -254,7 +254,7 @@ NullSensor ina3221Sensor;
 #include <utility>
 extern std::pair<uint8_t, TwoWire *> nodeTelemetrySensorsMap[_meshtastic_TelemetrySensorType_MAX + 1];
 #if HAS_TELEMETRY && (!MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR || !MESHTASTIC_EXCLUDE_POWER_TELEMETRY)
-#if __has_include(<Adafruit_MAX1704X.h>)
+#if __has_include(<Adafruit_MAX1704X.h>) && !JENTASTIC_EXCLUDE_MAX17048
 MAX17048Sensor max17048Sensor;
 #else
 NullSensor max17048Sensor;
@@ -262,7 +262,7 @@ NullSensor max17048Sensor;
 #endif
 #endif
 
-#if HAS_TELEMETRY && !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR && HAS_RAKPROT
+#if HAS_TELEMETRY && !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR && HAS_RAKPROT && !JENTASTIC_EXCLUDE_RAK9154
 RAK9154Sensor rak9154Sensor;
 #endif
 

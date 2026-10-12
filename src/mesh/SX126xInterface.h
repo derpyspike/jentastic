@@ -31,7 +31,12 @@ template <class T> class SX126xInterface : public RadioLibInterface
 
     void resetAGC() override;
 
+    /** Nexus LCS: chip state via GetStatus SPI (mode bits 6:4). */
+    uint8_t readChipState() override;
+
     void setTCXOVoltage(float voltage) { tcxoVoltage = voltage; }
+
+    float getInstantaneousRSSI() override { return lora.getRSSI(false); }
 
   protected:
     float currentLimit = 140; // Higher OCP limit for SX126x PA

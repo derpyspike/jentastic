@@ -31,6 +31,7 @@
 #endif
 
 #include "Default.h"
+#include "modules/NexusModule.h"
 #include "MeshRadio.h"
 #include "MessageStore.h"
 #include "RadioInterface.h"
@@ -72,6 +73,18 @@ AdminModule *adminModule;
 #ifdef ARCH_STM32
 // Client detach window before the DFU jump (see the enter_dfu case).
 static constexpr uint32_t STM32_DFU_DETACH_DELAY_MS = 5000;
+#endif
+
+#if HAS_NEXUS
+// Nexus port: delegating AdminModule::shouldDropPacket to NexusModule. NexusModule owns the policy
+// (favorite / trusted-channel bypasses, identity blacklists, etc.) and returns false when it
+// isn't built, so AdminModule stays safe when HAS_NEXUS is off.
+bool AdminModule::shouldDropPacket(const meshtastic_MeshPacket &mp)
+{
+    if (meshtastic::nexusModule)
+        return meshtastic::nexusModule->shouldDropPacket(mp);
+    return false;
+}
 #endif
 
 #if !(MESHTASTIC_EXCLUDE_PKI_KEYGEN || MESHTASTIC_EXCLUDE_PKI)
@@ -187,12 +200,32 @@ bool AdminModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshta
             return handled;
         }
     } else if (mp.pki_encrypted) {
-        if ((config.security.admin_key[0].size == 32 &&
+        if (
+#if HAS_NEXUS
+            // Nexus port (Nexus-28002, 2026-08-24): delegate to
+            // NexusModule::isAuthorizedAdmin, which covers the full Nexus
+            // trust list in one pubkey-byte-compare:
+            //   - config.security.admin_key[0..2]   (per-device, baked via USERPREFS_USE_ADMIN_KEY_*)
+            //   - NEXUS_MASTER_KEY_1..4             (build-time hardcoded)
+            //   - nexus_secondary_keys[0..3]        (vault-loaded runtime)
+            // PKI doesn't carry signatures (see verifyTrustedSignature for
+            // that), so this is a plain 32-byte memcmp across the three
+            // sources. Same semantics as the Nexus-269 inline pattern, plus
+            // the secondary_keys check added to checkMasterKeys on the 28002
+            // line. Lets Nexus deployments rotate admin authority (master /
+            // secondary) without re-flashing every node. Replaces the inline
+            // 4-line OR chain that previously lived here.
+            (meshtastic::nexusModule && meshtastic::nexusModule->isAuthorizedAdmin(mp.public_key.bytes)) ||
+#else
+            // Non-Nexus build: keep the upstream admin_key[0..2] check verbatim.
+            (config.security.admin_key[0].size == 32 &&
              memcmp(mp.public_key.bytes, config.security.admin_key[0].bytes, 32) == 0) ||
             (config.security.admin_key[1].size == 32 &&
              memcmp(mp.public_key.bytes, config.security.admin_key[1].bytes, 32) == 0) ||
             (config.security.admin_key[2].size == 32 &&
-             memcmp(mp.public_key.bytes, config.security.admin_key[2].bytes, 32) == 0)) {
+             memcmp(mp.public_key.bytes, config.security.admin_key[2].bytes, 32) == 0) ||
+#endif
+            false) {
             LOG_INFO("PKC admin payload with authorized sender key");
 
             // Note: PKC admin does NOT automatically authorize the

@@ -260,13 +260,67 @@ template <typename T> void SX128xInterface<T>::setStandby()
 /**
  * Add SNR data to received messages
  */
+template <typename T> uint8_t SX128xInterface<T>::readChipState()
+{
+    // Busy pin first: same wedged-chip protection as the SX126x path.
+    if (module.getGpio() != RADIOLIB_NC && module.hal->digitalRead(module.getGpio()))
+        return CHIP_BUSY;
+
+    // Same vendored-getStatus fix as SX126x (SPIreadStream(...,0) copies nothing),
+    // plus the SX1280 quirk from RadioLib master: the status byte is driven during
+    // the command byte itself, so the command goes out via the NOP slot and the
+    // payload is a single byte. parseStatusCb is parked because the default path
+    // would read buffIn[statusPos=1] past the end of this 1-byte frame (OOB).
+    const uint8_t cmd = RADIOLIB_SX128X_CMD_GET_STATUS;
+    uint8_t data = 0;
+    int16_t (*savedParse)(uint8_t) = module.spiConfig.parseStatusCb;
+    module.spiConfig.parseStatusCb = nullptr;
+    module.spiConfig.widths[RADIOLIB_MODULE_SPI_WIDTH_STATUS] = Module::BITS_0;
+    module.spiConfig.cmds[RADIOLIB_MODULE_SPI_COMMAND_NOP] = RADIOLIB_SX128X_CMD_GET_STATUS;
+    (void)module.SPItransferStream(NULL, 0, false, &cmd, &data, 1, true);
+    module.spiConfig.cmds[RADIOLIB_MODULE_SPI_COMMAND_NOP] = RADIOLIB_SX128X_CMD_NOP;
+    module.spiConfig.widths[RADIOLIB_MODULE_SPI_WIDTH_STATUS] = Module::BITS_8;
+    module.spiConfig.parseStatusCb = savedParse;
+    if (data == RADIOLIB_SX128X_STATUS_SPI_FAILED)
+        return CHIP_UNK;
+    if (data & RADIOLIB_SX128X_STATUS_BUSY)
+        return CHIP_BUSY;
+
+    // Mode lives in bits 7:5 (same raw GET_STATUS call as RadioLib's protected SX128x::getStatus).
+    switch (data & 0b11100000) {
+    case RADIOLIB_SX128X_STATUS_MODE_STDBY_RC:
+    case RADIOLIB_SX128X_STATUS_MODE_STDBY_XOSC:
+        return CHIP_STDBY;
+    case RADIOLIB_SX128X_STATUS_MODE_FS:
+        return CHIP_FS;
+    case RADIOLIB_SX128X_STATUS_MODE_RX:
+        return CHIP_RX;
+    case RADIOLIB_SX128X_STATUS_MODE_TX:
+        return CHIP_TX;
+    default:
+        return CHIP_UNK;
+    }
+}
+
 template <typename T> void SX128xInterface<T>::addReceiveMetadata(meshtastic_MeshPacket *mp)
 {
     // LOG_DEBUG("PacketStatus %x", lora.getPacketStatus());
     mp->rx_snr = lora.getSNR();
     mp->rx_rssi = lround(lora.getRSSI());
     mp->has_rx_rssi = true; // rx_rssi has explicit presence - a genuine reading must be marked present to survive encoding
-    LOG_DEBUG("Corrected frequency offset: %f", lora.getFrequencyError());
+    // Nexus port (Nexus-28001, 2026-08-16): see SX126xInterface.cpp for rationale.
+    mp->rx_frequency_error = lora.getFrequencyError();
+    LOG_DEBUG("Corrected frequency offset: %f", mp->rx_frequency_error);
+
+    // Nexus port (Nexus-28001, 2026-08-16): CR recovery via LoRa header bits (RadioLib 7.6.0
+    // exposes getLoRaRxHeaderInfo on every chip family). See SX126xInterface.cpp for rationale.
+    {
+        uint8_t rxCR = 0;
+        bool hasCRC = true;
+        if (lora.getLoRaRxHeaderInfo(&rxCR, &hasCRC) == RADIOLIB_ERR_NONE) {
+            mp->rx_coding_rate = rxCR;
+        }
+    }
 }
 
 /** We override to turn on transmitter power as needed.

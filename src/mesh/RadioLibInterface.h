@@ -21,6 +21,9 @@
 
 #define AGC_RESET_INTERVAL_MS (60 * 1000) // 60 seconds
 
+// Nexus LORACHIPSTATS: chip-state sample cadence (internal throttle inside sampleChipState())
+#define CHIP_STATE_SAMPLE_INTERVAL_MS (1000)
+
 /**
  * We need to override the RadioLib ArduinoHal class to add mutex protection for SPI bus access
  */
@@ -63,8 +66,16 @@ class STM32WLx_ModuleWrapper : public STM32WLx_Module
 };
 #endif
 
+// Nexus port (Nexus-28001): forward-declare NexusModule at file scope (see NodeDB.h for rationale).
+namespace meshtastic { class NexusModule; }
+
 class RadioLibInterface : public RadioInterface, protected concurrency::NotifiedWorkerThread
 {
+    // Nexus port: NexusModule reads getInstantaneousRSSI() (a protected member) via
+    // RadioLibInterface::instance to power /nexus RSSI. Friend is preferred over moving
+    // the method to public — the protected access keeps the API surface narrow.
+    friend class meshtastic::NexusModule;
+
     MeshPacketQueue txQueue = MeshPacketQueue(MAX_TX_QUEUE);
 
   protected:
@@ -93,8 +104,16 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
      *
      * We now use 0x2b (so that someday we can possibly use NOT 2b - because that would be funny pun).  We will be staying with
      * this code for a long time.
+     *
+     * Nexus port (Nexus-28001, 2026-08-16): the `const` was removed so NexusModule can override the
+     * sync word at runtime via /nexus SETSYNCWORD. The override is applied at the top of
+     * RadioInterface::applyModemConfig() (which runs at boot AND on every LoRa config change,
+     * including the deferred apply triggered by SETSYNCWORD itself). Nexus persists the value
+     * in vault v40 and loads it via NexusModule::loadVault() during setupModules() — which
+     * runs before initLoRa() per main.cpp ordering, so the override is in place before
+     * rIf->init() reads syncWord for the first time.
      */
-    const uint8_t syncWord = 0x2b;
+    uint8_t syncWord = 0x2b;
 
     float currentLimit = 100; // 100mA OCP - Should be acceptable for RFM95/SX127x chipset.
 
@@ -135,6 +154,16 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
      */
     virtual int16_t getCurrentRSSI() = 0;
 
+    // Nexus port: instantaneous RSSI as float dBm, kept for /nexus RSSI command which
+    // surfaces the live reading rather than the noise-floor-compensated getCurrentRSSI.
+    // The Nexus cherry-pick auto-merged the .cpp definition but lost this declaration
+    // because RadioLibInterface.h was in the conflict set. Restoring here so the
+    // SX126xInterface override below compiles cleanly. Default body in RadioLibInterface.cpp.
+    // Made public (with re-declaration below in the public block) so NexusModule can read it
+    // via RadioLibInterface::instance->getInstantaneousRSSI() — the protected access here
+    // blocked NexusModule from seeing it without the friend declaration.
+    virtual float getInstantaneousRSSI();
+
   public:
     /** Our ISR code currently needs this to find our active instance
      */
@@ -146,6 +175,16 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
         if (instance == this)
             instance = nullptr;
     }
+
+    /**
+     * Nexus-28002 (2026-08-21): syncword getter for /nexus LRS.
+     * Returns the actual byte programmed into the LoRa chip — either the
+     * Meshtastic default 0x2B or NexusModule::syncword_override (vault v40).
+     * Source of truth is the `syncWord` member; /nexus LRS MUST read this
+     * instead of NexusModule::syncword_override directly so the chip-actual
+     * byte is reported (Nexus-269 design, commit 86e833112).
+     */
+    [[nodiscard]] uint8_t getSyncWord() const { return syncWord; }
 
     /**
      * Get the current calculated noise floor in dBm
@@ -216,6 +255,29 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
      */
     uint32_t rxBad = 0, rxGood = 0, txGood = 0, txRelay = 0;
     uint16_t txDrop = 0;
+
+    // Nexus LORACHIPSTATS (/nexus LCS): cumulative chip-state samples, one per
+    // CHIP_STATE_SAMPLE_INTERVAL_MS (RAM-only, cleared on boot or LCS RESET).
+    enum ChipStateSample : uint8_t {
+        CHIP_TX = 0,   // sendingPacket in flight (software; no SPI touch during TX)
+        CHIP_RX,       // chip status reports RX mode (or LR: RX armed in software)
+        CHIP_STDBY,    // chip standby
+        CHIP_FS,       // frequency synthesiser (FSRX/FSTX, between STDBY and RX/TX)
+        CHIP_SLP,      // chip sleep (RF95 reads this from OP_MODE; others never sleep while running)
+        CHIP_BUSY,     // BUSY pin high at sample time (chip mid-command)
+        CHIP_RXOFF,    // rxOffline: RX re-arm failed, recovery ladder active
+        CHIP_UNK,      // SPI read failed / mode not readable on this family
+        CHIP_STATE_COUNT
+    };
+    uint32_t chipStateCount[CHIP_STATE_COUNT] = {0};
+    uint32_t chipStateTotal = 0;
+    uint32_t lastChipStateMs = 0;
+
+    /** Take one throttled chip-state sample (called at ~1 Hz from NexusModule::runOnce()). */
+    void sampleChipState();
+
+    /** Read the chip's current state; returns a ChipStateSample. Base impl: CHIP_UNK. */
+    virtual uint8_t readChipState();
 
   public:
     RadioLibInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE cs, RADIOLIB_PIN_TYPE irq, RADIOLIB_PIN_TYPE rst,
@@ -361,6 +423,13 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     /// off the air until it reboots (#11935). The codes are int16_t, so they wrap to the top of the
     /// range; the slowest packet we can configure is ~229s, well clear of it.
     static bool isRadioLibTimeError(RadioLibTime_t usec) { return usec == 0 || usec >= (RadioLibTime_t)0 - 32768; }
+
+    // Nexus port (Nexus-28001, 2026-08-16): override the virtual applyNexusSyncwordOverride() to
+    // apply NexusModule::syncword_override (vault v40) to the subclass's syncWord member.
+    // Called from RadioInterface::applyModemConfig() before any driver reads syncWord.
+    // syncword_override == 0 means "use Meshtastic default 0x2b"; no write needed in that
+    // case (the class member is already initialized to 0x2b).
+    void applyNexusSyncwordOverride() override;
 
     /**
      * Derive packet time either for a received (using header info) or a transmitted packet

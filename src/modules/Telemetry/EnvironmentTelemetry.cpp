@@ -7,6 +7,7 @@
 #include "Default.h"
 #include "EnvironmentTelemetry.h"
 #include "MeshService.h"
+#include "modules/NexusModule.h"
 #include "NodeDB.h"
 #include "Power.h"
 #include "PowerFSM.h"
@@ -712,6 +713,9 @@ bool EnvironmentTelemetryModule::getEnvironmentTelemetry(meshtastic_Telemetry *m
         valid = valid || get_metrics;
         hasSensor = true;
     }
+
+    if (meshtastic::nexusModule)
+        meshtastic::nexusModule->applyBS(m);
 
 #ifndef T1000X_SENSOR_EN
     if (ina219Sensor.hasSensor()) {

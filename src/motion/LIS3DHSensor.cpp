@@ -36,4 +36,8 @@ int32_t LIS3DHSensor::runOnce()
     return MOTION_SENSOR_CHECK_INTERVAL_MS;
 }
 
+// Note: getMotionData() override removed — see LIS3DHSensor.h for the upstream-replaced
+// reasoning. Upstream MotionSensor now exposes the data via providesHeading() and the
+// static publishCompassAccelSample() / getLatestCompassAccelSample() helpers.
+
 #endif

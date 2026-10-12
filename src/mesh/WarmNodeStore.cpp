@@ -11,6 +11,10 @@
 #include <ErriezCRC32.h>
 #include <vector>
 
+// v64: per-subsystem freeze flags live in NexusModule. Extern-declare so we
+// don't pull the whole NexusModule dependency into a low-level TU.
+namespace meshtastic { extern bool freeze_warm; }
+
 #if defined(NRF52840_XXAA)
 #include "flash/flash_nrf5x.h"
 #define WARM_RING_MAGIC 0x334E5257u    // "WRN3" - v3: last_heard low bits carry role + protected + xeddsa-signed
@@ -252,6 +256,14 @@ bool WarmNodeStore::saveIfDirty()
 {
     if (!dirty)
         return true;
+    // v64: freeze_warm gates the flush. The dirty flag stays set so the
+    // first saveIfDirty() after FREEZE WARMFREEZE OFF catches up.
+    // DBFLUSH (NexusCommands.cpp) bypasses this by temporarily clearing
+    // freeze_warm before calling saveIfDirty().
+    if (meshtastic::freeze_warm) {
+        LOG_INFO("WarmStore: freeze_warm active; deferring flush");
+        return true;
+    }
     bool ok = save();
     if (ok)
         dirty = false;
@@ -372,6 +384,14 @@ void WarmNodeStore::ringAppend(const WarmNodeEntry &rec, int storeSlot)
 
 void WarmNodeStore::persistEntry(const WarmNodeEntry &e)
 {
+    // v64: freeze_warm gates the raw-flash ring append. RAM cache keeps
+    // the entry (set dirty=false here so saveIfDirty() doesn't try to
+    // flush a no-op), but the record-ring stays where it was at freeze
+    // start. Reverts on reboot.
+    if (meshtastic::freeze_warm) {
+        LOG_INFO("WarmStore: freeze_warm active; dropping ring append for 0x%08x", (unsigned)e.num);
+        return;
+    }
     concurrency::LockGuard g(spiLock);
     WarmFsLock fs;
     ringAppend(e, static_cast<int>(&e - entries));
@@ -521,6 +541,12 @@ bool WarmNodeStore::save()
 void WarmNodeStore::persistEntry(const WarmNodeEntry &e)
 {
     (void)e;
+    // v64: freeze_warm gates the dirty marker so saveIfDirty() doesn't
+    // accumulate unwritable writes. RAM cache still updated.
+    if (meshtastic::freeze_warm) {
+        LOG_INFO("WarmStore: freeze_warm active; dropping dirty marker");
+        return;
+    }
     dirty = true;
 }
 

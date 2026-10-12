@@ -76,7 +76,17 @@ uint32_t externalTurnedOn[3] = {};
 
 int32_t ExternalNotificationModule::runOnce()
 {
-    if (!moduleConfig.external_notification.enabled) {
+    // Nexus-28005 (2026-09-13): the previous gate
+    // `if (!moduleConfig.external_notification.enabled) return INT32_MAX;`
+    // short-circuited the entire runOnce body when notifications were
+    // disabled, which meant /nexus BELL and /nexus STARWARS went silent
+    // even though triggerNexusBell() set isNagging=true. Now we only
+    // short-circuit when both notifications are disabled AND no manual
+    // trigger is in flight - this preserves the original fast-path
+    // behaviour for boards that explicitly disabled notifications but
+    // lets operator-initiated BELL/STARWARS/PLAY fire even with the
+    // master enabled toggle off (20:38 UTC).
+    if (!moduleConfig.external_notification.enabled && !isNagging) {
         return INT32_MAX; // we don't need this thread here...
     } else {
         uint32_t delay = EXT_NOTIFICATION_MODULE_OUTPUT_MS;
@@ -632,3 +642,80 @@ int ExternalNotificationModule::handleInputEvent(const InputEvent *event)
     return 0;
 }
 #endif
+
+// Nexus: Always-compiled methods (not gated by MESHTASTIC_EXCLUDE_INPUTBROKER
+// since they don't depend on InputBroker). Required by /nexus TRIGGERBELL
+// and /nexus PLAYRTTTL <melody>.
+void ExternalNotificationModule::playRTTTL(const char *melody)
+{
+    if (!melody || *melody == ' ') return;
+    LOG_INFO("Nexus: Playing RTTTL: %s", melody);
+
+    // Nexus-28005 (2026-09-13): same manual-trigger fix as
+    // triggerNexusBell above. The upstream port to v2.8.0 added the
+    // buzzerShouldAlert gate to runOnce() PWM RTTTL branch so the
+    // song only plays across ticks when that flag is set. /nexus
+    // STARWARS and /nexus PLAY <RTTTL> are explicit operator actions;
+    // they must keep playing across ticks, not decay to silence after
+    // one rtttl::begin() call.
+    buzzerShouldAlert = true;
+
+    // Check hardware availability and play
+#ifdef HAS_I2S
+    if (moduleConfig.external_notification.use_i2s_as_buzzer && audioThread) {
+        audioThread->beginRttl(melody, strlen(melody));
+    } else
+#endif
+    if (moduleConfig.external_notification.use_pwm && canBuzz()) {
+        rtttl::begin(config.device.buzzer_gpio, melody);
+    }
+
+    setIntervalFromNow(0);
+}
+
+void ExternalNotificationModule::triggerNexusBell()
+{
+    LOG_INFO("Nexus: Triggering Local Bell (Bypass)");
+
+    // Nexus-28005 (2026-09-13): the upstream port to v2.8.0
+    // added a buzzerShouldAlert gate to runOnce() PWM RTTTL branch so
+    // rtttl::play() only fires when that flag is set. Nexus-269
+    // triggerNexusBell() relied on operators having received at least
+    // one prior incoming-message alert (which sets buzzerShouldAlert
+    // via handleReceived line 447) before running /nexus BELL. On a
+    // freshly-booted node with no prior messages the song decays to
+    // silence after one tick. Setting buzzerShouldAlert = true here
+    // restores the manual-trigger path Nexus-269 had implicitly.
+    buzzerShouldAlert = true;
+
+    // 1. Set the Nag Cutoff
+    nagCycleCutoff = millis() + (moduleConfig.external_notification.nag_timeout
+                                     ? (moduleConfig.external_notification.nag_timeout * 1000)
+                                     : moduleConfig.external_notification.output_ms);
+    isNagging = true;
+
+    // 2. Trigger the hardware notifications (Buzzer, Vibra, etc.)
+    if (moduleConfig.external_notification.alert_bell || moduleConfig.external_notification.alert_message) {
+        setExternalState(0, true);
+    }
+
+    if (moduleConfig.external_notification.alert_bell_vibra || moduleConfig.external_notification.alert_message_vibra) {
+        setExternalState(1, true);
+    }
+
+    if ((moduleConfig.external_notification.alert_bell_buzzer || moduleConfig.external_notification.alert_message_buzzer) &&
+        canBuzz()) {
+#ifdef HAS_I2S
+        if (moduleConfig.external_notification.use_i2s_as_buzzer) {
+            audioThread->beginRttl(rtttlConfig.ringtone, strlen_P(rtttlConfig.ringtone));
+        } else
+#endif
+            if (moduleConfig.external_notification.use_pwm) {
+            rtttl::begin(config.device.buzzer_gpio, rtttlConfig.ringtone);
+        } else {
+            setExternalState(2, true);
+        }
+    }
+
+    setIntervalFromNow(0);
+}

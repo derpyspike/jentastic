@@ -5,9 +5,35 @@
 #include "mesh-pb-constants.h"
 #include "meshUtils.h"
 #include "modules/TextMessageModule.h"
+#include "modules/NexusModule.h"
 #if !MESHTASTIC_EXCLUDE_TRACEROUTE
 #include "modules/TraceRouteModule.h"
 #endif
+
+// Nexus: unified input-firewall gate for the shouldFilterReceived() retransmit
+// paths. These paths run BEFORE handleReceived()/dispatchReceived() so the
+// firewall hooks in Router.cpp (shouldDropPacket / shouldDropPrivate) never
+// fire on reliable retransmits without this helper. Dispatches on
+// which_payload_variant to match the dispatchReceived() semantics:
+//   - decoded_tag      → shouldDropPacket()  (per-port / RL / out-of-policy)
+//   - encrypted_tag    → shouldDropPrivate() (opaque channel / PRIVATE / hop6/7)
+// Returns true if Nexus says drop; safe no-op (returns false) when NexusModule
+// is not compiled in / not yet initialized.
+// Note: this calls the same helpers as dispatchReceived() and will tick
+// fw_total_processed / updateStats a second time on a retransmit. updateStats
+// is internally dedup'd on (id, from); fw_total_processed counts firewall
+// invocations accurately ("we processed the firewall for this packet twice").
+// The per-rule drop counters (e.g. fw_drop_nodeinfo) may inflate on
+// retransmits, which is semantically truthful: the operator asked for no
+// NodeInfo, and we refused 2 instances of it.
+static inline bool nexusFirewallDrops(const meshtastic_MeshPacket &p)
+{
+    if (!meshtastic::nexusModule)
+        return false;
+    return (p.which_payload_variant == meshtastic_MeshPacket_encrypted_tag)
+               ? meshtastic::nexusModule->shouldDropPrivate(p)
+               : meshtastic::nexusModule->shouldDropPacket(p);
+}
 
 FloodingRouter::FloodingRouter() {}
 
@@ -51,7 +77,7 @@ bool FloodingRouter::shouldFilterReceived(const meshtastic_MeshPacket *p)
             LOG_DEBUG("Repeated reliable tx");
             // Check if it's still in the Tx queue, if not, we have to relay it again
             if (!findInTxQueue(p->from, p->id)) {
-                if (reprocessPacket(p))
+                if (reprocessPacket(p) && !nexusFirewallDrops(*p))
                     perhapsRebroadcast(p);
             }
         } else {
@@ -83,7 +109,12 @@ bool FloodingRouter::perhapsHandleUpgradedPacket(const meshtastic_MeshPacket *p)
 
             if (!reprocessPacket(p))
                 return true;
-            perhapsRebroadcast(p);
+            // Nexus: input firewall gate before the upgraded-packet rebroadcast.
+            // This branch runs inside shouldFilterReceived() (pre-handleReceived),
+            // so without this gate /nexus FIREWALL DROP would be bypassed for the
+            // replacement copy that goes out on the wire.
+            if (!nexusFirewallDrops(*p))
+                perhapsRebroadcast(p);
 
             rxDupe++;
             // We already enqueued the improved copy, so make sure the incoming packet stops here.
@@ -116,6 +147,27 @@ bool FloodingRouter::reprocessPacket(const meshtastic_MeshPacket *p)
 
 bool FloodingRouter::roleAllowsCancelingDupe(const meshtastic_MeshPacket *p)
 {
+#if HAS_NEXUS
+    if (meshtastic::nexusModule) {
+        if (meshtastic::nexusModule->client_always) {
+            return false; // Force router behavior: NEVER cancel a relay
+        }
+
+        uint8_t rid = (uint8_t)(p->relay_node & 0xFF);
+        if (meshtastic::nexusModule->isIgnoreDupeRelay(rid)) {
+            // IDR forced a relay through that the upstream dupe-cancel would have
+            // dropped. Count it so the FWS IDR counter reflects real activity.
+            meshtastic::nexusModule->fw_drop_idr++;
+            return false; // Force router behavior for IDR nodes
+        }
+
+        if (meshtastic::nexusModule->base_texts && 
+            p->decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP) {
+            return false; // Force router behavior for TEXT messages only
+        }
+    }
+#endif
+
     if (config.device.role == meshtastic_Config_DeviceConfig_Role_ROUTER ||
         config.device.role == meshtastic_Config_DeviceConfig_Role_ROUTER_LATE) {
         // ROUTER, ROUTER_LATE should never cancel relaying a packet (i.e. we should always rebroadcast),
@@ -129,6 +181,7 @@ bool FloodingRouter::roleAllowsCancelingDupe(const meshtastic_MeshPacket *p)
         // even if we've heard another station rebroadcast it already.
         return !nodeDB->isFromOrToFavoritedNode(*p);
     }
+   
 
     // All other roles (such as CLIENT) should cancel a rebroadcast if they hear another station's rebroadcast.
     return true;
@@ -145,10 +198,19 @@ void FloodingRouter::perhapsCancelDupe(const meshtastic_MeshPacket *p)
     if (config.device.role == meshtastic_Config_DeviceConfig_Role_ROUTER_LATE && iface) {
         iface->clampToLateRebroadcastWindow(getFrom(p), p->id);
     }
-    if (config.device.role == meshtastic_Config_DeviceConfig_Role_CLIENT_BASE && iface && nodeDB &&
+#if HAS_NEXUS
+    // Nexus LATEBASE (2026-10-07): upstream v2.8.1 also clamps CLIENT_BASE
+    // (favorited from/to) into the late-rebroadcast window — i.e. CLIENT_BASE
+    // repeats with ROUTER_LATE timing. JT removed that block so CLIENT_BASE
+    // repeats in the client/router window instead; feature bit LATEBASE restores
+    // the upstream behavior on demand (default OFF = current JT behavior).
+    if (meshtastic::nexusModule &&
+        (meshtastic::nexusModule->getNexusFeaturesHex() & meshtastic::FEATURE_LATEBASE) &&
+        config.device.role == meshtastic_Config_DeviceConfig_Role_CLIENT_BASE && iface && nodeDB &&
         nodeDB->isFromOrToFavoritedNode(*p)) {
         iface->clampToLateRebroadcastWindow(getFrom(p), p->id);
     }
+#endif
 }
 
 bool FloodingRouter::isRebroadcaster()

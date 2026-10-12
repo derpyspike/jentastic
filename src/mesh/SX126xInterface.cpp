@@ -434,7 +434,26 @@ template <typename T> void SX126xInterface<T>::addReceiveMetadata(meshtastic_Mes
     mp->rx_snr = lora.getSNR();
     mp->rx_rssi = lround(lora.getRSSI());
     mp->has_rx_rssi = true; // rx_rssi has explicit presence - a genuine reading must be marked present to survive encoding
-    LOG_TRACE("Corrected frequency offset: %f", lora.getFrequencyError());
+    // Nexus port (Nexus-28001, 2026-08-16): re-populate mp->rx_frequency_error. Upstream dropped
+    // this field in 2.8.0 (Nexus restored it as a Nexus-only operator-data extension). Captured
+    // here so every radio driver contributes frequency-error data to NexusModule's SIGINT tooling
+    // (/nexus RSSI, /nexus PPING FREQERR, /nexus ALERT META, /nexus CRSTATS) and TraceRouteModule::lastRxFreqErr.
+    mp->rx_frequency_error = lora.getFrequencyError();
+    LOG_TRACE("Corrected frequency offset: %f", mp->rx_frequency_error);
+
+    // Nexus port (Nexus-28001, 2026-08-16): re-populate mp->rx_coding_rate. Raw LoRa header CR
+    // (1-7), see upstream's LOG_WARN path in RadioLibInterface.h:648 for the same call.
+    // Used by NexusModule's cr_stats[][] accumulator (/nexus CRSTATS) and display paths.
+    // RadioLib has no getCodingRate() getter; this is the only way to recover the sender's CR
+    // on receive. Failures fall back to 0 (raw 0 = reserved / unknown), Nexus nexusCRDisplay()
+    // maps it to display 0.
+    {
+        uint8_t rxCR = 0;
+        bool hasCRC = true;
+        if (lora.getLoRaRxHeaderInfo(&rxCR, &hasCRC) == RADIOLIB_ERR_NONE) {
+            mp->rx_coding_rate = rxCR;
+        }
+    }
 }
 
 /** We override to turn on transmitter power as needed.
@@ -631,6 +650,39 @@ template <typename T> void SX126xInterface<T>::resetAGC()
 
     // 7. Resume receiving
     startReceive();
+}
+
+template <typename T> uint8_t SX126xInterface<T>::readChipState()
+{
+    // BUSY pin high = chip processing a command. Skip SPI this tick (RadioLib would
+    // block on the busy-wait up to its 1 s timeout) and count the state instead.
+    if (module.getGpio() != RADIOLIB_NC && module.hal->digitalRead(module.getGpio()))
+        return CHIP_BUSY;
+
+    // RadioLib's vendored SX126x::getStatus() calls SPIreadStream(..., numBytes=0),
+    // which copies 0 bytes and always yields 0 (broken upstream; fixed in RadioLib
+    // master by zeroing the status width first). Replicate the FIXED pattern through
+    // the public Module API: with status width 0 the status byte lands in the 1-byte
+    // payload. (Status parse callback stays armed: it reads buffIn[1] in-bounds here.)
+    const uint8_t cmd = RADIOLIB_SX126X_CMD_GET_STATUS;
+    uint8_t data = 0;
+    module.spiConfig.widths[RADIOLIB_MODULE_SPI_WIDTH_STATUS] = Module::BITS_0;
+    (void)module.SPItransferStream(&cmd, 1, false, NULL, &data, 1, true);
+    module.spiConfig.widths[RADIOLIB_MODULE_SPI_WIDTH_STATUS] = Module::BITS_8;
+
+    switch (data & 0b01110000) {
+    case RADIOLIB_SX126X_STATUS_MODE_STDBY_RC:
+    case RADIOLIB_SX126X_STATUS_MODE_STDBY_XOSC:
+        return CHIP_STDBY;
+    case RADIOLIB_SX126X_STATUS_MODE_FS:
+        return CHIP_FS;
+    case RADIOLIB_SX126X_STATUS_MODE_RX:
+        return CHIP_RX;
+    case RADIOLIB_SX126X_STATUS_MODE_TX:
+        return CHIP_TX;
+    default:
+        return CHIP_UNK; // 0xFF SPI-failed pattern or undocumented mode
+    }
 }
 
 /** Control PA mode for GC1109 FEM - CPS pin selects full PA (txon=true) or bypass mode (txon=false) */

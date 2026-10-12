@@ -45,6 +45,8 @@ using namespace STM32_LittleFS_Namespace;
 #include "InternalFileSystem.h"
 #define FSCom InternalFS
 #define FSBegin() FSCom.begin() // InternalFS formats on failure
+#define FILE_O_WRITE Adafruit_LittleFS_Namespace::FILE_O_WRITE
+#define FILE_O_READ Adafruit_LittleFS_Namespace::FILE_O_READ
 using namespace Adafruit_LittleFS_Namespace;
 #endif
 

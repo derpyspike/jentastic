@@ -250,6 +250,36 @@ class RadioInterface
      */
     [[nodiscard]] virtual float getFreq();
 
+    /**
+     * Nexus-28002 (2026-08-21): rest of the Nexus-269 LRS getter set.
+     * /nexus LRS uses these to surface the actual chip-side values written by
+     * applyModemConfig() — NOT config.lora.* (operator intent). The wrapper's
+     * own fields are the truth: configured values, then limitPower() clamps,
+     * then passed verbatim to lora.setOutputPower() / lora.begin(). For
+     * upstream 2.8 there is no RadioLib getPower()/getTxPower() getter, so
+     * the wrapper is the only chip-actual source.
+     *
+     */
+    [[nodiscard]] float getBW() { return bw; }
+    [[nodiscard]] uint8_t getSF() { return sf; }
+    [[nodiscard]] uint8_t getCR() { return cr; }
+    [[nodiscard]] uint16_t getPreambleLength() { return preambleLength; }
+    [[nodiscard]] uint32_t getPreambleTimeMsec() { return preambleTimeMsec; }
+    [[nodiscard]] uint32_t getSlotTimeMsec() { return slotTimeMsec; }
+    [[nodiscard]] int8_t getPower() { return power; }
+
+    /**
+     * Nexus-28002 (2026-08-21): restored runtime TCXO/XTAL detection from Nexus-269.
+     * Set by RadioInterface::initLoRa() at the per-driver init-success sites
+     * (SX1262/68, LLCC68, LR1110/1120/1121). Read by /nexus HW to report the
+     * actual clock source the radio is running on, not just the board's compile-time
+     * possibility. Default false (XTAL) — overwritten to true on any TCXO path.
+     *
+     * Nexus-269 original comment:
+     *   "Nexus: Detected clock source at runtime."
+     */
+    bool isTCXO = false;
+
     /// Some boards (1st gen Pinetab Lora module) have broken IRQ wires, so we need to poll via i2c registers
     virtual bool isIRQPending() { return false; }
 
@@ -317,6 +347,13 @@ class RadioInterface
      * Returns 0 if not available.
      */
     virtual int16_t getCurrentRSSI() { return 0; }
+
+    // Nexus port (Nexus-28001, 2026-08-16): virtual hook so applyModemConfig() (defined on
+    // this base class) can ask subclasses to apply NexusModule::syncword_override to their
+    // own driver-specific syncWord member. Default is no-op for non-Nexus subclasses or
+    // subclasses without a syncWord member. RadioLibInterface overrides to read from
+    // NexusModule::syncword_override (vault v40) and write to its member.
+    virtual void applyNexusSyncwordOverride() {}
 
   private:
     /**

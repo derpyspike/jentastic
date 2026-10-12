@@ -16,6 +16,7 @@
 #include "SX1280Interface.h"
 #include "UptimeClock.h"
 #include "configuration.h"
+#include "modules/NexusModule.h"
 #include "detect/LoRaRadioType.h"
 #include "main.h"
 #include "meshUtils.h" // for pow_of_2
@@ -495,6 +496,9 @@ std::unique_ptr<RadioInterface> initLoRa()
         } else {
             LOG_INFO("SX1262 init success");
             rIf = std::move(sxIf);
+#ifdef SX126X_DIO3_TCXO_VOLTAGE
+            rIf->isTCXO = true;
+#endif
             radioType = SX1262_RADIO;
         }
     }
@@ -512,6 +516,7 @@ std::unique_ptr<RadioInterface> initLoRa()
         } else {
             LOG_INFO("SX1262 init success, TCXO, Vref %fV", SX126X_DIO3_TCXO_VOLTAGE);
             rIf = std::move(sxIf);
+            rIf->isTCXO = true;
             radioType = SX1262_RADIO;
         }
     }
@@ -524,6 +529,7 @@ std::unique_ptr<RadioInterface> initLoRa()
             rIf = nullptr;
         } else {
             LOG_INFO("SX1262 init success, XTAL, Vref 0.0V");
+            rIf->isTCXO = false;
             radioType = SX1262_RADIO;
         }
     }
@@ -542,6 +548,7 @@ std::unique_ptr<RadioInterface> initLoRa()
         } else {
             LOG_INFO("SX1268 init success, TCXO, Vref %fV", SX126X_DIO3_TCXO_VOLTAGE);
             rIf = std::move(sxIf);
+            rIf->isTCXO = true;
             radioType = SX1268_RADIO;
         }
     }
@@ -553,6 +560,9 @@ std::unique_ptr<RadioInterface> initLoRa()
             rIf = nullptr;
         } else {
             LOG_INFO("SX1268 init success");
+#ifdef SX126X_DIO3_TCXO_VOLTAGE
+            rIf->isTCXO = true;
+#endif
             radioType = SX1268_RADIO;
         }
     }
@@ -566,6 +576,9 @@ std::unique_ptr<RadioInterface> initLoRa()
             rIf = nullptr;
         } else {
             LOG_INFO("LLCC68 init success");
+#ifdef SX126X_DIO3_TCXO_VOLTAGE
+            rIf->isTCXO = true;
+#endif
             radioType = LLCC68_RADIO;
         }
     }
@@ -580,6 +593,9 @@ std::unique_ptr<RadioInterface> initLoRa()
             rIf = nullptr;
         } else {
             LOG_INFO("LR1110 init success");
+#ifdef LR11X0_DIO3_TCXO_VOLTAGE
+            rIf->isTCXO = (LR11X0_DIO3_TCXO_VOLTAGE > 0);
+#endif
             radioType = LR1110_RADIO;
         }
     }
@@ -594,6 +610,9 @@ std::unique_ptr<RadioInterface> initLoRa()
             rIf = nullptr;
         } else {
             LOG_INFO("LR1120 init success");
+#ifdef LR11X0_DIO3_TCXO_VOLTAGE
+            rIf->isTCXO = (LR11X0_DIO3_TCXO_VOLTAGE > 0);
+#endif
             radioType = LR1120_RADIO;
         }
     }
@@ -608,6 +627,9 @@ std::unique_ptr<RadioInterface> initLoRa()
             rIf = nullptr;
         } else {
             LOG_INFO("LR1121 init success");
+#ifdef LR11X0_DIO3_TCXO_VOLTAGE
+            rIf->isTCXO = (LR11X0_DIO3_TCXO_VOLTAGE > 0);
+#endif
             radioType = LR1121_RADIO;
         }
     }
@@ -854,6 +876,11 @@ uint32_t RadioInterface::getTxDelayMsecWeightedWorst(float snr)
 /** Returns true if we should rebroadcast early like a ROUTER */
 bool RadioInterface::shouldRebroadcastEarlyLikeRouter(meshtastic_MeshPacket *p)
 {
+    if (meshtastic::nexusModule) {
+        if (meshtastic::nexusModule->t_m == 1) return true;  
+        if (meshtastic::nexusModule->t_m == 2) return false; 
+    }
+
     // If we are a ROUTER, we always rebroadcast early
     if (config.device.role == meshtastic_Config_DeviceConfig_Role_ROUTER) {
         return true;
@@ -869,6 +896,10 @@ uint32_t RadioInterface::getTxDelayMsecWeighted(meshtastic_MeshPacket *p)
     //  low SNR = small CW size (Short Delay)
     float snr = p->rx_snr;
     uint32_t delay = 0;
+    // Nexus hook: optional operator override of the delay-weighting SNR.
+    if (meshtastic::nexusModule && meshtastic::nexusModule->s_o_active) {
+        snr = meshtastic::nexusModule->s_o_value;
+    }
     uint8_t CWsize = getCWsize(snr);
     // LOG_DEBUG("rx_snr of %f so setting CWsize to:%d", snr, CWsize);
     if (shouldRebroadcastEarlyLikeRouter(p)) {
@@ -1295,6 +1326,19 @@ void RadioInterface::applyModemConfig()
     const RegionInfo *newRegion = getRegion(loraConfig.region);
     myRegion = newRegion;
 
+    // Nexus port (Nexus-28001, 2026-08-16): apply NexusModule's syncword_override (vault v40)
+    // before any driver reads syncWord (passed to lora.begin() and lora.setSyncWord()).
+    // Runs at boot (via rIf->init() -> applyModemConfig()) AND on every LoRa re-config
+    // (including the deferred apply triggered by /nexus SETSYNCWORD itself).
+    // syncword_override == 0 means "use Meshtastic default 0x2b"; any non-zero byte is the
+    // operator's override. The NexusModule instance exists by the time this runs (Modules.cpp
+    // creates it before initLoRa; NexusModule::setup -> loadVault runs in setupModules() before
+    // initLoRa too, so vault v40 is already populated for the boot path). The actual write
+    // to the driver-specific syncWord member happens in the virtual hook below — subclasses
+    // (RadioLibInterface) override it to read from NexusModule directly. Non-Nexus
+    // subclasses get the no-op default.
+    applyNexusSyncwordOverride();
+
     if (loraConfig.use_preset) {
         if (!validateConfigLora(loraConfig)) {
             loraConfig.modem_preset = newRegion->getDefaultPreset();
@@ -1398,6 +1442,26 @@ void RadioInterface::applyModemConfig()
     } else {
         preambleLength =
             preambleLengthDefault; // 8 is default, but we use longer to increase the amount of sleep time when receiving
+    }
+
+    // Nexus-28002 (2026-08-21): restore preamble override hook from Nexus-269.
+    // The hook was added in commit 0f5d4832b (Jun 25, "fix: correctly trigger radio
+    // re-init for preamble change"), survived into the first Nexus-269 squash
+    // (e8af82c86, Aug 15), then died in the Nexus-269→Nexus-269-resync merge
+    // (commit 4e0a2c57d, Aug 16) — 31 upstream-merge commits came in and the
+    // rebaser silently dropped it from both init() and reconfigure(). Nexus-28001
+    // rebase inherited the broken state. /nexus SETPREAMBLE writes
+    // NexusModule::preamble_override to RAM and vault v35; the deferred apply
+    // (adminModule->handleSetConfig) calls applyModemConfig() which would
+    // otherwise overwrite preambleLength back to the regional default, silently
+    // dropping the override. Putting the hook here in applyModemConfig() (rather
+    // than the original two-site init()/reconfigure() pattern) centralizes it:
+    // fires after the regional default so the override wins, covers both boot
+    // (init() -> applyModemConfig()) and reconfigure paths. The subsequent
+    // preambleTimeMsec computation and downstream lora.setPreambleLength() see
+    // the override automatically.
+    if (meshtastic::nexusModule && meshtastic::nexusModule->preamble_override != 0) {
+        preambleLength = meshtastic::nexusModule->preamble_override;
     }
 
     slotTimeMsec = computeSlotTimeMsec();

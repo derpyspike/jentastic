@@ -80,7 +80,7 @@ void InkHUD::TipsApplet::onRender(bool full)
             drawBullet("- set timezone");
 
         cursorY += fontSmall.lineHeight() / 2;
-        drawBullet("More info at meshtastic.org");
+        drawBullet("Jentastic-Nexus Edition");
 
         printAt(0, Y(1.0), continuePrompt, LEFT, BOTTOM);
     } break;
@@ -263,7 +263,7 @@ void InkHUD::TipsApplet::renderWelcome()
     setFont(fontMedium);
     std::string title;
     if (width() >= 200) // Future proofing: hide if *tiny* display
-        title = "meshtastic.org";
+        title = "Jentastic-Nexus";
     uint16_t titleW = getTextWidth(title);
 
     // Center the block

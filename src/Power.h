@@ -3,6 +3,11 @@
 #include "concurrency/OSThread.h"
 #include "configuration.h"
 
+// Nexus-269: include the JENTASTIC umbrella before any JENTASTIC_EXCLUDE_*
+// guards are read. Defines JENTASTIC_EXCLUDE_<FAMILY> when the variant
+// sets -DNEXUS_SENSOR_PROMICRO_WHITELIST=1 (or similar) in build_flags.
+#include "NexusSensorBudget.h"
+
 #ifdef ARCH_ESP32
 // #include <driver/adc.h>
 #include <esp_adc/adc_cali.h>
@@ -69,7 +74,7 @@ extern NullSensor ina3221Sensor;
 #endif
 
 #if HAS_TELEMETRY && !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR
-#if __has_include(<Adafruit_MAX1704X.h>)
+#if __has_include(<Adafruit_MAX1704X.h>) && !JENTASTIC_EXCLUDE_MAX17048
 #include "modules/Telemetry/Sensor/MAX17048Sensor.h"
 extern MAX17048Sensor max17048Sensor;
 #else
@@ -77,7 +82,7 @@ extern NullSensor max17048Sensor;
 #endif
 #endif
 
-#if HAS_TELEMETRY && !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR && HAS_RAKPROT
+#if HAS_TELEMETRY && !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR && HAS_RAKPROT && !JENTASTIC_EXCLUDE_RAK9154
 #include "modules/Telemetry/Sensor/RAK9154Sensor.h"
 extern RAK9154Sensor rak9154Sensor;
 #endif

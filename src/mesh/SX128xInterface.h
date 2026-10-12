@@ -32,6 +32,9 @@ template <class T> class SX128xInterface : public RadioLibInterface
 
     bool isIRQPending() override { return lora.getIrqFlags() != 0; }
 
+    /** Nexus LCS: chip state via GetStatus SPI (mode bits 7:5) + busy bit. */
+    uint8_t readChipState() override;
+
   protected:
     /**
      * Specific module instance

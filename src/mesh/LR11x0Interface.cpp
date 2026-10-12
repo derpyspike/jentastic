@@ -448,7 +448,18 @@ template <typename T> void LR11x0Interface<T>::addReceiveMetadata(meshtastic_Mes
     mp->rx_snr = lora.getSNR();
     mp->rx_rssi = lround(lora.getRSSI());
     mp->has_rx_rssi = true; // rx_rssi has explicit presence - a genuine reading must be marked present to survive encoding
-    LOG_DEBUG("Corrected frequency offset: %f", lora.getFrequencyError());
+    // Nexus port (Nexus-28001, 2026-08-16): see SX126xInterface.cpp for rationale.
+    mp->rx_frequency_error = lora.getFrequencyError();
+    LOG_DEBUG("Corrected frequency offset: %f", mp->rx_frequency_error);
+
+    // Nexus port (Nexus-28001, 2026-08-16): see SX126xInterface.cpp for CR rationale.
+    {
+        uint8_t rxCR = 0;
+        bool hasCRC = true;
+        if (lora.getLoRaRxHeaderInfo(&rxCR, &hasCRC) == RADIOLIB_ERR_NONE) {
+            mp->rx_coding_rate = rxCR;
+        }
+    }
 }
 
 /** We override to turn on transmitter power as needed.
@@ -566,6 +577,20 @@ template <typename T> void LR11x0Interface<T>::resetAGC()
     startReceive();
 }
 #endif
+
+template <typename T> uint8_t LR11x0Interface<T>::readChipState()
+{
+    // Busy pin first: same wedged-chip protection as the SX126x path.
+    if (module.getGpio() != RADIOLIB_NC && module.hal->digitalRead(module.getGpio()))
+        return CHIP_BUSY;
+
+    // LRxxxx::getStatus() is protected in RadioLib and Stat1 only reliably carries
+    // command status - no datasheet-confirmed mode bits decoded here. Software view:
+    // RX armed -> RX; otherwise UNK rather than guess the datasheet.
+    if (isReceiving)
+        return CHIP_RX;
+    return CHIP_UNK;
+}
 
 template <typename T> bool LR11x0Interface<T>::sleep()
 {

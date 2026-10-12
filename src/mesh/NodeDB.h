@@ -297,8 +297,19 @@ struct LoraSlotSnapshot {
 /// Normalises to the modem fields actually in force, so editing a dormant one is not a slot change.
 LoraSlotSnapshot loraSlotSnapshotFrom(const meshtastic_Config_LoRaConfig &lora, const char *primaryChannelName);
 
+// Nexus port (Nexus-28001): forward-declare NexusModule at file scope so we can friend it
+// without including the full NexusModule.h header (which would create a circular include with
+// MeshModule.h and pull in too much compile-time surface for this central type).
+namespace meshtastic { class NexusModule; }
+
 class NodeDB
 {
+    // Nexus port: NexusModule calls pickNewNodeNum() and saveNodeDatabaseToDisk() directly
+    // to drive /nexus ID rotation (regenerate our NodeNum and persist) and to force a
+    // save after a manual /nexus NODEINFO edit. Friend is preferred over moving those
+    // methods to public — they're internal NodeDB plumbing that Nexus orchestrates.
+    friend class meshtastic::NexusModule;
+
     // NodeNum provisionalNodeNum; // if we are trying to find a node num this is our current attempt
 
     // A NodeInfo for every node we've seen
@@ -751,6 +762,7 @@ class NodeDB
 
     /// pick a provisional nodenum we hope no one is using
     void pickNewNodeNum();
+
 
     /// read our db from flash
     void loadFromDisk();

@@ -3,6 +3,7 @@
 #if (defined(USE_LR2021) || defined(ARCH_PORTDUINO)) && RADIOLIB_EXCLUDE_LR2021 != 1
 #include "LR20x0Band.h"
 #include "LR20x0Interface.h"
+#include "LR2021Interface.h" // Nexus-28005: apply hook for /nexus LR2021_SF uses LR2021Interface accessors
 #include "error.h"
 #include "mesh/NodeDB.h"
 
@@ -214,6 +215,26 @@ template <typename T> bool LR20x0Interface<T>::init()
     LOG_INFO("Bandwidth set to %f", bw);
     LOG_INFO("Power output set to %d", power);
 
+    // Nexus-28005 (2026-09-13): boot-time safety-net apply for the
+    // LR2021 multi-SF side-detector table. The /nexus LR2021_SF CLI handler
+    // already applies immediately on the command (see NexusCommands.cpp), so
+    // under normal operation this hook is a no-op (table is empty after
+    // boot because storage is RAM-only). It catches two edge cases:
+    //   1. Soft reset or fast-reboot that preserves RAM.
+    //   2. Any future non-CLI path that writes sideSFs_[] without calling
+    //      configureSideDetectors() — the hook re-establishes chip state
+    //      from the stored table on next init().
+    // No-op when the table is empty (configSideDetectors(nullptr, 0) sends
+    // a clear-and-disable opcode to the chip). LR2021 hardware only — the
+    // LR1121/LR1110/LR1120 derivatives don't have the side-detector command
+    // (different opcode set), so we cast the pointer to LR2021Interface
+    // first; the down-cast is safe because we're inside the
+    // LR20x0Interface<LR2021> template instantiation.
+    {
+        LR2021Interface *lr2021 = static_cast<LR2021Interface *>(this);
+        lr2021->applyStoredSideDetectors();
+    }
+
     if (res == RADIOLIB_ERR_NONE)
         res = lora.setCRC(2);
 
@@ -366,6 +387,23 @@ template <typename T> bool LR20x0Interface<T>::reconfigure()
         LOG_INFO("LR20x0 recovered after re-init");
     }
 
+    // Nexus-28005 (2026-09-13): re-apply the stored side detector
+    // table on the same-band reconfigure path. setlora goes through
+    // reconfigure() (this function), not init(), and the same-band path
+    // reconfigures via per-parameter setters (setFrequency,
+    // setSpreadingFactor, setBandwidth, etc.) — none of which touch the
+    // side detector slots. Without this call, /nexus LR2021_SF 7 followed
+    // by /nexus SETLORA leaves the chip in single-SF RX even though the
+    // table is stored in RAM. The band-hop path (line 230) and recovery
+    // path (line 297) both call fullBegin() which already applies; this
+    // covers the fast per-parameter-setter path. Same source of truth
+    // as the init() and fullBegin() hooks — see
+    // LR2021Interface::applyStoredSideDetectors().
+    {
+        LR2021Interface *lr2021 = static_cast<LR2021Interface *>(this);
+        lr2021->applyStoredSideDetectors();
+    }
+
     // setSpreadingFactor/setBandwidth/setCodingRate each re-run setLoRaModulationParams(), which resets
     // the DCDC configure state, so reapply the workaround before we resume receiving.
     if (standbySuccess)
@@ -451,6 +489,17 @@ template <typename T> bool LR20x0Interface<T>::fullBegin(float freq)
             LOG_ERROR("LR20x0 band-hop setRxBoostedGainMode %s%d", radioLibErr, res);
             RECORD_CRITICALERROR(meshtastic_CriticalErrorCode_INVALID_RADIO_SETTING);
             return false;
+        }
+
+        // Nexus-28005 (2026-09-13): re-apply the stored side detector
+        // table after a band-hop begin(). fullBegin() hardware-resets the
+        // chip, wiping any previously-programmed side detectors; without
+        // this call, the side SF7 detector would silently vanish every time
+        // an operator crossed the LF/HF band boundary. Same source of
+        // truth as the init() hook — see LR2021Interface::applyStoredSideDetectors().
+        {
+            LR2021Interface *lr2021 = static_cast<LR2021Interface *>(this);
+            lr2021->applyStoredSideDetectors();
         }
 
         // begin() above reprogrammed the modulation params, so the DCDC configure state is reset here too.
@@ -579,8 +628,28 @@ template <typename T> void LR20x0Interface<T>::addReceiveMetadata(meshtastic_Mes
     mp->rx_snr = lora.getSNR();
     mp->rx_rssi = lround(lora.getRSSI());
     mp->has_rx_rssi = true; // rx_rssi has explicit presence - a genuine reading must be marked present to survive encoding
-    // LOG_DEBUG("Corrected frequency offset: %f", lora.getFrequencyError()); // not implemented for LR20x0, but noop for LR11x0
-    // too(!)
+
+    // Nexus port (Nexus-28005, 2026-09-11): re-populate rx_coding_rate. The LoRa
+    // header byte carries the sender's CR (1-7); SX126xInterface.cpp:413-424 already
+    // does this via getLoRaRxHeaderInfo(), so LR2021 (which inherits from this base)
+    // should too. Verified RadioLib LR2021.h:832 exposes the same call. Failures
+    // fall back to 0 (raw 0 = reserved / unknown); nexusCRDisplay() maps it to 0.
+    {
+        uint8_t rxCR = 0;
+        bool hasCRC = true;
+        if (lora.getLoRaRxHeaderInfo(&rxCR, &hasCRC) == RADIOLIB_ERR_NONE) {
+            mp->rx_coding_rate = rxCR;
+        }
+    }
+
+    // TODO (Nexus-28005): re-populate rx_frequency_error once RadioLib exposes
+    // getFrequencyError() on the LR2021 module. SX126xInterface.cpp:410 and
+    // SX128xInterface.cpp:262 both call lora.getFrequencyError() today; that call
+    // returns 0 (no-op) on LR20x0. The Semtech LR2021 chip exposes the modem-side
+    // frequency-error correction register (RADIOLIB_LR2021_REG_LORA_EXT_FREQ_ERR_CTRL
+    // at LR2021_registers.h:17), and a future RadioLib release will surface it as a
+    // getter. Until then LR2021 reports rx_frequency_error == 0 here, mirroring the
+    // pre-Nexus-28005 behavior across the other LR20x0 derivatives.
 }
 
 /** We override to turn on transmitter power as needed.
@@ -697,6 +766,18 @@ template <typename T> void LR20x0Interface<T>::resetAGC()
     startReceive();
 }
 #endif
+
+template <typename T> uint8_t LR20x0Interface<T>::readChipState()
+{
+    // Busy pin first: same wedged-chip protection as the SX126x path.
+    if (module.getGpio() != RADIOLIB_NC && module.hal->digitalRead(module.getGpio()))
+        return CHIP_BUSY;
+
+    // Same LR-status caveat as LR11x0Interface::readChipState - no decoded mode bits.
+    if (isReceiving)
+        return CHIP_RX;
+    return CHIP_UNK;
+}
 
 template <typename T> bool LR20x0Interface<T>::sleep()
 {
