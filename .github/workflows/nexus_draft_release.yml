@@ -9,17 +9,19 @@ name: Nexus Draft Release
 # on github.repository_owner — it runs on any fork. Build failures do not
 # block the draft: whatever compiled gets attached.
 #
-# NOTE: do NOT add a top-level `permissions:` block here. build_firmware.yml
-# declares `permissions: read-all`; an explicit narrow top-level grant
-# (e.g. contents: write) makes that call a privilege escalation and the run
-# dies with startup_failure before any job starts. Write access lives on the
-# draft-release job only.
+# NOTE: top-level `permissions: read-all` is REQUIRED here (mirrors
+# main_matrix.yml). build_firmware.yml declares `permissions: read-all`; the
+# caller must grant at least that much, otherwise GitHub rejects the run with
+# startup_failure before any job starts ('The workflow is requesting ...').
+# Narrowing it (e.g. contents: write) OR omitting it (falls back to the repo's
+# restricted default) both fail. Write access lives on the draft-release job
+# only — same pattern as main_matrix's release-artifacts job.
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag for the release — leave EMPTY and pick a tag in 'Run workflow from' (like the CI workflow) to use an existing one; type a name only to override"
+        description: "Tag for the release — type an existing tag (e.g. v2.8.103) or leave EMPTY when dispatched on a tag ref (the tag must already contain this workflow file, otherwise pick a branch and type the tag here)"
         required: false
         default: ""
         type: string
@@ -46,6 +48,8 @@ on:
 concurrency:
   group: nexus-draft-release-${{ github.ref }}
   cancel-in-progress: false
+
+permissions: read-all
 
 jobs:
   setup:
