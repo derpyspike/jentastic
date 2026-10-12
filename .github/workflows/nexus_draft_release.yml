@@ -1,0 +1,159 @@
+name: Nexus Draft Release
+
+# Builds the firmware matrix and assembles a DRAFT GitHub release with
+# per-arch firmware zips attached. Publishing the draft is a manual step
+# (publishing fires release_channels.yml, so keep the title in mind:
+# 'Beta'/'Alpha' in the title selects that packaging channel).
+#
+# Unlike the upstream release path (main_matrix.yml), nothing here is gated
+# on github.repository_owner — it runs on any fork. Build failures do not
+# block the draft: whatever compiled gets attached.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (e.g. v2.8.103)"
+        required: true
+        type: string
+      title:
+        description: "Release title (empty = use the tag)"
+        required: false
+        default: ""
+        type: string
+      boards:
+        description: "Board set to build"
+        required: true
+        default: release
+        type: choice
+        options:
+          - release   # pr + release boards (the normal set)
+          - pr        # PR subset only (fast)
+          - extra     # everything, incl. opt-in boards
+      prerelease:
+        description: "Mark the draft as a prerelease"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nexus-draft-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: 3.x
+          cache: pip
+      - run: pip install -U platformio
+      - name: Generate matrix
+        id: jsonStep
+        run: |
+          FLAG=""
+          if [[ "${{ inputs.boards }}" == "pr" ]]; then FLAG="--level pr"; fi
+          if [[ "${{ inputs.boards }}" == "extra" ]]; then FLAG="--level extra"; fi
+          TARGETS=$(./bin/generate_ci_matrix.py all $FLAG)
+          echo "Name: $GITHUB_REF_NAME"
+          echo "all=$TARGETS" >> "$GITHUB_OUTPUT"
+          echo "$TARGETS" >> "$GITHUB_STEP_SUMMARY"
+    outputs:
+      all: ${{ steps.jsonStep.outputs.all }}
+
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Get release version string
+        id: version
+        env:
+          BUILD_LOCATION: local
+        run: |
+          echo "long=$(./bin/buildinfo.py long)" >> "$GITHUB_OUTPUT"
+          echo "deb=$(./bin/buildinfo.py deb)" >> "$GITHUB_OUTPUT"
+    outputs:
+      long: ${{ steps.version.outputs.long }}
+      deb: ${{ steps.version.outputs.deb }}
+
+  build:
+    needs: [setup, version]
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJson(needs.setup.outputs.all) }}
+    uses: ./.github/workflows/build_firmware.yml
+    with:
+      version: ${{ needs.version.outputs.long }}
+      pio_env: ${{ matrix.build.board }}
+      platform: ${{ matrix.build.platform }}
+
+  draft-release:
+    name: Create draft release
+    needs: [version, build]
+    # Individual build failures must not block a partial release.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: firmware-*-${{ needs.version.outputs.long }}
+          path: ./artifacts
+          if-no-artifacts-found: ignore
+
+      - name: Zip firmware per architecture
+        id: zips
+        run: |
+          mkdir -p ./zips
+          VERSION="${{ needs.version.outputs.long }}"
+          shopt -s nullglob
+          for arch in esp32 esp32s3 esp32c3 esp32c6 nrf52840 rp2040 rp2350 stm32; do
+            dirs=(./artifacts/firmware-${arch}-*)
+            if (( ${#dirs[@]} > 0 )); then
+              zip -j -9 -r "./zips/firmware-${arch}-${VERSION}.zip" "${dirs[@]}"
+            else
+              echo "no artifacts for ${arch}, skipping"
+            fi
+          done
+          {
+            echo "files<<EOF"
+            ls -1 ./zips/*.zip 2>/dev/null || true
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          ls -lR ./zips ./artifacts | head -100
+
+      - name: Generate release notes
+        id: notes
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x ./bin/generate_release_notes.py
+          ./bin/generate_release_notes.py "${{ needs.version.outputs.long }}" --compare-ref HEAD > ./notes.md \
+            || echo "Nexus draft release ${{ inputs.tag }}" > ./notes.md
+          head -50 ./notes.md
+
+      - name: Create draft release (with artifacts)
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ inputs.title != '' && inputs.title || inputs.tag }}
+          draft: true
+          prerelease: ${{ inputs.prerelease }}
+          body_path: ./notes.md
+          files: ${{ steps.zips.outputs.files }}
