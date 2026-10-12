@@ -5,6 +5,7 @@
 #include "../mesh/generated/meshtastic/telemetry.pb.h"
 #include "INA3221Sensor.h"
 #include "TelemetrySensor.h"
+#include "modules/NexusModule.h"
 #include <INA3221.h>
 
 INA3221Sensor::INA3221Sensor() : TelemetrySensor(meshtastic_TelemetrySensorType_INA3221, "INA3221") {};

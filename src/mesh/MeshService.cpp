@@ -17,6 +17,7 @@
 #include "gps/RTC.h"
 #include "graphics/draw/MessageRenderer.h"
 #include "main.h"
+#include "modules/NexusModule.h"
 #include "mesh-pb-constants.h"
 #include "meshUtils.h"
 #include "modules/AdminModule.h"
@@ -88,6 +89,16 @@ void MeshService::init()
 
 int MeshService::handleFromRadio(const meshtastic_MeshPacket *mp)
 {
+    // Nexus port: low-level inbound destination/identity translation before any
+    // other handler sees it. Safe no-op when NexusModule is absent.
+    if (meshtastic::nexusModule)
+        meshtastic::nexusModule->translateInbound(const_cast<meshtastic_MeshPacket *>(mp));
+
+    // Nexus port: run the Nexus long-name tag sniffer on this packet too.
+    // Runs in addition to the local Router enqueue hook.
+    if (meshtastic::nexusModule)
+        meshtastic::nexusModule->sniffPacket(*mp);
+
     powerFSM.trigger(EVENT_PACKET_FOR_PHONE); // Possibly keep the node from sleeping
 
     nodeDB->updateFrom(*mp); // update our DB state based off sniffing every RX packet from the radio

@@ -1,0 +1,35 @@
+[env:xiaowa-esp32s3]
+extends = esp32s3_base
+board = esp32-s3-supermini 
+##board = esp32-s3-devkitc-1
+board_level = extra
+board_build.mcu = esp32s3
+board_build.f_cpu = 240000000L
+
+# ESP32-s3 SuperMini:
+# Chip is ESP32-S3 (QFN56) (revision v0.2)
+# Features: WiFi, BLE, Embedded Flash 4MB (XMC), Embedded PSRAM 2MB (AP_3v3)
+board_build.flash_size = 4MB
+board_upload.flash_size = 4MB
+board_build.arduino.memory_type = qio_opi ;Enable internal PSRAM
+upload_protocol = esptool
+upload_speed = 921600
+
+lib_deps =
+  ${esp32s3_base.lib_deps}
+  # renovate: datasource=custom.pio depName=NeoPixel packageName=adafruit/library/Adafruit NeoPixel
+  adafruit/Adafruit NeoPixel@1.15.2
+
+build_unflags =
+  ${esp32s3_base.build_unflags}
+  -DARDUINO_USB_MODE=1
+
+build_flags =
+  ${esp32s3_base.build_flags}
+  -D PRIVATE_HW
+  -DBOARD_HAS_PSRAM
+  -mfix-esp32-psram-cache-issue
+  -DARDUINO_USB_MODE=0
+  -DARDUINO_USB_CDC_ON_BOOT=1
+  -DARDUINO_USB_MSC_ON_BOOT=0
+  -I variants/esp32s3/diy/xiaowa-esp32s3

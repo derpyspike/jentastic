@@ -35,6 +35,9 @@ template <class T> class SX128xInterface : public RadioLibInterface
     /// DS rev 3.3 16.2: a header error leaves RX wedged with no RX_DONE or timeout, so only a re-arm clears it
     bool headerErrWedgesRx() const override { return true; }
 
+    /** Nexus LCS: chip state via GetStatus SPI (mode bits 7:5) + busy bit. */
+    uint8_t readChipState() override;
+
   protected:
     /**
      * Specific module instance

@@ -18,6 +18,9 @@
 #include "../graphics/ScreenFonts.h"
 #include "Wire.h"
 
+// Nexus port (Nexus-28001): forward-declare NexusModule at file scope (see NodeDB.h for rationale).
+namespace meshtastic { class NexusModule; }
+
 // Base class for motion processing
 class MotionSensor
 {
@@ -82,6 +85,11 @@ class MotionSensor
     static float applyCompassOrientation(float heading);
     static void publishCompassAccelSample(float x, float y, float z);
     static void publishCompassMagSample(float x, float y, float z);
+
+    // Nexus port (Nexus-28001): NexusModule::handleNexusCommand's /nexus ACC dispatch calls
+    // this from outside the class. Friend exposes the static accessor without making it part
+    // of the public surface. Forward-declared at file scope; see NodeDB.h for the rationale.
+    friend class meshtastic::NexusModule;
 
     ScanI2C::FoundDevice device;
 

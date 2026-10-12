@@ -1,4 +1,5 @@
 #include "RadioLibInterface.h"
+#include "modules/NexusModule.h"
 #include "MeshTypes.h"
 #include "NodeDB.h"
 #include "PowerMon.h"
@@ -1146,6 +1147,34 @@ void RadioLibInterface::checkStaleRxFlags()
     }
 }
 
+void RadioLibInterface::sampleChipState()
+{
+    // Internal throttle: NexusModule::runOnce() also fires early on activity
+    // (setIntervalFromNow), so keep the effective sample rate at ~1 Hz regardless.
+    if (Throttle::isWithinTimespanMs(lastChipStateMs, CHIP_STATE_SAMPLE_INTERVAL_MS))
+        return;
+    lastChipStateMs = Time::getMillis();
+
+    uint8_t state;
+    if (sendingPacket) {
+        state = CHIP_TX; // software knows TX exactly; don't touch SPI mid-transmit
+    } else if (rxOffline) {
+        state = CHIP_RXOFF; // RX re-arm failing - chip state can't be trusted, count separately
+    } else {
+        state = readChipState();
+        if (state >= CHIP_STATE_COUNT)
+            state = CHIP_UNK;
+    }
+
+    chipStateCount[state]++;
+    chipStateTotal++;
+}
+
+uint8_t RadioLibInterface::readChipState()
+{
+    return CHIP_UNK; // families without a status read override this
+}
+
 void RadioLibInterface::periodicRadioMaintenance()
 {
     // Every startReceive() call site is event-driven (RX/TX ISR, the CAD-busy branch, reconfigure), and a
@@ -1161,6 +1190,14 @@ void RadioLibInterface::periodicRadioMaintenance()
     // resetAGC() ends in startReceive(), whose standby would run a queued packet's TX delay, start it and cut it off.
     if (hasQueuedTx())
         return;
+
+    // Nexus feature DISABLE_AGC_RESET (FEATURES bit2): skip the periodic AGC reset
+    // when the operator has it ON. Only gates this call - the RX re-arm ladder above
+    // is untouched (a deaf chip must still recover regardless of feature state).
+    if (meshtastic::nexusModule &&
+        (meshtastic::nexusModule->getNexusFeaturesHex() & meshtastic::FEATURE_DISABLE_AGC_RESET)) {
+        return;
+    }
 
     // A radio that is still decoding packets has gain that isn't stuck
     const bool hearing = lastRxGoodMs && Throttle::isWithinTimespanMs(lastRxGoodMs, AGC_IDLE_RESET_MS);
@@ -1457,6 +1494,17 @@ void RadioLibInterface::setStandby()
     powerMon->clearState(meshtastic_PowerMon_State_Lora_TXOn);
 }
 
+// Nexus port (Nexus-28001, 2026-08-16): read NexusModule::syncword_override (vault v40) and
+// apply to the subclass syncWord member. Called from RadioInterface::applyModemConfig() at
+// boot AND on every LoRa re-config (including the deferred apply triggered by /nexus
+// SETSYNCWORD). syncword_override == 0 leaves the default 0x2b in place.
+void RadioLibInterface::applyNexusSyncwordOverride()
+{
+    if (meshtastic::nexusModule && meshtastic::nexusModule->syncword_override != 0) {
+        syncWord = meshtastic::nexusModule->syncword_override;
+    }
+}
+
 /** start an immediate transmit */
 bool RadioLibInterface::startSend(meshtastic_MeshPacket *txp)
 {
@@ -1505,4 +1553,9 @@ bool RadioLibInterface::startSend(meshtastic_MeshPacket *txp)
 
         return res == RADIOLIB_ERR_NONE;
     }
+}
+
+float RadioLibInterface::getInstantaneousRSSI()
+{
+    return iface->getRSSI();
 }

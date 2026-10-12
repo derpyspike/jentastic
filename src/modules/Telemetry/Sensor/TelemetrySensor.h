@@ -1,6 +1,17 @@
 #include "configuration.h"
 
-#if !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR || !MESHTASTIC_EXCLUDE_AIR_QUALITY_SENSOR
+// Nexus-28001 (2026-08-20): OR-widen the gate so the
+// TelemetrySensor base class stays open whenever ANY sensor family is
+// alive. The original OR (env || air-quality) assumed those were the
+// only two paths that ever instantiated subclasses of TelemetrySensor;
+// but health/power/detection sensors also derive from it. With Tier 3
+// of NEXUS_SENSOR_WEIGHTREDUCTION (or any variant that excludes BOTH
+// env AND air-quality), the original guard collapses to `#if 0` and
+// every subclass hits "does not have any field named 'TelemetrySensor'"
+// / "marked 'override', but does not override" errors. Keep the base
+// alive whenever at least one of the five sensor families is enabled;
+// harmless if all five are off (zero subclasses reference it).
+#if !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR || !MESHTASTIC_EXCLUDE_AIR_QUALITY_SENSOR || !MESHTASTIC_EXCLUDE_HEALTH_TELEMETRY || !MESHTASTIC_EXCLUDE_POWER_TELEMETRY || !MESHTASTIC_EXCLUDE_DETECTIONSENSOR
 
 #pragma once
 #include "../mesh/generated/meshtastic/telemetry.pb.h"

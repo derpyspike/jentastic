@@ -38,6 +38,10 @@ class TraceRouteModule : public ProtobufModule<meshtastic_RouteDiscovery>,
 
     void processUpgradedPacket(const meshtastic_MeshPacket &mp);
 
+    // Nexus: Callback for Shadow CLI trace results
+    typedef void (*NexusTraceCallback)(const String &result, int8_t rssi, float freqErr, uint32_t channel);
+    void setNexusTraceCallback(NexusTraceCallback cb) { nexusTraceCallback = cb; }
+
   protected:
     bool handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshtastic_RouteDiscovery *r) override;
 
@@ -72,12 +76,17 @@ class TraceRouteModule : public ProtobufModule<meshtastic_RouteDiscovery>,
        Set dest to the ID of its destination, or NODENUM_BROADCAST if it has not yet arrived there. */
     void printRoute(meshtastic_RouteDiscovery *r, uint32_t origin, uint32_t dest, bool isTowardsDestination);
 
+    NexusTraceCallback nexusTraceCallback = nullptr;
+    int8_t lastRxRssi = 0;
+    float lastRxFreqErr = 0.0f;
+    uint32_t lastRxChannel = 0;
+
     TraceRouteRunState runState = TRACEROUTE_STATE_IDLE;
     unsigned long lastTraceRouteTime = 0;
     unsigned long resultShowTime = 0;
-    unsigned long cooldownMs = 30000;
+    unsigned long cooldownMs = 15000;
     unsigned long resultDisplayMs = 10000;
-    unsigned long trackingTimeoutMs = 10000;
+    unsigned long trackingTimeoutMs = 14000;
     String bannerText;
     String resultText;
     std::vector<String> resultLines;

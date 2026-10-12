@@ -1,4 +1,18 @@
 #include "MotionSensor.h"
+// Nexus-28001 (2026-08-20): explicit include for `config`.
+// `extern meshtastic_LocalConfig config;` lives in NodeDB.h. This TU
+// references config.display.compass_orientation (applyCompassOrientation,
+// line ~204) and config.display.wake_on_tap_or_motion (wakeScreen,
+// line ~347), but no header in its transitive include chain
+// (MotionSensor.h, FSCommon.h, SPILock.h, SafeFile.h, LockGuard.h,
+// CompassRenderer.h, Screen.h, Power.h, PowerFSM.h, ScanI2C.h) pulls in
+// NodeDB.h. Some variants previously compiled this TU without the
+// include only by lucky include-order side effects from other TUs in
+// the same translation unit (none of which apply here). Without this
+// include, the I2C-enabled body fails with `'config' was not declared
+// in this scope` at the two `config.display.*` call sites. Adding the
+// include is universally correct and harmless.
+#include "NodeDB.h"
 #include "FSCommon.h"
 #include "SPILock.h"
 #include "SafeFile.h"

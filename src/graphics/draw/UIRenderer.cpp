@@ -1725,7 +1725,7 @@ void UIRenderer::drawIconScreen(const char *upperMsg, OLEDDisplay *display, OLED
 
     display->setFont(FONT_MEDIUM);
     display->setTextAlignment(TEXT_ALIGN_LEFT);
-    const char *title = "meshtastic.org";
+    const char *title = "Jentastic-Nexus";
 #if defined(BICOLOR_OLED_DISPLAY)
     additionalYOffset /= 2;
 #else

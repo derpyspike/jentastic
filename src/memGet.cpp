@@ -35,6 +35,10 @@ static uint32_t sbrkHeadroom()
 #endif
 #endif
 
+#ifdef ARCH_NRF52
+extern "C" uint32_t dbgHeapMaxBlock() { return 0; } // Stub for build testing
+#endif
+
 MemGet memGet;
 
 /**
@@ -102,6 +106,21 @@ uint32_t MemGet::getMaxAllocHeap()
     return ESP.getMaxAllocHeap();
 #else
     return 0;
+#endif
+}
+
+/**
+ * Returns the size of the largest contiguous free block (fragmentation check).
+ * @return uint32_t The largest free block in bytes.
+ */
+uint32_t MemGet::getMinFreeBlock()
+{
+#ifdef ARCH_ESP32
+    return ESP.getMaxAllocHeap();
+#elif defined(ARCH_NRF52)
+    return dbgHeapMaxBlock();
+#else
+    return getFreeHeap(); // Fallback
 #endif
 }
 

@@ -125,4 +125,61 @@ const char *getVersion()
     return app_desc.version;
 }
 
+void getInfo(char *buf, size_t bufSize)
+{
+    if (!buf || bufSize == 0) return;
+
+    const esp_partition_t *part = getAppPartition();
+    if (part == NULL) {
+        // Body only: the "JT WiFiOTA Info:" title is supplied by startPaging()
+        // at the call site in NexusModule.cpp. Don't repeat it here. See
+        // Commit 42.
+        snprintf(buf, bufSize,
+            "  Available: no\n"
+            "  No OTA partition found at ota_1.");
+        return;
+    }
+
+    esp_app_desc_t app_desc;
+    if (!getAppDesc(part, &app_desc)) {
+        snprintf(buf, bufSize,
+            "  Partition: 0x%lx (size %lu)\n"
+            "  Available: error\n"
+            "  OTA partition present but app descriptor unreadable\n"
+            "  (corrupt? wrong firmware type?)",
+            (unsigned long)part->address, (unsigned long)part->size);
+        return;
+    }
+
+    // Sanitize printable fields (project_name/time/idf_ver are char arrays; null may not be set).
+    char proj[33]; strncpy(proj, app_desc.project_name, sizeof(proj) - 1); proj[sizeof(proj) - 1] = '\0';
+    char ver[33];  strncpy(ver,  app_desc.version,     sizeof(ver)  - 1); ver[sizeof(ver)  - 1] = '\0';
+    char when[17]; strncpy(when, app_desc.time,        sizeof(when) - 1); when[sizeof(when) - 1] = '\0';
+    char idf[33];  strncpy(idf,  app_desc.idf_ver,     sizeof(idf)  - 1); idf[sizeof(idf)   - 1] = '\0';
+
+    // First 16 bytes of SHA256 as hex (32 chars). Enough to identify a unique build.
+    char sha[33];
+    for (int i = 0; i < 16; i++) {
+        snprintf(sha + i * 2, sizeof(sha) - i * 2, "%02x", app_desc.app_elf_sha256[i]);
+    }
+
+    // Identify the loader variant for the operator's benefit.
+    const char *kind = "Unknown";
+    if (strcmp(proj, combinedAppProjectName) == 0)      kind = "Combined BLE+WiFi (since fw 2.7.18)";
+    else if (strcmp(proj, bleOnlyAppProjectName) == 0)  kind = "BLE-only";
+    else if (strcmp(proj, wifiOnlyAppProjectName) == 0) kind = "WiFi-only";
+
+    snprintf(buf, bufSize,
+        "  Partition: 0x%lx (size %lu)\n"
+        "  Available: yes\n"
+        "  Kind:      %s\n"
+        "  Project:   %s\n"
+        "  Version:   %s\n"
+        "  Built:     %s\n"
+        "  IDF:       %s\n"
+        "  SHA256:    %s... (first 16/32 bytes)",
+        (unsigned long)part->address, (unsigned long)part->size,
+        kind, proj, ver, when, idf, sha);
+}
+
 } // namespace MeshtasticOTA

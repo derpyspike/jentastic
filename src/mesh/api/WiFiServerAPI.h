@@ -24,6 +24,8 @@ class WiFiServerPort : public APIServerPort<WiFiServerAPI, WiFiServer>
 {
   public:
     explicit WiFiServerPort(int port);
+    bool hasActiveClient();
+    String getClientInfo();
 };
 
 void initApiServer(int port = SERVER_API_DEFAULT_PORT);

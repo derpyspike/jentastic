@@ -21,6 +21,10 @@ void recoverConfig(meshtastic_Config_NetworkConfig *network);
 void saveConfig(meshtastic_Config_NetworkConfig *network, meshtastic_OTAMode method, uint8_t *ota_hash);
 bool trySwitchToOTA();
 const char *getVersion();
+// v267: formatted info dump for /nexus WIFIOTA. Writes a multi-line string
+// describing the OTA loader installed at the ota_1 partition (or its absence).
+// Recommended bufSize >= 384 bytes to fit a full dump.
+void getInfo(char *buf, size_t bufSize);
 } // namespace MeshtasticOTA
 
 #endif // MESHTASTICOTA_H

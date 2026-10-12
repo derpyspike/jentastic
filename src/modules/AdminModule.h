@@ -18,13 +18,21 @@ struct AdminModule_ObserverData {
     AdminMessageHandleResult *result;
 };
 
+// Nexus port (Nexus-28001): forward-declare NexusModule at file scope (see NodeDB.h for rationale).
+namespace meshtastic { class NexusModule; }
+
 /**
  * Admin module for admin messages
  */
 class AdminModule : public ProtobufModule<meshtastic_AdminMessage>, public Observable<AdminModule_ObserverData *>
 {
     friend class AdminModuleTestShim; // test/support/AdminModuleTestShim.h - native tests reach the private handlers/state
-
+    // Nexus port: NexusModule reaches into AdminModule's protected/private handlers
+    // (handleSetConfig, handleSetModuleConfig, reboot) to drive /nexus SETCONFIG,
+    // /nexus REBOOT, and similar internal operators. Friend is preferred over moving
+    // the methods to public — they're internal AdminModule plumbing that Nexus orchestrates
+    // on behalf of the operator.
+    friend class meshtastic::NexusModule;
   public:
     /** Constructor
      * name is for debugging output
@@ -136,6 +144,12 @@ class AdminModule : public ProtobufModule<meshtastic_AdminMessage>, public Obser
 
     void setPassKey(meshtastic_AdminMessage *res);
     bool checkPassKey(meshtastic_AdminMessage *res);
+
+#if HAS_NEXUS
+    // Nexus port: delegating AdminModule::shouldDropPacket to NexusModule. NexusModule owns
+    // the policy (favorite / trusted-channel bypasses, identity blacklists, etc.).
+    static bool shouldDropPacket(const meshtastic_MeshPacket &mp);
+#endif
 
     bool messageIsResponse(const meshtastic_AdminMessage *r);
     bool messageIsRequest(const meshtastic_AdminMessage *r);

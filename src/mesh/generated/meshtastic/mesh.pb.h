@@ -1266,6 +1266,21 @@ typedef struct _meshtastic_MeshPacket {
  Which parity of the CSMA backoff slot grid this packet may be sent in; see SlotParity.
  Set by whoever queues the packet, and read by the radio driver when it draws the backoff. */
     meshtastic_MeshPacket_SlotParity slot_parity;
+
+    /* Nexus port (Nexus-28001, 2026-08-16): receiver-side frequency error estimate in Hz.
+ Set during reception by the radio driver's addReceiveMetadata() (SX126x/SX128x/RF95/LR11x0).
+ Used by NexusModule for SIGINT analysis (/nexus RSSI, /nexus PPING FREQERR, /nexus CRSTATS,
+ /nexus ALERT META) and by TraceRouteModule::lastRxFreqErr. Upstream removed this field in
+ 2.8.0; we restore it as a Nexus-only operator-data extension, not on the wire (zero-fills
+ if not populated). */
+    float rx_frequency_error;
+    /* Nexus port (Nexus-28001, 2026-08-16): raw LoRa header coding rate (1-7). Set by the
+ radio driver's addReceiveMetadata() via lora.getLoRaRxHeaderInfo(&cr, &hasCRC). Raw 0 is
+ reserved; raw 7 is long-interleave CR 4/8 (LR11x0/SX128x default). Not on the wire.
+ Raw value, NOT nexusCRDisplay()-transformed; consumers must apply the +4 transform.
+ Used by NexusModule::updateTargetStats() / cr_stats[][] accumulator for /nexus CRSTATS
+ and by the META alert / FWS / PPING display paths. */
+    uint8_t rx_coding_rate;
 } meshtastic_MeshPacket;
 
 /* The bluetooth to device link:
@@ -2078,6 +2093,8 @@ extern "C" {
 #define meshtastic_MeshPacket_xeddsa_signed_tag  22
 #define meshtastic_MeshPacket_ack_proof_status_tag 23
 #define meshtastic_MeshPacket_slot_parity_tag    24
+#define meshtastic_MeshPacket_rx_frequency_error_tag  63
+#define meshtastic_MeshPacket_rx_coding_rate_tag  64
 #define meshtastic_NodeInfo_num_tag              1
 #define meshtastic_NodeInfo_user_tag             2
 #define meshtastic_NodeInfo_position_tag         3
@@ -2372,7 +2389,9 @@ X(a, STATIC,   SINGULAR, UINT32,   tx_after,         20) \
 X(a, STATIC,   SINGULAR, UENUM,    transport_mechanism,  21) \
 X(a, STATIC,   SINGULAR, BOOL,     xeddsa_signed,    22) \
 X(a, STATIC,   SINGULAR, UENUM,    ack_proof_status,  23) \
-X(a, STATIC,   SINGULAR, UENUM,    slot_parity,      24)
+X(a, STATIC,   SINGULAR, UENUM,    slot_parity,      24) \
+X(a, STATIC,   SINGULAR, FLOAT,    rx_frequency_error,  63) \
+X(a, STATIC,   SINGULAR, UINT32,   rx_coding_rate,      64)
 #define meshtastic_MeshPacket_CALLBACK NULL
 #define meshtastic_MeshPacket_DEFAULT NULL
 #define meshtastic_MeshPacket_payload_variant_decoded_MSGTYPE meshtastic_Data

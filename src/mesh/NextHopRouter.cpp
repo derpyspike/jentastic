@@ -4,6 +4,7 @@
 #include "Throttle.h"
 #include "UptimeClock.h"
 #include "meshUtils.h"
+#include "modules/NexusModule.h"
 #if !MESHTASTIC_EXCLUDE_TRACEROUTE
 #include "modules/TraceRouteModule.h"
 #endif
@@ -11,6 +12,22 @@
 #include "modules/TrafficManagementModule.h"
 #endif
 #include "NodeDB.h"
+
+// Nexus: unified input-firewall gate for the shouldFilterReceived() retransmit
+// paths. These paths run BEFORE handleReceived()/dispatchReceived() so the
+// firewall hooks in Router.cpp (shouldDropPacket / shouldDropPrivate) never
+// fire on reliable retransmits without this helper. Dispatches on
+// which_payload_variant to match the dispatchReceived() semantics. No-op when
+// NexusModule is not compiled in / not yet initialized. See FloodingRouter.cpp
+// for the full rationale / counter-inflation note.
+static inline bool nexusFirewallDrops(const meshtastic_MeshPacket &p)
+{
+    if (!meshtastic::nexusModule)
+        return false;
+    return (p.which_payload_variant == meshtastic_MeshPacket_encrypted_tag)
+               ? meshtastic::nexusModule->shouldDropPrivate(p)
+               : meshtastic::nexusModule->shouldDropPacket(p);
+}
 
 #if USERPREFS_EVENT_MODE
 static void capEventRelayHops(meshtastic_MeshPacket *packet)
@@ -156,7 +173,7 @@ bool NextHopRouter::shouldFilterReceived(const meshtastic_MeshPacket *p)
             LOG_INFO("Fallback to flooding from relay_node=0x%x", p->relay_node);
             // Check if it's still in the Tx queue, if not, we have to relay it again
             if (!findInTxQueue(p->from, p->id)) {
-                if (reprocessPacket(p))
+                if (reprocessPacket(p) && !nexusFirewallDrops(*p))
                     perhapsRebroadcast(p);
             }
         } else {
@@ -164,8 +181,8 @@ bool NextHopRouter::shouldFilterReceived(const meshtastic_MeshPacket *p)
             // If repeated and not in Tx queue anymore, try relaying again, or if we are the destination, send the ACK again
             if (isRepeated) {
                 if (!findInTxQueue(p->from, p->id)) {
-                    if (reprocessPacket(p) && !isBlockedEventCoordinatePacket(p) && !perhapsRebroadcast(p) && isToUs(p) &&
-                        p->want_ack) {
+                    if (reprocessPacket(p) && !isBlockedEventCoordinatePacket(p) && !nexusFirewallDrops(*p) &&
+                        !perhapsRebroadcast(p) && isToUs(p) && p->want_ack) {
                         sendAckNak(meshtastic_Routing_Error_NONE, getFrom(p), p->id, p->channel, 0);
                     }
                 }

@@ -24,6 +24,9 @@ class RF95Interface : public RadioLibInterface
     // TODO: Verify that this irq flag works with RFM95 / SX1276 radios the way it used to
     bool isIRQPending() override { return lora->getIRQFlags() & RADIOLIB_SX127X_MASK_IRQ_FLAG_VALID_HEADER; }
 
+    /** Nexus LCS: chip state from REG_OP_MODE bits 2:0 (no busy pin on SX127x). */
+    uint8_t readChipState() override;
+
     /// Initialise the Driver transport hardware and software.
     /// Make sure the Driver is properly configured before calling init().
     /// \return true if initialisation succeeded.

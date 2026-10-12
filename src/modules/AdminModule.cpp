@@ -31,6 +31,7 @@
 #endif
 
 #include "Default.h"
+#include "modules/NexusModule.h"
 #include "MeshRadio.h"
 #include "MessageStore.h"
 #include "RadioInterface.h"
@@ -73,6 +74,18 @@ AdminModule *adminModule;
 #ifdef ARCH_STM32
 // Client detach window before the DFU jump (see the enter_dfu case).
 static constexpr uint32_t STM32_DFU_DETACH_DELAY_MS = 5000;
+#endif
+
+#if HAS_NEXUS
+// Nexus port: delegating AdminModule::shouldDropPacket to NexusModule. NexusModule owns the policy
+// (favorite / trusted-channel bypasses, identity blacklists, etc.) and returns false when it
+// isn't built, so AdminModule stays safe when HAS_NEXUS is off.
+bool AdminModule::shouldDropPacket(const meshtastic_MeshPacket &mp)
+{
+    if (meshtastic::nexusModule)
+        return meshtastic::nexusModule->shouldDropPacket(mp);
+    return false;
+}
 #endif
 
 #if !(MESHTASTIC_EXCLUDE_PKI_KEYGEN || MESHTASTIC_EXCLUDE_PKI)
@@ -188,7 +201,16 @@ bool AdminModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshta
             return handled;
         }
     } else if (mp.pki_encrypted) {
+#if HAS_NEXUS
+        // Nexus port (Nexus-28002, 2026-08-24): isAuthorizedAdmin covers the full Nexus
+        // trust list (admin_key[0..2], NEXUS_MASTER_KEY_1..4 and the vault-loaded
+        // secondary keys). AdminKeys::isAuthorized adds upstream's host-key and
+        // admin-key-count handling.
+        if ((meshtastic::nexusModule && meshtastic::nexusModule->isAuthorizedAdmin(mp.public_key.bytes)) ||
+            AdminKeys::isAuthorized(mp.public_key.bytes)) {
+#else
         if (AdminKeys::isAuthorized(mp.public_key.bytes)) {
+#endif
             LOG_INFO("PKC admin payload with authorized sender key");
 
             // Note: PKC admin does NOT automatically authorize the

@@ -123,9 +123,10 @@ constexpr float LORA_BW_DEFAULT_KHZ = 250.0f;
 /// Out-of-range values (including 0 from unset preset mode) return LORA_SF_DEFAULT.
 static inline uint8_t clampSpreadFactor(uint8_t sf)
 {
-    // We check for RF95 radios that are incompatible with Spreading Factors 5 and 6.
+    // Nexus Safety Fix: RF95 (SX127x) hardware does not support SF5 or SF6.
+    // Clamp to SF7 if an RF95 chip is detected to prevent radio crashes.
     if (radioType == RF95_RADIO && (sf == 5 || sf == 6))
-        return LORA_SF_DEFAULT;
+        return 7;
 
     if (sf < LORA_SF_MIN || sf > LORA_SF_MAX)
         return LORA_SF_DEFAULT;

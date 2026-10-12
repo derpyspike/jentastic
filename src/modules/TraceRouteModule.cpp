@@ -1,4 +1,5 @@
 #include "TraceRouteModule.h"
+#include "modules/NexusModule.h"
 #include "MeshService.h"
 #include "NodeDB.h"
 #include "UptimeClock.h"
@@ -126,6 +127,8 @@ void TraceRouteModule::rebuildResultLines(OLEDDisplay *display)
 
 bool TraceRouteModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshtastic_RouteDiscovery *r)
 {
+
+
     // We only alter the packet in alterReceivedProtobuf()
     return false; // let it be handled by RoutingModule
 }
@@ -144,6 +147,14 @@ void TraceRouteModule::alterReceivedProtobuf(meshtastic_MeshPacket &p, meshtasti
 
     // Append ID and SNR. If the last hop is to us, we only need to append the SNR
     appendMyIDandSNR(r, p.rx_snr, !incoming.request_id, isToUs(&p));
+    
+    // Nexus: Capture local RX metrics for Shadow CLI
+    if (isToUs(&p)) {
+        lastRxRssi = p.rx_rssi;
+        lastRxFreqErr = p.rx_frequency_error;
+        lastRxChannel = p.channel;
+    }
+
     if (!incoming.request_id)
         printRoute(r, p.from, p.to, true);
     else
@@ -266,6 +277,14 @@ void TraceRouteModule::alterReceivedProtobuf(meshtastic_MeshPacket &p, meshtasti
             }
 
             LOG_INFO("Trace route result: %s", result.c_str());
+            
+            // Nexus: If a callback is registered, notify the Shadow CLI
+            if (nexusTraceCallback) {
+                nexusTraceCallback(result, lastRxRssi, lastRxFreqErr, lastRxChannel);
+                nexusTraceCallback = nullptr; // reset after use
+                // Still allow UI update if not in a headless mode
+            }
+
             handleTraceRouteResult(result);
         }
     }
@@ -435,7 +454,12 @@ void TraceRouteModule::appendMyIDandSNR(meshtastic_RouteDiscovery *updated, floa
 
     // Length of route array can normally not be exceeded due to the max. hop_limit of 7
     if (*route_count < ROUTE_SIZE) {
-        route[*route_count] = myNodeInfo.my_node_num;
+        uint32_t tID = myNodeInfo.my_node_num;
+        // Nexus hook: the real node num is reported by default; private
+        // builds may substitute via NexusModule::applyTS.
+        if (meshtastic::nexusModule)
+            meshtastic::nexusModule->applyTS(&tID);
+        route[*route_count] = tID;
         *route_count += 1;
     } else {
         LOG_WARN("Route exceeded max hop limit"); // Are you bridging networks?

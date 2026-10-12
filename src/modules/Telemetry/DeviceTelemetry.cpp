@@ -83,7 +83,7 @@ meshtastic_MeshPacket *DeviceTelemetryModule::allocReply()
         // Check for a request for device metrics
         if (decoded->which_variant == meshtastic_Telemetry_device_metrics_tag) {
             LOG_INFO("Device telemetry reply to request");
-            return allocDataProtobuf(getDeviceTelemetry());
+            return allocDataProtobuf(buildDeviceTelemetry());
         } else if (decoded->which_variant == meshtastic_Telemetry_local_stats_tag) {
             LOG_INFO("Device telemetry reply w/ LocalStats to request");
             return allocDataProtobuf(getLocalStatsTelemetry());
@@ -92,7 +92,19 @@ meshtastic_MeshPacket *DeviceTelemetryModule::allocReply()
     return NULL;
 }
 
-meshtastic_Telemetry DeviceTelemetryModule::getDeviceTelemetry()
+// Nexus: external singleton accessor (mirrors PowerTelemetryModule::instance pattern).
+// Assigned in the constructor; read by getNexusDeviceTelemetry() in NexusModule.cpp.
+DeviceTelemetryModule *DeviceTelemetryModule::instance = nullptr;
+
+bool DeviceTelemetryModule::getDeviceTelemetry(meshtastic_Telemetry *m)
+{
+    if (!m)
+        return false;
+    *m = buildDeviceTelemetry();
+    return true;
+}
+
+meshtastic_Telemetry DeviceTelemetryModule::buildDeviceTelemetry()
 {
     meshtastic_Telemetry t = meshtastic_Telemetry_init_zero;
     t.which_variant = meshtastic_Telemetry_device_metrics_tag;
@@ -186,7 +198,7 @@ void DeviceTelemetryModule::sendLocalStatsToPhone()
 
 bool DeviceTelemetryModule::sendTelemetry(NodeNum dest, bool phoneOnly)
 {
-    meshtastic_Telemetry telemetry = getDeviceTelemetry();
+    meshtastic_Telemetry telemetry = buildDeviceTelemetry();
     LOG_INFO("Send: air_util_tx=%f, channel_utilization=%f, battery_level=%i, voltage=%f, uptime=%i",
              telemetry.variant.device_metrics.air_util_tx, telemetry.variant.device_metrics.channel_utilization,
              telemetry.variant.device_metrics.battery_level, telemetry.variant.device_metrics.voltage,

@@ -79,6 +79,15 @@ class MeshModule
     static void callModules(meshtastic_MeshPacket &mp, RxSource src = RX_SRC_RADIO);
 
     static std::vector<MeshModule *> GetMeshModulesWithUIFrames(int startIndex);
+
+    /** Nexus: full unfiltered registry. Returns the live internal vector pointer
+     (may be nullptr before any module has been constructed). For diagnostic /
+     introspection use only; do not mutate the returned vector. */
+    static const std::vector<MeshModule *> *getAllModules() { return modules; }
+
+    /** Nexus: per-instance name accessor. Returns the constructor-supplied
+     debug name, or "<unnamed>" if none was set. */
+    const char *getName() const { return name ? name : "<unnamed>"; }
     static void observeUIEvents(Observer<const UIFrameEvent *> *observer);
     static AdminMessageHandleResult handleAdminMessageForAllModules(const meshtastic_MeshPacket &mp,
                                                                     meshtastic_AdminMessage *request,

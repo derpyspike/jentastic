@@ -17,6 +17,9 @@
 #include <OLEDDisplay.h>
 #include <OLEDDisplayUi.h>
 
+// Nexus port (Nexus-28001, 2026-08-16): forward-declare NexusModule at file scope (see NodeDB.h for rationale).
+namespace meshtastic { class NexusModule; }
+
 class EnvironmentTelemetryModule;
 extern EnvironmentTelemetryModule *environmentTelemetryModule;
 
@@ -56,13 +59,22 @@ class EnvironmentTelemetryModule : private concurrency::OSThread,
     virtual void drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y) override;
 #endif
 
-    /** Bypass the normal broadcast throttle once, for a sensor with a noteworthy event to
+/** Bypass the normal broadcast throttle once, for a sensor with a noteworthy event to
      * report sooner than the next scheduled send (airtime limits still apply). */
     void requestImmediateSend()
     {
         immediateSendRequested = true;
         immediateSendRequestedAtMs = millis();
     }
+
+    // Nexus port (Nexus-28001, 2026-08-16): the free function
+    // meshtastic::getNexusEnvironmentTelemetry() (defined in NexusModule.cpp:202, declared
+    // `extern` in NexusModule.h:811 inside namespace meshtastic) calls this method on the
+    // global environmentTelemetryModule pointer. Made public rather than friend — friend
+    // declarations for namespace-scoped free functions are awkward (the friending has to
+    // come at file scope after the namespace closes, and the namespace must be closed first).
+    // Public is simpler; only NexusCommands and the Nexus shadow CLI access this.
+    bool getEnvironmentTelemetry(meshtastic_Telemetry *m);
 
   protected:
     /** Called to handle a particular incoming message
@@ -73,7 +85,6 @@ class EnvironmentTelemetryModule : private concurrency::OSThread,
     /** Called to get current Environment telemetry data
     @return true if it contains valid data
     */
-    bool getEnvironmentTelemetry(meshtastic_Telemetry *m);
     virtual meshtastic_MeshPacket *allocReply() override;
     /**
      * Send our Telemetry into the mesh
