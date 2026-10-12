@@ -8,16 +8,23 @@ name: Nexus Draft Release
 # Unlike the upstream release path (main_matrix.yml), nothing here is gated
 # on github.repository_owner — it runs on any fork. Build failures do not
 # block the draft: whatever compiled gets attached.
+#
+# NOTE: do NOT add a top-level `permissions:` block here. build_firmware.yml
+# declares `permissions: read-all`; an explicit narrow top-level grant
+# (e.g. contents: write) makes that call a privilege escalation and the run
+# dies with startup_failure before any job starts. Write access lives on the
+# draft-release job only.
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to create (e.g. v2.8.103)"
-        required: true
+        description: "Tag for the release — leave EMPTY and pick a tag in 'Run workflow from' (like the CI workflow) to use an existing one; type a name only to override"
+        required: false
+        default: ""
         type: string
       title:
-        description: "Release title (empty = use the tag)"
+        description: "Release title for a NEW release (empty = use the tag)"
         required: false
         default: ""
         type: string
@@ -31,13 +38,10 @@ on:
           - pr        # PR subset only (fast)
           - extra     # everything, incl. opt-in boards
       prerelease:
-        description: "Mark the draft as a prerelease"
+        description: "Mark the draft as a prerelease (new releases only)"
         required: true
         default: true
         type: boolean
-
-permissions:
-  contents: write
 
 concurrency:
   group: nexus-draft-release-${{ github.ref }}
@@ -79,9 +83,24 @@ jobs:
         run: |
           echo "long=$(./bin/buildinfo.py long)" >> "$GITHUB_OUTPUT"
           echo "deb=$(./bin/buildinfo.py deb)" >> "$GITHUB_OUTPUT"
+      - name: Resolve release tag
+        id: tag
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              TAG="$GITHUB_REF_NAME"
+            else
+              echo "::error::No tag given and this run was not dispatched on a tag. Pick a tag in 'Run workflow from' or fill the tag field."
+              exit 1
+            fi
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "🏷️ Release tag: $TAG" >> "$GITHUB_STEP_SUMMARY"
     outputs:
       long: ${{ steps.version.outputs.long }}
       deb: ${{ steps.version.outputs.deb }}
+      tag: ${{ steps.tag.outputs.tag }}
 
   build:
     needs: [setup, version]
@@ -107,6 +126,27 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Check tag and release state
+        id: rel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null 2>&1; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+            echo "📌 Tag \`$TAG\` already exists — it will be used as-is." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+            echo "🏷️ Tag \`$TAG\` does not exist — it will be created at \`$GITHUB_SHA\`." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "release_exists=true" >> "$GITHUB_OUTPUT"
+            echo "📦 A release for \`$TAG\` already exists — artifacts will be attached to it, its state stays untouched." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "release_exists=false" >> "$GITHUB_OUTPUT"
+            echo "📦 No visible release for \`$TAG\` — a new draft will be created." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Download firmware artifacts
         uses: actions/download-artifact@v8
@@ -144,15 +184,30 @@ jobs:
         run: |
           chmod +x ./bin/generate_release_notes.py
           ./bin/generate_release_notes.py "${{ needs.version.outputs.long }}" --compare-ref HEAD > ./notes.md \
-            || echo "Nexus draft release ${{ inputs.tag }}" > ./notes.md
+            || echo "Nexus draft release ${{ needs.version.outputs.tag }}" > ./notes.md
           head -50 ./notes.md
 
+      - name: Attach artifacts to existing release
+        if: steps.rel.outputs.release_exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          shopt -s nullglob
+          files=(./zips/*.zip)
+          if (( ${#files[@]} == 0 )); then
+            echo "No zips to attach (no builds produced artifacts)."
+            exit 0
+          fi
+          gh release upload "$TAG" "${files[@]}" --clobber
+
       - name: Create draft release (with artifacts)
+        if: steps.rel.outputs.release_exists != 'true'
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ inputs.tag }}
+          tag_name: ${{ needs.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          name: ${{ inputs.title != '' && inputs.title || inputs.tag }}
+          name: ${{ inputs.title != '' && inputs.title || needs.version.outputs.tag }}
           draft: true
           prerelease: ${{ inputs.prerelease }}
           body_path: ./notes.md
