@@ -11,7 +11,7 @@ name: Nexus Draft Release
 #
 # NOTE: top-level `permissions: read-all` is REQUIRED here (mirrors
 # main_matrix.yml). The called build workflow (nexus_build_firmware.yml)
-declares `permissions: read-all`; the
+# declares `permissions: read-all`; the
 # caller must grant at least that much, otherwise GitHub rejects the run with
 # startup_failure before any job starts ('The workflow is requesting ...').
 # Narrowing it (e.g. contents: write) OR omitting it (falls back to the repo's
