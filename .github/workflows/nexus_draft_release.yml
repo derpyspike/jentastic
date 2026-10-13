@@ -10,7 +10,8 @@ name: Nexus Draft Release
 # block the draft: whatever compiled gets attached.
 #
 # NOTE: top-level `permissions: read-all` is REQUIRED here (mirrors
-# main_matrix.yml). build_firmware.yml declares `permissions: read-all`; the
+# main_matrix.yml). The called build workflow (nexus_build_firmware.yml)
+declares `permissions: read-all`; the
 # caller must grant at least that much, otherwise GitHub rejects the run with
 # startup_failure before any job starts ('The workflow is requesting ...').
 # Narrowing it (e.g. contents: write) OR omitting it (falls back to the repo's
@@ -112,7 +113,7 @@ jobs:
       fail-fast: false
       matrix:
         build: ${{ fromJson(needs.setup.outputs.all) }}
-    uses: ./.github/workflows/build_firmware.yml
+    uses: ./.github/workflows/nexus_build_firmware.yml
     with:
       version: ${{ needs.version.outputs.long }}
       pio_env: ${{ matrix.build.board }}
@@ -168,7 +169,11 @@ jobs:
           for arch in esp32 esp32s3 esp32c3 esp32c6 nrf52840 rp2040 rp2350 stm32; do
             dirs=(./artifacts/firmware-${arch}-*)
             if (( ${#dirs[@]} > 0 )); then
-              zip -j -9 -r "./zips/firmware-${arch}-${VERSION}.zip" "${dirs[@]}"
+              # NOTE: no -j (junk paths)! With -j, files that share a basename
+              # across env dirs (e.g. Meshtastic_nRF52_factory_erase_*.uf2)
+              # collide and zip exits 16 ('cannot repeat names in zip file').
+              # Keeping paths preserves per-env provenance and avoids clashes.
+              zip -9 -r "./zips/firmware-${arch}-${VERSION}.zip" "${dirs[@]}"
             else
               echo "no artifacts for ${arch}, skipping"
             fi
