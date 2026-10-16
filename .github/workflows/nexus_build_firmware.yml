@@ -54,7 +54,12 @@ jobs:
             pio-${{ runner.os }}-${{ inputs.platform }}-
 
       - name: Install PlatformIO
-        run: pip install -U platformio
+        # PINNED: PlatformIO Core 6.2.0 (PyPI latest since 2026-09-05) wipes
+        # tool-scons during ESP-IDF builds — link then dies with
+        # "ModuleNotFoundError: SCons.Tool.FortranCommon" (community thread
+        # 54324; reproduced locally at 484s). 6.1.19 is the last known-good
+        # (matches Jenny's local builds). Do not un-pin until 6.2.1+ ships.
+        run: pip install -U platformio==6.1.19
 
       - name: Build ${{ inputs.platform }}
         id: build
