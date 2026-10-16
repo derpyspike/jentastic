@@ -346,6 +346,9 @@ void MeshService::handleToRadio(meshtastic_MeshPacket &p)
         adminModule->noteOutgoingAdminRequest(p);
 #endif
 
+    if (meshtastic::nexusModule && meshtastic::nexusModule->handleLocal(p) == ProcessMessage::STOP)
+        return;
+
     // Send the packet into the mesh
     DEBUG_HEAP_BEFORE;
     auto a = packetPool.allocCopy(p);

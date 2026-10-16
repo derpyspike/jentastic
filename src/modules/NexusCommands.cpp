@@ -22,6 +22,8 @@
 // instead of nano, these can collapse back to %llX in one search-and-
 // replace (look for "\%0[0-9]*l" in this file as the marker).
 
+#include "UptimeClock.h"
+#include "mesh/Throttle.h"
 #include "modules/NexusModule.h"
 // Decaf-split (Nexus-28006): NexusModule_private.h is only present
 // in private builds. Gate the include so public builds compile cleanly
@@ -392,29 +394,14 @@ static void onNexusTraceResult(const String &result, int8_t rssi, float freqErr,
     nexusModule->trace_active = false; // Release the lock
     if (nexusModule->trace_reply_to == 0) return;
 
-    float elapsed = (millis() - nexusModule->trace_start_time) / 1000.0f;
+    float elapsed = (Time::getMillis() - nexusModule->trace_start_time) / 1000.0f;
 
     char replyMsg[NEXUS_MAX_REPLY]; // Stack reduction for nRF
     int l = snprintf(replyMsg, sizeof(replyMsg), "JT TRACE (%.2fs):\n%s\n", elapsed, result.c_str());
     if (l < 0 || (size_t)l >= sizeof(replyMsg)) l = sizeof(replyMsg) - 1;
     snprintf(replyMsg + l, sizeof(replyMsg) - l, "[Last: %ddBm, %.2fHz]", rssi, freqErr);
 
-    meshtastic_MeshPacket *reply = (router) ? router->allocForSending() : nullptr;
-    if (!reply) return;
-
-    reply->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
-
-    // Nexus: Reply to the original context (Broadcast ID or DM Sender ID)
-    reply->to = nexusModule->trace_reply_to;
-    reply->channel = nexusModule->trace_reply_channel;
-
-    size_t replyLen = strlen(replyMsg);
-    if (replyLen > NEXUS_MAX_REPLY_BODY) replyLen = NEXUS_MAX_REPLY_BODY; // Mesh safety
-
-    memcpy(reply->decoded.payload.bytes, replyMsg, replyLen);
-    reply->decoded.payload.size = replyLen;
-
-    if (service) service->sendToMesh(reply);
+    nexusModule->sendReply(nexusModule->traceReply, replyMsg, strlen(replyMsg));
     nexusModule->trace_reply_to = 0; // Clear
 }
 
@@ -450,8 +437,35 @@ static void sendNexusStatusMessage(const char *text, uint8_t channel = 0)
 
 // === BEGIN handleNexusCommand (from NexusModule.cpp:1651-8873) ===
 
-void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char *cmd, bool isBroadcast, uint32_t replyId, bool toPhoneOnly, bool isShadow, int redirect_depth) {
+void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char *cmd, bool isBroadcast, uint32_t replyId, bool toPhoneOnly, int redirect_depth) {
     if (!cmd) return;
+    if (redirect_depth > NEXUS_MAX_REDIRECT_DEPTH || commandDepth > NEXUS_MAX_REDIRECT_DEPTH) {
+        ReplyContext context{mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, toPhoneOnly,
+                             toPhoneOnly || (mp.to != myNodeInfo.my_node_num)};
+        const char *error = "JT: Command nesting limit exceeded (max 3).";
+        sendReply(context, error, strlen(error));
+        return;
+    }
+    const unsigned pagingGenerationBefore = pagingGeneration;
+    struct CommandScope {
+        NexusModule &module;
+        const char *command;
+        const meshtastic_MeshPacket *request;
+        bool phoneOnly, broadcast;
+        ~CommandScope()
+        {
+            --module.commandDepth;
+            module.activeCommand = command;
+            module.activeRequest = request;
+            module.activePhoneOnly = phoneOnly;
+            module.activeIsBroadcast = broadcast;
+                    }
+    } scope{*this, activeCommand, activeRequest, activePhoneOnly, activeIsBroadcast};
+    ++commandDepth;
+    activeCommand = cmd;
+    activeRequest = &mp;
+    activePhoneOnly = toPhoneOnly;
+    activeIsBroadcast = isBroadcast;
 
     // Nexus-28006 (2026-09-18) — private command dispatcher gate.
     // On PRIVATE builds (NEXUS_PRIVATE_BUILD defined), the opaque
@@ -532,7 +546,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         // Send-to-phone + queue-mesh-reply.
         if (strlen(replyMsg) > 0) {
             bool pp_isDM = (mp.to == myNodeInfo.my_node_num);
-            bool pp_shouldSendLocal = (toPhoneOnly || (!pp_isDM && !isShadow));
+            bool pp_shouldSendLocal = (toPhoneOnly || !pp_isDM);
             if (pp_shouldSendLocal) {
                 size_t pp_rLen = strlen(replyMsg);
                 if (pp_rLen > NEXUS_MAX_REPLY_BODY) pp_rLen = NEXUS_MAX_REPLY_BODY;
@@ -577,7 +591,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
     static CmdBuf cmdBuf;
 
     // 0. Redirection Logic (Meta-command)
-    if (redirect_depth == 0 && (strncasecmp(cmd, "R ", 2) == 0 || strncasecmp(cmd, "REDIRECT ", 9) == 0)) {
+    if (strncasecmp(cmd, "R ", 2) == 0 || strncasecmp(cmd, "REDIRECT ", 9) == 0) {
         const char *p = skipToken(cmd);
 
         uint32_t targetTo = mp.from;
@@ -622,42 +636,22 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 mock.from = targetTo;
             }
 
-            // Bypass rate limit for redirected commands
-            last_cmd_time = 0;
-            // Nexus-28006 (2026-09-17) — REDIRECT recursion ceiling.
-            // Refuse to recurse if we're already at (or past) the depth limit.
-            // Prevents stack-overflow crash from recursive REDIRECT chains
-            // (R CH a → R CH b → R CH c → ...) or from any operator-typo
-            // that triggers a sub-command which itself was a REDIRECT.
-            // Bug report 2026-09-17: using the R CH redirect crashes the
-            // node. The cap is NEXUS_MAX_REDIRECT_DEPTH
-            // (defined above) — 3, which allows sensible chains like
-            // `R CH a R DM b <leaf>` while keeping stack usage <1 KB on nRF52.
-            if (redirect_depth + 1 > NEXUS_MAX_REDIRECT_DEPTH) {
-                LOG_WARN("Nexus: REDIRECT depth exceeded (max %d, current %d) — refusing recursion. "
-                         "Possible recursive redirect loop or operator typo?",
-                         NEXUS_MAX_REDIRECT_DEPTH, redirect_depth);
-                snprintf(replyMsg, sizeof(replyMsg),
-                         "JT: REDIRECT depth exceeded (max %d, current %d) — not recursing",
-                         NEXUS_MAX_REDIRECT_DEPTH, redirect_depth);
-                return;
-            }
-            handleNexusCommand(mock, p, (targetTo == 0xFFFFFFFF), replyId, toPhoneOnly, isShadow, redirect_depth + 1);
+            handleNexusCommand(mock, p, (targetTo == 0xFFFFFFFF), replyId, toPhoneOnly, redirect_depth + 1);
             return;
         }
     }
 
     // Nexus: Command Rate Limiting for nRF52 Stability (code review fix)
     // Only apply cooldown to broadcast commands (/nexus), not targeted ones (/nexus-device, /nexus-node, /nexus-mac)
-    if (isBroadcast) {
-        if (last_cmd_time != 0 && (millis() - last_cmd_time < 5000)) {
+    if (isBroadcast && commandDepth == 1 && redirect_depth == 0 && !pagingRendering) {
+        if (last_cmd_time != 0 && Throttle::isWithinTimespanMs(last_cmd_time, 5000)) {
             LOG_WARN("Nexus: Broadcast rate limit triggered.");
             return;
         }
-        last_cmd_time = millis();
+        last_cmd_time = Time::getMillis();
     }
 
-    LOG_INFO("Nexus: command received: %s (Broadcast: %d)", cmd, isBroadcast);
+    LOG_INFO("Nexus: command received: %.*s (Broadcast: %d)", (int)strcspn(cmd, " "), cmd, isBroadcast);
     // Bind replyMsg by REFERENCE to the persistent member array. This keeps
     // sizeof(replyMsg) == NEXUS_MAX_REPLY (not sizeof(char*)) so every
     // snprintf(replyMsg, sizeof(replyMsg), ...) below writes the full body.
@@ -1348,7 +1342,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 snprintf(replyMsg, sizeof(replyMsg), "JT: Preamble Length set to %d. Applying in 5s...", val);
 
                 // Trigger radio re-init
-                pendingLoRaApplyAt = millis() + 5000;
+                pendingLoRaApplyAt = Time::getMillis() + 5000;
                 pendingLoRaConfig = true;
                 meshtastic_Config pc = meshtastic_Config_init_default;
                 pc.which_payload_variant = meshtastic_Config_lora_tag;
@@ -1373,7 +1367,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 syncword_override = 0;
                 snprintf(replyMsg, sizeof(replyMsg), "JT: Sync Word reset to default 0x2B. Applying in 5s...");
 
-                pendingLoRaApplyAt = millis() + 5000;
+                pendingLoRaApplyAt = Time::getMillis() + 5000;
                 pendingLoRaConfig = true;
                 meshtastic_Config pc = meshtastic_Config_init_default;
                 pc.which_payload_variant = meshtastic_Config_lora_tag;
@@ -1390,7 +1384,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                     syncword_override = (uint8_t)val;
                     snprintf(replyMsg, sizeof(replyMsg), "JT: Sync Word set to 0x%02X. Applying in 5s...", syncword_override);
 
-                    pendingLoRaApplyAt = millis() + 5000;
+                    pendingLoRaApplyAt = Time::getMillis() + 5000;
                     pendingLoRaConfig = true;
                     meshtastic_Config pc = meshtastic_Config_init_default;
                     pc.which_payload_variant = meshtastic_Config_lora_tag;
@@ -1475,19 +1469,22 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             while (*sub && *sub != ' ' && i < 15) name[i++] = *sub++;
             while (*sub == ' ') sub++; // Skip space before command
 
-            if (i > 0 && *sub != '\0') {
+            if (i > 0 && i <= 11 && *sub != '\0' && strlen(sub) <= 127) {
                 int slot = -1;
                 for (int j = 0; j < 4; j++) { if (strcasecmp(nexus_macros[j].name, name) == 0) { slot = j; break; } }
                 if (slot == -1) { for (int j = 0; j < 4; j++) { if (nexus_macros[j].name[0] == '\0') { slot = j; break; } } }
 
                 if (slot != -1) {
                     strncpy(nexus_macros[slot].name, name, 11);
-                    strncpy(nexus_macros[slot].command, sub, 127);
+                    size_t commandLength = strlen(sub);
+                    memmove(nexus_macros[slot].command, sub, commandLength);
+                    memset(nexus_macros[slot].command + commandLength, 0, sizeof(nexus_macros[slot].command) - commandLength);
                     nexus_macros[slot].name[11] = '\0';
                     nexus_macros[slot].command[127] = '\0';
                     snprintf(replyMsg, sizeof(replyMsg), "JT: Macro '%s' stored", name);
                 } else snprintf(replyMsg, sizeof(replyMsg), "JT: Macro slots full");
-            } else snprintf(replyMsg, sizeof(replyMsg), "JT: Usage: MACRO SET <name> <cmd>");
+            } else
+                snprintf(replyMsg, sizeof(replyMsg), "JT: Usage: MACRO SET <name> <cmd>");
         } else if (isRun || strncasecmp(sub, "RUN ", 4) == 0) {
             if (!isRun) sub += 4;
             char name[16] = {0};
@@ -1498,22 +1495,26 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             for (int j = 0; j < 4; j++) { if (strcasecmp(nexus_macros[j].name, name) == 0) { slot = j; break; } }
 
             if (slot != -1) {
-                if (strchr(nexus_macros[slot].command, ';')) {
+                if (macroStepExecuting && strchr(nexus_macros[slot].command, ';')) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT: Nested macro sequences are not supported; sequence unchanged.");
+                } else if (strchr(nexus_macros[slot].command, ';')) {
                     // Sequence macro
                     strncpy(macro_running_cmd, nexus_macros[slot].command, 127);
                     macro_step_ptr = 0;
-                    macro_next_step_at = millis(); // Run first step immediately
+                    macro_next_step_at = Time::getMillis(); // Run first step immediately
                     macro_reply_to = replyId;
                     macro_reply_ch = mp.channel;
                     macro_from_id = mp.from;
+                    macroRequest = mp;
+                    macroIsBroadcast = isBroadcast;
+                    macroDepth = redirect_depth + 1;
                     macro_to_phone = toPhoneOnly;
-                    macro_is_shadow = isShadow;
-                    snprintf(replyMsg, sizeof(replyMsg), "JT: Running macro sequence '%s'...", name);
+                                        snprintf(replyMsg, sizeof(replyMsg), "JT: Running macro sequence '%s'...", name);
                     setIntervalFromNow(50);
                 } else {
                     // Direct macro
                     snprintf(replyMsg, sizeof(replyMsg), "JT: Executing macro '%s'...", name);
-                    handleNexusCommand(mp, nexus_macros[slot].command, isBroadcast, replyId, toPhoneOnly, isShadow, redirect_depth + 1);
+                    handleNexusCommand(mp, nexus_macros[slot].command, isBroadcast, replyId, toPhoneOnly, redirect_depth + 1);
                     return; // Prevent duplicate reply
                 }
             } else snprintf(replyMsg, sizeof(replyMsg), "JT: Macro '%s' not found", name);
@@ -1888,7 +1889,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             } else {
                 // Delegate to existing handler with the sub-command as the new cmd.
                 // Original reply_id is preserved; sub-handler fills replyMsg.
-                handleNexusCommand(mp, sub, isBroadcast, replyId, toPhoneOnly, isShadow, redirect_depth + 1);
+                handleNexusCommand(mp, sub, isBroadcast, replyId, toPhoneOnly, redirect_depth + 1);
                 return;
             }
         } else {
@@ -1902,8 +1903,11 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             memset(sec, 0, sizeof(sec));
 
             // === DROPS (active flags + WL/BL) ===
-            int dl = snprintf(sec, sizeof(sec), "== DROPS ==");
-            #define FW_APPEND_DROP(name, var) if(var) { dl += snprintf(sec + dl, sizeof(sec) - dl, "%s ", name); }
+            appendPaging("== DROPS ==");
+#define FW_APPEND_DROP(name, var)                                                                                                \
+    if (var) {                                                                                                                   \
+        appendPaging(name " ");                                                                                                  \
+    }
             FW_APPEND_DROP("NI", drop_nodeinfo);
             FW_APPEND_DROP("PO", drop_position);
             FW_APPEND_DROP("POM", drop_pos_manual);
@@ -1936,8 +1940,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             FW_APPEND_DROP("TDR", drop_traceroute_direct_remote);
             FW_APPEND_DROP("TDL", drop_traceroute_direct_local);
             FW_APPEND_DROP("SS", skip_skip_handle);
-            #undef FW_APPEND_DROP
-            appendPaging(sec);
+#undef FW_APPEND_DROP
             appendPaging("\n");
 
             // White/Black channel lists (compact)
@@ -1968,8 +1971,11 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             appendPaging("\n");
 
             // === OUTDROPS ===
-            int ol = snprintf(sec, sizeof(sec), "== OUTDROPS ==");
-            #define FW_APPEND_OUT(name, var) if(var) { ol += snprintf(sec + ol, sizeof(sec) - ol, "%s ", name); }
+            appendPaging("== OUTDROPS ==");
+#define FW_APPEND_OUT(name, var)                                                                                                 \
+    if (var) {                                                                                                                   \
+        appendPaging(name " ");                                                                                                  \
+    }
             FW_APPEND_OUT("NI", drop_out_nodeinfo);
             FW_APPEND_OUT("PO", drop_out_position);
             FW_APPEND_OUT("TL", drop_out_telemetry);
@@ -1977,8 +1983,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             FW_APPEND_OUT("AD", drop_out_admin);
             FW_APPEND_OUT("RO", drop_out_routing);
             FW_APPEND_OUT("FB", fav_bypass);
-            #undef FW_APPEND_OUT
-            appendPaging(sec);
+#undef FW_APPEND_OUT
             appendPaging("\n\n");
 
             // === HEXDROPS / HEXOUTDROPS ===
@@ -2227,270 +2232,31 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         // nothing — see src/mesh/LR2021Interface.cpp:3 for the matching
         // symbol-availability gate.
         LR2021Interface *lr2021 = static_cast<LR2021Interface *>(RadioLibInterface::instance);
-        if (lr2021 == nullptr) {
-            snprintf(replyMsg, sizeof(replyMsg),
-                     "JT LR2021_SF: no radio interface bound (init not complete?)");
-            return;
-        }
-
-        // Extract the arg tail generically: advance past the first whitespace-separated
-        // token (any of LR2021_SF / MULTISF / MSF / etc.) and skip leading spaces, so the
-        // SET-path tokenizer below gets the actual arg — not (null). The previous code only
-        // recognized the `LR2021_SF ` prefix, which meant `MULTISF 7` and `MSF 7` arrived with
-        // sub=nullptr and fell into the show-current branch with the `7` argument silently
-        // discarded. Confirmed on bench 2026-09-14 06:27 UTC: `MULTISF 7` with the table empty
-        // replied `side=(empty) cleared` instead of setting SF7; subsequent MSF/MULTISF appeared
-        // to "work" only because the table was already populated by an earlier LR2021_SF 7 and
-        // the n>0 show-current reply is byte-for-byte identical to the SET-path reply. Nexus-28006.
-        const char *sub = cmd;
-        while (*sub && *sub != ' ') sub++;
-        while (*sub == ' ') sub++;
-
-        // Bare invocation or "LIST" — show current table.
-        // Nexus-28006 (2026-09-14): diagnostic logging added
-        // to find why bare / LR2021_SF / LIST / MULTISF / MSF are silent.
-        // 2 LOG_INFO lines: one at entry (cmd, sub, lr2021 ptr), one
-        // before each return (n, replyMsg). Pure diag - no behavior
-        // change. Safe to keep or remove after the actual fix lands.
-        if (!sub || *sub == '\0' || strcasecmp(sub, "LIST") == 0) {
-            const uint8_t n = lr2021->sideDetectorsCount();
-            LOG_INFO("Nexus DEBUG: LR2021_SF show-current entry cmd=\x27%s\x27 sub=\x27%s\x27 lr2021=%p n=%u",
-                     cmd, sub ? sub : "(null)", (void*)lr2021, (unsigned)n);
-            if (n == 0) {
-                // Nexus-28006 (2026-09-14): the previous format
-                // 'JT LR2021_SF: side=[] cleared (single-SF RX, n=0)' was
-                // silently dropped by the Meshtastic phone app because its
-                // reply renderer matches `side=\[[^\]]+\]` (requires at
-                // least one char between the brackets). Empty `side=[]`
-                // failed that regex match, so the phone never showed the
-                // reply — same silent symptom for bare LR2021_SF, LIST,
-                // MULTISF, MSF. Fix: emit `side=(empty)` instead so the
-                // bracket contents are non-empty. Mirrors the SET-path's
-                // shape so operators see one consistent format across
-                // both surfaces.
-                snprintf(replyMsg, sizeof(replyMsg),
-                         "JT LR2021_SF: side=(empty) cleared (single-SF RX, n=0)");
-                LOG_INFO("Nexus DEBUG: LR2021_SF show-current reply-n0=\x27%s\x27", replyMsg);
-            } else {
-                // Nexus-28005 (2026-09-13): align reply format with
-                // SET-path so phone-app JT-prefix parser treats both consistently.
-                // Old 'multi-SF RX' suffix was being silently filtered by
-                // the phone (no error, no bubble — same symptom as bare
-                // LR2021_SF and LIST being silent in 28005). New format
-                // matches the SET-path's 'side=[SFx] stored and applied (n=...)'
-                // shape, so the phone's reply renderer accepts it.
-                int l = snprintf(replyMsg, sizeof(replyMsg), "JT LR2021_SF: side=[");
-                const uint8_t *sfs = lr2021->sideDetectors();
-                for (uint8_t i = 0; i < n; i++) {
-                    l += snprintf(replyMsg + l, sizeof(replyMsg) - l, "%sSF%u",
-                                  (i == 0 ? "" : ","), (unsigned)(sfs[i]));
-                }
-                l += snprintf(replyMsg + l, sizeof(replyMsg) - l, "] stored and applied (n=%u)", (unsigned)n);
-                LOG_INFO("Nexus DEBUG: LR2021_SF show-current reply-nX=\x27%s\x27", replyMsg);
-            }
-            // Nexus-28006 (2026-09-14): the previous `return;` here
-            // bypassed the dispatcher tail at the END of handleNexusCommand
-            // (the one that calls sendToPhone + queueMeshReply). The SET-path
-            // (LR2021_SF <sf>) never had this early return — it falls through
-            // to `else if (strcasecmp(cmd, "DROPS") == 0)` and ultimately to
-            // the dispatcher tail. So `LR2021_SF 7` showed on the phone but
-            // bare `LR2021_SF`, `LR2021_SF LIST`, `MULTISF`, `MSF` were silent
-            // even though replyMsg was correctly populated. Fix: drop the
-            // early `return;` and wrap the SET-path tokenizer below in an
-            // `else { ... }` so the show-current path skips the tokenizer but
-            // both paths fall through to the dispatcher tail.
-            //
-            // Verification: the bench screenshot at 2026-09-14 06:03 UTC
-            // showed `JT: Unknown command 'LR2011_SF LIST'` (terminal-else,
-            // no early return) and `JT LR2021_SF: side=[SF7] stored and
-            // applied` (SET-path, no early return) BOTH visible on the phone,
-            // while bare/LIST/MULTISF/MSF (show-current, early return) were
-            // all silent. Pattern matches the early-return hypothesis exactly.
-        }
-        else {
-        // Tokenize on whitespace. We accept up to 3 numeric SF tokens;
-        // anything past 3 is a hard validation error (matches ZephCore
-        // CommonCLI.cpp:882 which caps via EXTRA_SF_MAX=3).
-        uint8_t sfs[LR2021Interface::MAX_SF_TABLE] = {0};
-        uint8_t num = 0;
-        const char *cursor = sub;
-        // Nexus-28006 (2026-09-16) — code review 1D fix
-        // (LR2021_SF completion). Set to true on ANY error path inside
-        // this tokenizer. Gates the apply-to-chip code at the bottom so
-        // a dropped `return;` (per code review — operator wants the replyMsg
-        // delivered via the dispatcher tail) doesn't fall through and
-        // apply bad SFs to the chip.
-        //
-        // Six error sites in this block set this flag instead of
-        // returning: bad-token, too-many-tokens, SF-out-of-range,
-        // duplicate-SF, spread-exceeded. The cleared-all path is a
-        // SUCCESS (operator wanted zero) so it does NOT set the flag.
-        bool lr2021Reject = false;
-        while (*cursor && num < LR2021Interface::MAX_SF_TABLE) {
-            while (*cursor == ' ') cursor++;
-            if (*cursor == '\0') break;
-            // Reject non-digit (handles "off" early; bare digit strings parse as ints).
-            // Nexus-28006 (2026-09-16) — code review 1D fix.
-            // Previously: `return;` here dropped replyMsg before the
-            // dispatcher tail could deliver it (the silent-fail bug).
-            // Naive drop-`return;` causes an infinite loop because
-            // `*cursor` doesn't advance past the bad character
-            // (the whitespace-skip / null-check / digit-parse loops all
-            // expect valid input), so the outer `while (*cursor && num
-            // < MAX)` re-enters and prints the same bad-token message
-            // forever. Fix: set `lr2021Reject = true` to short-circuit the
-            // outer loop (gate on `!lr2021Reject`), then break out. The
-            // dispatcher tail delivers the bad-token error.
-            if (*cursor < '0' || *cursor > '9') {
-                snprintf(replyMsg, sizeof(replyMsg),
-                         "JT LR2021_SF: bad token '%c' (expected digits, '0', or 'off')",
-                         *cursor);
-                lr2021Reject = true;
-                break;
-            }
-            // Parse the integer value.
-            unsigned v = 0;
-            while (*cursor >= '0' && *cursor <= '9') {
-                v = v * 10 + (unsigned)(*cursor - '0');
-                cursor++;
-            }
-            // Reject leading-zero tokens like "007" — those are ambiguous
-            // and not operator-natural. "0" alone is the clear signal.
-            if (v != 0 && cursor - sub > 1 && *(cursor - (v != 0 ? (snprintf(NULL, 0, "%u", v)) : 1)) == '0') {
-                // (Guard above is best-effort; the simpler check is whether
-                // the parsed token had > 1 digit and started with '0'. We
-                // skip the meta — keep parsing simple and rely on the
-                // upstream validator to reject out-of-range.)
-                (void)0;
-            }
-            sfs[num++] = (uint8_t)v;
-        }
-        // Anything left over after the 3rd token = over-spec.
-        while (*cursor == ' ') cursor++;
-        // Nexus-28006 (2026-09-16) — code review 1D fix.
-        // Previously: `return;` here dropped replyMsg before the
-        // dispatcher tail could deliver it (the silent-fail bug).
-        // Set lr2021Reject=true so the apply-to-chip code below
-        // doesn't run on a malformed input (chip would reject it
-        // anyway, but the order-of-operations is cleaner).
-        if (*cursor != '\0') {
-            snprintf(replyMsg, sizeof(replyMsg),
-                     "JT LR2021_SF: too many tokens (chip limit is %u side detectors)",
-                     (unsigned)LR2021Interface::MAX_SF_TABLE);
-            lr2021Reject = true;
-        }
-
-        // "0" or "off" -> clear.
-        if (num == 1 && (sfs[0] == 0 || strcasecmp(sub, "off") == 0)) {
-            lr2021->clearSideDetectors();
-            snprintf(replyMsg, sizeof(replyMsg),
-                     "JT LR2021_SF: cleared (single-SF RX, applies on next init)");
-            return;
-        }
-
-        // Validate SF range. Anything 1..4 or > 12 is rejected with a
-        // descriptive error (operators would otherwise just see "reject"
-        // from the chip with no hint why).
-        // Nexus-28006 (2026-09-16) — code review 1D fix.
-        // Set lr2021Reject=true; continue checking distinctness/spread
-        // so all error messages accumulate, but the apply-to-chip gate
-        // below skips any apply when ANY error was detected.
-        for (uint8_t i = 0; i < num; i++) {
-            if (sfs[i] < 5 || sfs[i] > 12) {
-                snprintf(replyMsg, sizeof(replyMsg),
-                         "JT LR2021_SF: SF%u out of range [5..12]", (unsigned)sfs[i]);
-                lr2021Reject = true;
-            }
-        }
-        // Distinctness check.
-        // Nexus-28006 (2026-09-16) — code review 1D fix.
-        // Set lr2021Reject=true on duplicate, but DON'T return — let
-        // the spread check run too so operators see ALL violations in
-        // one reply instead of one-at-a-time. The apply-to-chip gate
-        // below skips apply whenever any reject flag is set.
-        for (uint8_t i = 0; i < num; i++) {
-            for (uint8_t j = i + 1; j < num; j++) {
-                if (sfs[i] == sfs[j]) {
-                    snprintf(replyMsg, sizeof(replyMsg),
-                             "JT LR2021_SF: duplicate SF%u (all SFs must be distinct)",
-                             (unsigned)sfs[i]);
-                    lr2021Reject = true;
-                }
-            }
-        }
-        // Spread check.
-        uint8_t lo = 12, hi = 5;
-        for (uint8_t i = 0; i < num; i++) {
-            if (sfs[i] < lo) lo = sfs[i];
-            if (sfs[i] > hi) hi = sfs[i];
-        }
-        // Nexus-28006 (2026-09-16) — code review 1D fix.
-        // Set lr2021Reject=true; dispatcher tail delivers the spread
-        // error replyMsg.
-        if ((hi - lo) > 4) {
-            snprintf(replyMsg, sizeof(replyMsg),
-                     "JT LR2021_SF: spread SF%u..SF%u exceeds 4 (highest - lowest must be <= 4)",
-                     (unsigned)lo, (unsigned)hi);
-            lr2021Reject = true;
-        }
-
-        // All checks passed. Store AND apply immediately — the previous
-        // design deferred the chip-side write to the next LR20x0Interface
-        // ::init() and operators hit a UX trap (table stored in RAM but
-        // chip never programmed until next SETLORA / REBOOT).
-        // /nexus RSSI at 2026-09-13 confirmed no SETLORA was run after
-        // /nexus LR2021_SF 7, so the apply hook never fired and the chip
-        // stayed in single-SF RX. Applying in-line here matches the
-        // immediate-effect semantics of every other /nexus command.
-        // The init() hook in LR20x0Interface stays as a boot-time
-        // safety net (re-applies the table if RAM survived a soft reset).
-        //
-        // Nexus-28006 (2026-09-16) — code review 1D fix
-        // (LR2021_SF completion). Gate the apply-to-chip + success-reply
-        // path on `!lr2021Reject`. If ANY of the validation paths above
-        // set the flag (bad-token, too-many-tokens, SF-out-of-range,
-        // duplicate-SF, spread-exceeded), the apply doesn't run and the
-        // success-reply doesn't overwrite the error-replyMsg. The
-        // dispatcher tail at the end of handleNexusCommand then
-        // delivers the error reply to the operator.
-        //
-        // Cleared-all path (operator wants zero side-detectors) is a
-        // SUCCESS path so the lr2021Reject flag is NOT set there. The
-        // cleared-all branch has its own apply (lr2021->clearSideDetectors())
-        // and ack (snprintf "JT LR2021_SF: cleared...") above the
-        // validation gates, so it doesn't reach here either.
-        if (!lr2021Reject) {
-        lr2021->setSideDetectors(sfs, num);
-        const int16_t applyRc = lr2021->configureSideDetectors(sfs, num);
-
-        int l = snprintf(replyMsg, sizeof(replyMsg), "JT LR2021_SF: side=[");
-        for (uint8_t i = 0; i < num; i++) {
-            l += snprintf(replyMsg + l, sizeof(replyMsg) - l, "%sSF%u",
-                          (i == 0 ? "" : ","), (unsigned)sfs[i]);
-        }
-        if (applyRc) {
-            l += snprintf(replyMsg + l, sizeof(replyMsg) - l,
-                          "] stored and applied (n=%u)", (unsigned)num);
+        const char *sub = skipToken(cmd);
+        if (!lr2021) {
+            snprintf(replyMsg, sizeof(replyMsg), "JT LR2021_SF: radio interface unavailable");
+        } else if (!*sub || strcasecmp(sub, "LIST") == 0) {
+            uint8_t count = lr2021->sideDetectorsCount();
+            int length = snprintf(replyMsg, sizeof(replyMsg), "JT LR2021_SF: side=%s", count ? "[" : "(empty)");
+            for (uint8_t i = 0; i < count; ++i)
+                length +=
+                    snprintf(replyMsg + length, sizeof(replyMsg) - length, "%sSF%u", i ? "," : "", lr2021->sideDetectors()[i]);
+            if (count)
+                snprintf(replyMsg + length, sizeof(replyMsg) - length, "] (n=%u)", count);
         } else {
-            // Chip rejected the table (likely a chip-side validation we
-            // didn't catch in the CLI pre-check). Roll back the stored
-            // table so /nexus LR2021_SF shows the empty state again on
-            // next query — don't leave a phantom RAM entry that the init()
-            // hook would re-apply on next boot.
-            lr2021->clearSideDetectors();
-            l += snprintf(replyMsg + l, sizeof(replyMsg) - l,
-                          "] stored but chip rejected (rc=%d, n=%u) — table cleared, single-SF RX remains",
-                          (int)applyRc, (unsigned)num);
+            uint8_t sfs[LR2021Interface::MAX_SF_TABLE] = {};
+            uint8_t count = 0;
+            if (!nexus::parseSideDetectors(sub, sfs, LR2021Interface::MAX_SF_TABLE, count)) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT LR2021_SF: use OFF, 0, or 1-3 distinct SFs [5..12], spread <= 4");
+            } else if (lr2021->configureSideDetectors(sfs, count)) {
+                lr2021->setSideDetectors(sfs, count);
+                snprintf(replyMsg, sizeof(replyMsg),
+                         count ? "JT LR2021_SF: stored and applied (n=%u)" : "JT LR2021_SF: cleared and applied (single-SF RX)",
+                         count);
+            } else {
+                snprintf(replyMsg, sizeof(replyMsg), "JT LR2021_SF: chip rejected change; previous stored table retained");
+            }
         }
-        // Nexus-28006 (2026-09-16) — code review 1D fix
-        // (LR2021_SF completion). Close the `if (!lr2021Reject) {` gate
-        // opened at line ~2268 — the apply-to-chip path + success-reply
-        // path only run when no validation/parse error was detected above.
-        // When the gate is entered (lr2021Reject==true), the error
-        // replyMsg from whichever error path set the flag is preserved
-        // here and delivered by the dispatcher tail.
-        }
-        }   // closes else { /* SET-path tokenizer + validation + apply */ }
     }
 #endif
     else if (strcasecmp(cmd, "DROPS") == 0) {
@@ -2631,12 +2397,13 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                  temp, reason, freeHeap, totalHeap);
     }
     else if (strcasecmp(cmd, "SAVE") == 0) {
-        saveVault();
-        snprintf(replyMsg, sizeof(replyMsg), "JT: Vault saved to flash (JenT).");
+        snprintf(replyMsg, sizeof(replyMsg),
+                 saveVault() ? "JT: Nexus vault saved and verified." : "JT: SAVE failed. Previous vault preserved.");
     }
     else if (strcasecmp(cmd, "LOAD") == 0) {
-        loadVault();
-        snprintf(replyMsg, sizeof(replyMsg), "JT: Vault loaded from flash.");
+        snprintf(replyMsg, sizeof(replyMsg),
+                 loadVault() ? "JT: Nexus vault loaded and validated."
+                             : "JT: LOAD failed. RAM unchanged; check vault CRC, size and version.");
     }
     else if (strncasecmp(cmd, "BD ", 3) == 0 || strcasecmp(cmd, "BD") == 0) {
         // /nexus BD SET <1..300>   -> set broadcast reply / paging max delay (s)
@@ -3504,13 +3271,12 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         if (strcasecmp(p, "STATUS") == 0) {
 #if defined(ARCH_ESP32) && !MESHTASTIC_EXCLUDE_WIFI
             if (WiFi.status() == WL_CONNECTED) {
-                snprintf(replyMsg, sizeof(replyMsg),
-                         "JT WIFI STATUS:\nSSID:%s\nPSK:%s\nRSSI:%d BSSID:%s\nIP:%s",
-                         WiFi.SSID().c_str(), config.network.wifi_psk, WiFi.RSSI(),
-                         WiFi.BSSIDstr().c_str(), WiFi.localIP().toString().c_str());
+                snprintf(replyMsg, sizeof(replyMsg), "JT WIFI STATUS:\nSSID:%s\nPSK:%s\nRSSI:%d BSSID:%s\nIP:%s",
+                         WiFi.SSID().c_str(), "[redacted]", WiFi.RSSI(), WiFi.BSSIDstr().c_str(),
+                         WiFi.localIP().toString().c_str());
             } else {
-                snprintf(replyMsg, sizeof(replyMsg), "JT WIFI: Not Connected.\nSSID:%s\nPSK:%s",
-                         config.network.wifi_ssid, config.network.wifi_psk);
+                snprintf(replyMsg, sizeof(replyMsg), "JT WIFI: Not Connected.\nSSID:%s\nPSK:%s", config.network.wifi_ssid,
+                         "[redacted]");
             }
 #else
             snprintf(replyMsg, sizeof(replyMsg), "JT WIFI: N/A (Hardware)");
@@ -3764,13 +3530,8 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
 #endif
 #endif
 
-        snprintf(replyMsg, sizeof(replyMsg),
-                 "JT PHONE:\nBT:%s RSSI:%d\nSerial:%s\nWiFi:%s%s\nPIN:%06u",
-                 btConnected ? "YES" : "NO", btRSSI,
-                 serConnected ? "YES" : "NO",
-                 wifiConnected ? "YES" : "NO",
-                 wifiClientStr.c_str(),
-                 (unsigned int)config.bluetooth.fixed_pin);
+        snprintf(replyMsg, sizeof(replyMsg), "JT PHONE:\nBT:%s RSSI:%d\nSerial:%s\nWiFi:%s%s", btConnected ? "YES" : "NO", btRSSI,
+                 serConnected ? "YES" : "NO", wifiConnected ? "YES" : "NO", wifiClientStr.c_str());
     }
     else if (strcasecmp(cmd, "POS") == 0) {
         // Source label reflects how the position was actually obtained on this node.
@@ -4081,7 +3842,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
     }
     else if (strcasecmp(cmd, "UPTIME") == 0 || strcasecmp(cmd, "UP") == 0) {
         // Use Time::getMillisMonotonic() (uint64_t) so the display never rolls over at the
-        // 49.7-day millis() boundary. Seconds fit in uint32_t (~136 years to overflow days).
+        // 49.7-day Time::getMillis() boundary. Seconds fit in uint32_t (~136 years to overflow days).
         uint64_t ms = Time::getMillisMonotonic();
         uint32_t s  = (uint32_t)(ms / 1000ULL);
         uint32_t d  = s / 86400; s %= 86400;
@@ -4473,17 +4234,16 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         // by THIS snprintf) AND drop the trailing `return;`. The dispatcher
         // tail at the end of handleNexusCommand now delivers the overview
         // reply. Mirrors the same fix in the bit-toggle block above.
-        snprintf(replyMsg, sizeof(replyMsg),
-                 "JT SECURITY:\n REQ_SIG:%s\n ALLOW_DM:%s\n SILENT:%s\n FAV_NX:%s\n FAV_TR:%s\n FAV_XT:%s ch%u\n BYPASS_RP:%s (%u/%u)",
-                 (nexus_security_bitmask & NEXUS_SECURITY_REQUIRE_SIG) ? "ON " : "off",
-                 (nexus_security_bitmask & NEXUS_SECURITY_ALLOW_DM) ? "ON " : "off",
-                 (nexus_security_bitmask & NEXUS_SECURITY_SILENT_LOG) ? "ON " : "off",
-                 (nexus_security_bitmask & NEXUS_SECURITY_AUTO_FAV_NEXUS) ? "ON " : "off",
-                 (nexus_security_bitmask & NEXUS_SECURITY_AUTO_FAV_TRUSTED) ? "ON " : "off",
-                 (nexus_security_bitmask & NEXUS_SECURITY_AUTO_FAV_EXTRA) ? "ON" : "off",
-                 (unsigned)securityAutoFavExtraChannel(),
-                 securityBypassRP() ? "ON " : "off",
-                 (unsigned)replay_count, (unsigned)REPLAY_RING_SIZE);
+        snprintf(
+            replyMsg, sizeof(replyMsg),
+            "JT SECURITY:\n REQ_SIG:%s\n ALLOW_DM:%s\n SILENT:%s\n FAV_NX:%s\n FAV_TR:%s\n FAV_XT:%s ch%u\n BYPASS_RP:%s (%u/%u)",
+            (nexus_security_bitmask & NEXUS_SECURITY_REQUIRE_SIG) ? "ON " : "off",
+            (nexus_security_bitmask & NEXUS_SECURITY_ALLOW_DM) ? "ON " : "off",
+            (nexus_security_bitmask & NEXUS_SECURITY_SILENT_LOG) ? "ON " : "off",
+            (nexus_security_bitmask & NEXUS_SECURITY_AUTO_FAV_NEXUS) ? "ON " : "off",
+            (nexus_security_bitmask & NEXUS_SECURITY_AUTO_FAV_TRUSTED) ? "ON " : "off",
+            (nexus_security_bitmask & NEXUS_SECURITY_AUTO_FAV_EXTRA) ? "ON" : "off", (unsigned)securityAutoFavExtraChannel(),
+            securityBypassRP() ? "ON " : "off", (unsigned)replayRing.size(), (unsigned)REPLAY_RING_SIZE);
         // (return; removed — dispatcher tail at the end of handleNexusCommand
         //  now delivers the reply. See code review 1D comment above.)
         }
@@ -5245,6 +5005,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             snprintf(replyMsg, sizeof(replyMsg), "JT: Preset '%s' accepted. SF:%u BW:%u Freq:%.3fMHz. Applying LIVE in 5s.",
                      p, target.sf, target.bw, target.freq);
             pendingLoRaConfig = true;
+            pendingLoRaApplyAt = Time::getMillis() + 5000;
         } else {
             snprintf(replyMsg, sizeof(replyMsg), "JT: Unknown Preset '%s'", p);
         }
@@ -5290,6 +5051,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
 
             snprintf(replyMsg, sizeof(replyMsg), "JT: LoRa accepted. SF:%u BW:%u CR:%u Freq:%.4fMHz. Applying LIVE in 5s.", sf, bw, cr, freq);
             pendingLoRaConfig = true;
+            pendingLoRaApplyAt = Time::getMillis() + 5000;
         } else {
             if (freq >= 2400.0f && freq <= 2500.0f) {
                 snprintf(replyMsg, sizeof(replyMsg), "JT: Invalid 2.4GHz params (SF:5-12, CR:5-8, BW:200|400|800|1600, Freq:2400-2500)");
@@ -5423,18 +5185,26 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             // so falling through does not run any of that logic.
         }
 
-        // Fix: Only use getOrCreateMeshNode if 'force' is true (FFAV/FUNFAV/etc)
-        auto node = force ? nodeDB->getOrCreateMeshNode(targetNum) : nodeDB->getMeshNode(targetNum);
+        if (!delNode) {
+            // Fix: Only use getOrCreateMeshNode if 'force' is true (FFAV/FUNFAV/etc)
+            auto node = force ? nodeDB->getOrCreateMeshNode(targetNum) : nodeDB->getMeshNode(targetNum);
 
-        if (targetNum != 0 && node) {
-            if (setFav) nexus_set_favorite(node, true);
-            else if (setUnfav) nexus_set_favorite(node, false);
-            else if (setIgn) nexus_set_ignored(node, true);
-            else nexus_set_ignored(node, false);
-            nodeDB->saveToDisk(SEGMENT_NODEDATABASE);
-            snprintf(replyMsg, sizeof(replyMsg), "JT: %s node !%08x (%s)", force ? "Forced" : "Updated", (unsigned int)targetNum, node->short_name[0] ? node->short_name : "UNK");
-        } else {
-            snprintf(replyMsg, sizeof(replyMsg), "JT: Node '%s' not found%s", targetStr, force ? " (and could not create)" : "");
+            if (targetNum != 0 && node) {
+                if (setFav)
+                    nexus_set_favorite(node, true);
+                else if (setUnfav)
+                    nexus_set_favorite(node, false);
+                else if (setIgn)
+                    nexus_set_ignored(node, true);
+                else
+                    nexus_set_ignored(node, false);
+                nodeDB->saveToDisk(SEGMENT_NODEDATABASE);
+                snprintf(replyMsg, sizeof(replyMsg), "JT: %s node !%08x (%s)", force ? "Forced" : "Updated",
+                         (unsigned int)targetNum, node->short_name[0] ? node->short_name : "UNK");
+            } else {
+                snprintf(replyMsg, sizeof(replyMsg), "JT: Node '%s' not found%s", targetStr,
+                         force ? " (and could not create)" : "");
+            }
         }
     }
     else if (strcasecmp(cmd, "RATELIMITSTAT") == 0 ||
@@ -5782,7 +5552,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         // (set by /nexus CS) to now. Before CS has run, sps_last_clear_ms is 0
         // and the rate lines print -1 / n/a so the operator sees the absence
         // of a reference window rather than a misleading number.
-        uint32_t now_ms = millis();
+        uint32_t now_ms = Time::getMillis();
         bool have_window = (sps_last_clear_ms > 0 && now_ms > sps_last_clear_ms);
         float dt_s = have_window ? (float)(now_ms - sps_last_clear_ms) / 1000.0f : 0.0f;
         // Live counters are the per-port deltas since the clear (CS zeroes
@@ -6267,7 +6037,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         // Anchor SPS/SCHS "since-clear" rate windows to right now. CS zeroes
         // the live counters above; these timestamps tell the next SPS/SCHS
         // call when the window started so pph/bph are computed on the fly.
-        sps_last_clear_ms = millis();
+        sps_last_clear_ms = Time::getMillis();
         schs_last_clear_ms = sps_last_clear_ms;
 
         snprintf(replyMsg, sizeof(replyMsg), "JT: All tactical stats cleared.");
@@ -6356,7 +6126,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         // from schs_last_clear_ms (set by /nexus CS) to now. Before CS has run,
         // schs_last_clear_ms is 0 and the rate lines print -1 / n/a so the
         // operator sees the absence of a reference window.
-        uint32_t ch_now_ms = millis();
+        uint32_t ch_now_ms = Time::getMillis();
         bool ch_have_window = (schs_last_clear_ms > 0 && ch_now_ms > schs_last_clear_ms);
         float ch_dt_s = ch_have_window ? (float)(ch_now_ms - schs_last_clear_ms) / 1000.0f : 0.0f;
         // Live counters are the per-channel deltas since the clear (CS zeroes
@@ -6840,7 +6610,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         if (requestedCount > nexus_sigint_count) requestedCount = nexus_sigint_count;
 
         startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "RSSI Log");
-        uint32_t now = millis() / 1000;
+        uint32_t now = Time::getMillis() / 1000;
 
         // Static (BSS) so 72B doesn't frame-stack the paging loop.
         static char entry[72];
@@ -7287,9 +7057,10 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             } else {
                 // Nexus: Store context for the asynchronous reply.
                 trace_active = true;
-                trace_start_time = millis(); // Watchdog reference
+                trace_start_time = Time::getMillis(); // Watchdog reference
                 trace_reply_to = isDM ? mp.from : 0xFFFFFFFF;
                 trace_reply_channel = mp.channel;
+                traceReply = {isDM ? mp.from : 0xFFFFFFFF, mp.channel, replyId, toPhoneOnly, toPhoneOnly || !isDM};
                 traceRouteModule->setNexusTraceCallback(onNexusTraceResult);
                 if (traceRouteModule->startTraceRoute(targetId)) {
                     snprintf(replyMsg, sizeof(replyMsg), "JT: Starting trace to !%08x...", targetId);
@@ -7395,40 +7166,29 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             while (*modeStr == ' ') modeStr++;
 
             uint8_t mode = 0;
-            uint32_t val = 0;
-            if (strncasecmp(modeStr, "PER ", 4) == 0) {
-                mode = 0; val = strtoul(modeStr + 4, (char**)&modeStr, 10);
-            } else if (strncasecmp(modeStr, "SCH ", 4) == 0) {
-                mode = 1;
-                int hh = atoi(modeStr + 4);
-                int mm = 0;
-                const char *mPtr = strchr(modeStr + 4, ':');
-                if (mPtr) mm = atoi(mPtr + 1);
-                val = (hh * 3600) + (mm * 60);
-                while (*modeStr && *modeStr != ' ') modeStr++; // Skip "SCH"
-                while (*modeStr == ' ') modeStr++;             // Skip space
-                while (*modeStr && *modeStr != ' ') modeStr++; // Skip HH:MM
-            } else if (strncasecmp(modeStr, "AT ", 3) == 0) {
-                mode = 2; val = strtoul(modeStr + 3, (char**)&modeStr, 10);
-            } else {
-                snprintf(replyMsg, sizeof(replyMsg), "JT: Invalid CRON mode (PER/SCH/AT)");
-                return;
-            }
-
-            while (*modeStr == ' ') modeStr++;
-            if (*modeStr == '\0') {
-                snprintf(replyMsg, sizeof(replyMsg), "JT: CRON missing command");
+            uint32_t value = 0;
+            const char *command = nullptr;
+            uint32_t wallClock = getTime(false);
+            if (!nexus::parseCron(modeStr, wallClock, mode, value, command)) {
+                snprintf(replyMsg, sizeof(replyMsg),
+                         "JT: CRON expects PER >=60, SCH HH:MM UTC, or future AT timestamp; command 1-63 bytes");
             } else {
                 int slot = -1;
-                for(int i=0; i<8; i++) if(!cron_table[i].active) { slot = i; break; }
-                if(slot == -1) snprintf(replyMsg, sizeof(replyMsg), "JT: CRON table full (max 8)");
-                else {
-                    cron_table[slot].active = 1;
-                    cron_table[slot].mode = mode;
-                    cron_table[slot].value = val;
-                    cron_table[slot].last_run = (mode == 0) ? (millis()/1000) : getTime(false);
-                    strncpy(cron_table[slot].command, modeStr, 63);
-                    cron_table[slot].command[63] = '\0';
+                for (int i = 0; i < 8; ++i)
+                    if (!cron_table[i].active) {
+                        slot = i;
+                        break;
+                    }
+                if (slot < 0) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT: CRON table full (max 8)");
+                } else {
+                    auto &job = cron_table[slot];
+                    job.active = 1;
+                    job.mode = mode;
+                    job.value = value;
+                    job.last_run = mode == 0 ? static_cast<uint32_t>(Time::getUptimeSecs()) : wallClock;
+                    cronLastRunMs[slot] = Time::getMillis();
+                    strcpy(job.command, command);
                     snprintf(replyMsg, sizeof(replyMsg), "JT: CRON Job %d ADDED.", slot);
                 }
             }
@@ -8210,7 +7970,8 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                     appendPaging(cmdBuf.pbuf);
 
                     snprintf(cmdBuf.pbuf, sizeof(cmdBuf.pbuf), "Timing: Min:%us Max:%us Age:%us\n",
-                             s.minInterval == 0xFFFFFFFF ? 0 : s.minInterval, s.maxInterval, (uint32_t)((millis() / 1000) - s.lastSeen));
+                             s.minInterval == 0xFFFFFFFF ? 0 : s.minInterval, s.maxInterval,
+                             (uint32_t)((Time::getMillis() / 1000) - s.lastSeen));
                     appendPaging(cmdBuf.pbuf);
 
                     snprintf(cmdBuf.pbuf, sizeof(cmdBuf.pbuf), "Ports: NI:%u POS:%u TEL:%u TXT:%u ADM:%u RT:%u SF:%u OTH:%u\n",
@@ -8235,13 +7996,14 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
     else if (strcasecmp(cmd, "NETSCAN") == 0) {
         if (netscan_active) {
             snprintf(replyMsg, sizeof(replyMsg), "JT: Scan already in progress (%us left)",
-                     60 - (uint32_t)((millis() - netscan_start) / 1000));
+                     60 - (uint32_t)((Time::getMillis() - netscan_start) / 1000));
         } else {
             netscan_active = true;
-            netscan_start = millis();
+            netscan_start = Time::getMillis();
             nexus_netscan_count = 0;
             netscan_reply_to = mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF;
             netscan_reply_ch = mp.channel;
+            netscanReply = {isDM ? mp.from : 0xFFFFFFFF, mp.channel, replyId, toPhoneOnly, toPhoneOnly || !isDM};
 
             // Broadcast a 0-hop RouteDiscovery to flush neighbors
             meshtastic_MeshPacket *tp = (router) ? router->allocForSending() : nullptr;
@@ -8261,7 +8023,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
     else if (strncasecmp(cmd, "CLIENTSCAN", 10) == 0) {
         if (clientscan_active) {
             snprintf(replyMsg, sizeof(replyMsg), "JT: ClientScan in progress (%us left)",
-                     (uint32_t)((clientscan_duration_ms - (millis() - clientscan_start)) / 1000));
+                     (uint32_t)((clientscan_duration_ms - (Time::getMillis() - clientscan_start)) / 1000));
         } else {
             const char *p = cmd + 10;
             while (*p == ' ') p++;
@@ -8283,9 +8045,8 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 clientscan_count = 0;
                 clientscan_duration_ms = duration * 1000;
 
-                paging_to = isDM ? mp.from : 0xFFFFFFFF;
-                paging_ch = mp.channel;
-                paging_reply_id = replyId;
+                clientscanReply = {isDM ? mp.from : 0xFFFFFFFF, mp.channel, replyId, toPhoneOnly,
+                                   toPhoneOnly || !isDM};
 
                 // 1. Generate the confirmation message
                 snprintf(replyMsg, sizeof(replyMsg), "JT: CLIENTSCAN Start (%us)", (unsigned int)duration);
@@ -8296,7 +8057,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                     // 3. Set the target ID to THIS reply packet's ID
                     clientscan_target_id = generatePacketId();
                     reply->id = clientscan_target_id;
-                    clientscan_start = millis(); // Precise start
+                    clientscan_start = Time::getMillis(); // Precise start
 
                     reply->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
                     reply->to = isDM ? mp.from : 0xFFFFFFFF;
@@ -8372,7 +8133,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
 
                 // 2. Prepare Context
                 freqscan_active = true;
-                freqscan_start = millis();
+                freqscan_start = Time::getMillis();
                 freqscan_to = isDM ? mp.from : 0xFFFFFFFF;
                 freqscan_ch = mp.channel;
                 freqscan_reply_id = replyId;
@@ -8389,13 +8150,14 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
 
                 // Trigger noise sampling
                 noise_sampling_active = true;
-                noise_sampling_start = millis() + 5000; // 5s stabilization for FreqShift
+                noise_sampling_start = Time::getMillis() + 5000; // 5s stabilization for FreqShift
                 noise_sampling_next = noise_sampling_start;
                 noise_sample_count = 0;
                 noise_retry_count = 0;
                 noise_sampling_to = freqscan_to;
                 noise_sampling_ch = freqscan_ch;
                 noise_sampling_reply_id = replyId;
+                noiseReply = {isDM ? mp.from : 0xFFFFFFFF, mp.channel, replyId, toPhoneOnly, toPhoneOnly || !isDM};
 
                 setIntervalFromNow(50);
             } else {
@@ -8408,13 +8170,14 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             snprintf(replyMsg, sizeof(replyMsg), "JT: Noise sampling already in progress.");
         } else {
             noise_sampling_active = true;
-            noise_sampling_start = millis();
-            noise_sampling_next = millis();
+            noise_sampling_start = Time::getMillis();
+            noise_sampling_next = Time::getMillis();
             noise_sample_count = 0;
             noise_retry_count = 0;
             noise_sampling_to = isDM ? mp.from : 0xFFFFFFFF;
             noise_sampling_ch = mp.channel;
             noise_sampling_reply_id = replyId;
+            noiseReply = {isDM ? mp.from : 0xFFFFFFFF, mp.channel, replyId, toPhoneOnly, toPhoneOnly || !isDM};
 
             snprintf(replyMsg, sizeof(replyMsg), "JT: Noise snapshot started...");
             setIntervalFromNow(10); // High-speed snapshot
@@ -8965,6 +8728,13 @@ if (strncasecmp(p, "DEDUP_INT ", 10) == 0) mc.payload_variant.traffic_management
         snprintf(replyMsg, sizeof(replyMsg), "JT: Unknown command '%s'", cmd);
     }
 
+    if (pagingRendering || pagingGeneration != pagingGenerationBefore) {
+        pagingWindow.finish(paging_buf);
+        paging_ptr = pagingWindow.size();
+    }
+    if (pagingRendering)
+        return;
+
     // 2026-08-17 (Nexus-28001): prepend a signature-state emoji to every reply as a debug
     // indicator. 2026-08-23 (Nexus-28002): expanded from 3 to 4 states — the 'signed & verified'
     // case splits on whether the signer is in our trust list (admin_key[0..2],
@@ -9035,7 +8805,7 @@ if (strncasecmp(p, "DEDUP_INT ", 10) == 0) mc.payload_variant.traffic_management
     if (strlen(replyMsg) > 0) {
         // Nexus: Multi-Routing Logic.
         // Send a local copy if explicitly requested or if it's a non-DM command from a non-shadow node.
-        bool shouldSendLocal = (toPhoneOnly || (!isDM && !isShadow));
+        bool shouldSendLocal = (toPhoneOnly || !isDM);
 
         if (shouldSendLocal) {
             size_t rLen = strlen(replyMsg);
@@ -9056,7 +8826,7 @@ if (strncasecmp(p, "DEDUP_INT ", 10) == 0) mc.payload_variant.traffic_management
 
     // Nexus: Move configuration application to runOnce() via timer
     if (pendingLoRaConfig) {
-        pendingLoRaApplyAt = millis() + 5000; // Apply in 5 seconds
+        // The mutation that staged pendingConfig owns its deadline.
         LOG_INFO("Nexus: LoRa shift scheduled in 5000ms");
         setIntervalFromNow(50);
     }

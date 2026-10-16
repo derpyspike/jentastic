@@ -648,7 +648,8 @@ int ExternalNotificationModule::handleInputEvent(const InputEvent *event)
 // and /nexus PLAYRTTTL <melody>.
 void ExternalNotificationModule::playRTTTL(const char *melody)
 {
-    if (!melody || *melody == ' ') return;
+    if (!melody || *melody == '\0')
+        return;
     LOG_INFO("Nexus: Playing RTTTL: %s", melody);
 
     // Nexus-28005 (2026-09-13): same manual-trigger fix as
@@ -705,14 +706,17 @@ void ExternalNotificationModule::triggerNexusBell()
 
     if ((moduleConfig.external_notification.alert_bell_buzzer || moduleConfig.external_notification.alert_message_buzzer) &&
         canBuzz()) {
-#ifdef HAS_I2S
+#if defined(HAS_I2S) && !MESHTASTIC_EXCLUDE_RTTTL
         if (moduleConfig.external_notification.use_i2s_as_buzzer) {
             audioThread->beginRttl(rtttlConfig.ringtone, strlen_P(rtttlConfig.ringtone));
         } else
 #endif
+#if !MESHTASTIC_EXCLUDE_RTTTL
             if (moduleConfig.external_notification.use_pwm) {
             rtttl::begin(config.device.buzzer_gpio, rtttlConfig.ringtone);
-        } else {
+        } else
+#endif
+        {
             setExternalState(2, true);
         }
     }
