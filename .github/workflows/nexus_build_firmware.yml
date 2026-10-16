@@ -45,13 +45,32 @@ jobs:
 
       # Warm ~/.platformio per platform: avoids re-downloading toolchains on
       # every run and dodges PlatformIO registry rate limits on cold caches.
+      # Key is scoped to the pinned PIO version (6119): pre-pin runs in the
+      # 2026-10-13 06:10-09:04 window saved caches with a gutted tool-scons
+      # (6.2.0 wipe), and the old un-versioned key kept restoring them. Bump
+      # this prefix whenever the platformio== pin below changes.
       - name: Cache PlatformIO packages
         uses: actions/cache@v4
         with:
           path: ~/.platformio
-          key: pio-${{ runner.os }}-${{ inputs.platform }}-${{ hashFiles('platformio.ini') }}
+          key: pio6119-${{ runner.os }}-${{ inputs.platform }}-${{ hashFiles('platformio.ini') }}
           restore-keys: |
-            pio-${{ runner.os }}-${{ inputs.platform }}-
+            pio6119-${{ runner.os }}-${{ inputs.platform }}-
+
+      - name: Guard against gutted tool-scons cache
+        # Self-heal: if tool-scons exists but its FortranCommon.py marker is
+        # missing (the 6.2.0 wipe leaves the manifest but empties the package,
+        # so a pinned PIO skips reinstall), drop the package and let the build
+        # fetch a fresh one. This is the exact "No module named
+        # 'SCons.Tool.FortranCommon'" ESP-link failure seen on 2026-10-16.
+        run: |
+          TS="$HOME/.platformio/packages/tool-scons"
+          if [ -d "$TS" ] && ! find "$TS" -name FortranCommon.py -print -quit | grep -q .; then
+            echo "tool-scons present but gutted — removing for clean reinstall"
+            rm -rf "$TS"
+          else
+            echo "tool-scons OK or absent (PIO installs on demand)"
+          fi
 
       - name: Install PlatformIO
         # PINNED: PlatformIO Core 6.2.0 (PyPI latest since 2026-09-05) wipes
