@@ -63,7 +63,9 @@ jobs:
         with:
           python-version: 3.x
           cache: pip
-      - run: pip install -U platformio
+      # Pinned to match nexus_build_firmware: pio 6.2.0 has the tool-scons
+      # wipe bug (FortranCommon link failure) — see that file's comment.
+      - run: pip install -U platformio==6.1.19
       - name: Generate matrix
         id: jsonStep
         run: |
