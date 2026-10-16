@@ -34,7 +34,16 @@ bool WiFiServerPort::hasActiveClient() {
 
 String WiFiServerPort::getClientInfo() {
     if (openAPI) {
+#ifdef ARCH_PORTDUINO
+        auto ip = openAPI->getClient().remoteIP();
+        char endpoint[24];
+        snprintf(endpoint, sizeof(endpoint), "%u.%u.%u.%u:%u", static_cast<unsigned>(ip[0]), static_cast<unsigned>(ip[1]),
+                 static_cast<unsigned>(ip[2]), static_cast<unsigned>(ip[3]),
+                 static_cast<unsigned>(openAPI->getClient().remotePort()));
+        return String(endpoint);
+#else
         return openAPI->getClient().remoteIP().toString() + ":" + String(openAPI->getClient().remotePort());
+#endif
     }
     return "N/A";
 }

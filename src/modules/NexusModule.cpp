@@ -39,12 +39,14 @@
 #if defined(ARCH_ESP32) && !MESHTASTIC_EXCLUDE_WIFI
 #include "MeshtasticOTA.h"
 #endif
+#include "CryptoEngine.h" // for crypto->xeddsa_verify (Nexus-28002, verifyTrustedSignature)
 #include "Router.h"
-#include "CryptoEngine.h"   // for crypto->xeddsa_verify (Nexus-28002, verifyTrustedSignature)
+#include "UptimeClock.h" // Time::getMillisMonotonic() — wrap-safe 64-bit uptime
 #include "airtime.h"
 #include "configuration.h"
 #include "main.h"
-#include "UptimeClock.h"   // Time::getMillisMonotonic() — wrap-safe 64-bit uptime
+#include "mesh/Throttle.h"
+#include <new>
 #ifdef ARCH_NRF52
 #include "main.h"
 #endif
@@ -670,28 +672,14 @@ void NexusModule::updateStats(const meshtastic_MeshPacket &mp) {
 
 bool NexusModule::checkReplay(uint32_t id)
 {
-    // Linear scan over the filled portion of the ring. Cheap (≤ 256
-    // uint32_t compares) and runs only on inbound /nexus commands.
-    for (uint8_t i = 0; i < replay_count; i++) {
-        if (replay_ids[i] == id) {
-            return true;
-        }
-    }
-    // Miss: record the id. Overwrite the oldest slot once full — that's
-    // implicit ring eviction by the modulo next-index below.
-    replay_ids[replay_next] = id;
-    replay_next = (replay_next + 1) % REPLAY_RING_SIZE;
-    if (replay_count < REPLAY_RING_SIZE) {
-        replay_count++;
-    }
-    return false;
+    return replayRing.check(id);
 }
 
 void NexusModule::sniffPacket(const meshtastic_MeshPacket &mp) {
     if (clientscan_active && mp.id == clientscan_target_id) {
         // Record repeat
         if (clientscan_count < 50) {
-            uint32_t now = millis();
+            uint32_t now = Time::getMillis();
 
             // Nexus: No deduplication - we want every instance of this packet ID seen on air.
             // Repetitions will have the same fromID and packetID, but unique signal data and relay node IDs.
@@ -813,7 +801,7 @@ int NexusModule::onInputEvent(const InputEvent *event) {
         pendingReply.channel = targetCh;
         pendingReply.reply_id = 0;
         pendingReply.want_ack = false;
-        pendingReply.send_at = millis() + 500; // Debounce delay
+        pendingReply.send_at = Time::getMillis() + 500; // Debounce delay
 
         size_t rLen = strlen(report);
         if (rLen > NEXUS_MAX_REPLY_BODY) rLen = NEXUS_MAX_REPLY_BODY;
@@ -836,7 +824,7 @@ void NexusModule::updateSigint(const meshtastic_MeshPacket &mp) {
     // Nexus port (Nexus-28001, 2026-08-16): rx_frequency_error restored, populated by
     // the radio driver's addReceiveMetadata().
     e.freqError = mp.rx_frequency_error;
-    e.timestamp = millis() / 1000;
+    e.timestamp = Time::getMillis() / 1000;
     e.hop_limit = static_cast<uint8_t>(mp.hop_limit);
     e.hop_start = static_cast<uint8_t>(mp.hop_start);
     e.relay_node = mp.relay_node;
@@ -893,7 +881,7 @@ void NexusModule::updateTargetStats(const meshtastic_MeshPacket &mp) {
                 }
             }
 
-            uint32_t now = millis();
+            uint32_t now = Time::getMillis();
             if (s.lastPacketTime != 0) {
                 uint32_t interval = (now - s.lastPacketTime) / 1000;
                 if (interval > 0) { // Avoid sub-second noise
@@ -1080,7 +1068,7 @@ bool NexusModule::checkRateLimit(const meshtastic_MeshPacket &mp) {
     }
 
     // Refill tokens for all buckets based on elapsed time
-    uint32_t now = millis();
+    uint32_t now = Time::getMillis();
     uint32_t elapsed = (now - rl_last_refill);
     rl_last_refill = now;
     float refill = (float)elapsed / 3600000.0f; // milliseconds to hours
@@ -2104,7 +2092,7 @@ ProcessMessage NexusModule::handleReceived(const meshtastic_MeshPacket &mp) {
         // Nexus: Full memset (not just cmdBuf[0]) so residual bytes from previous calls cannot
         // bleed into strcasecmp/strlen reads and cause spurious 'Unknown command' mismatches.
         memset(cmdBuf, 0, sizeof(this->cmdBuf));
-        size_t copyLen = (mp.decoded.payload.size < 127) ? mp.decoded.payload.size : 127;
+        size_t copyLen = std::min<size_t>(mp.decoded.payload.size, sizeof(this->cmdBuf) - 1);
         memcpy(cmdBuf, mp.decoded.payload.bytes, copyLen);
 
         // Nexus: Emoji Trigger (🐱 or 🙂 or 🤖 on Nexus Channel)
@@ -2140,7 +2128,7 @@ ProcessMessage NexusModule::handleReceived(const meshtastic_MeshPacket &mp) {
                 pendingReply.message[rLen] = '\0';
 
                 uint32_t jitter = broadcastReplyJitterMs();
-                pendingReply.send_at = millis() + jitter;
+                pendingReply.send_at = Time::getMillis() + jitter;
                 setIntervalFromNow(50);
             }
         }
@@ -2204,7 +2192,7 @@ ProcessMessage NexusModule::handleReceived(const meshtastic_MeshPacket &mp) {
                             memcpy(pendingReply.message, hopEmoji, rLen_e);
                             pendingReply.message[rLen_e] = '\0';
                             uint32_t jitter = broadcastReplyJitterMs();
-                            pendingReply.send_at = millis() + jitter;
+                            pendingReply.send_at = Time::getMillis() + jitter;
                             setIntervalFromNow(50);
                             return ProcessMessage::CONTINUE;
                         }
@@ -2301,10 +2289,10 @@ ProcessMessage NexusModule::handleReceived(const meshtastic_MeshPacket &mp) {
 
                 if (!isDM) {
                     uint32_t jitter = broadcastReplyJitterMs();
-                    pendingReply.send_at = millis() + jitter;
+                    pendingReply.send_at = Time::getMillis() + jitter;
                     LOG_INFO("Nexus: Queuing broadcast ping with %ums jitter", jitter);
                 } else {
-                    pendingReply.send_at = millis() + 50; // Minimal yield
+                    pendingReply.send_at = Time::getMillis() + 50; // Minimal yield
                     LOG_INFO("Nexus: Queuing DM ping (50ms yield)");
                 }
                 setIntervalFromNow(50);
@@ -2462,15 +2450,10 @@ ProcessMessage NexusModule::handleReceived(const meshtastic_MeshPacket &mp) {
                 if (authorized) {
                     // Nexus: Block /nexus-local if received over the mesh (Security Violation)
                     if (isLocalOnly) {
+                        if (isInternal)
+                            return handleLocal(mp);
                         LOG_WARN("Nexus: Security Violation - /nexus-local received over RF from !%08x", mp.from);
                         return ProcessMessage::STOP;
-                    }
-
-                    // Nexus: Targeted Shadow Identity. Check if the first two bytes match 0xdefc
-                    // Logic: If the sender is a shadow node (!defc*), we STOP it from reaching the app.
-                    bool shouldStop = ((mp.from >> 16) == 0xdefc);
-                    if (shouldStop) {
-                        LOG_INFO("Nexus: Shadow node (!defc*) detected. Applying Shadow CLI (STOP).");
                     }
 
                     // Comparison for targeted commands
@@ -2481,15 +2464,15 @@ ProcessMessage NexusModule::handleReceived(const meshtastic_MeshPacket &mp) {
                             // ID/Name/MAC are DMs (isBroadcast=false), group is broadcast.
                             bool isGroup = (kind == TARGET_GROUP);
                             LOG_INFO("Nexus: Targeted command for us (kind=%u): %s", (unsigned)kind, cmdStart);
-                            handleNexusCommand(mp, cmdStart, isGroup, mp.id, false, shouldStop);
+                            handleNexusCommand(mp, cmdStart, isGroup, mp.id, false);
                         }
-                        return shouldStop ? ProcessMessage::STOP : ProcessMessage::CONTINUE;
+                        return ProcessMessage::CONTINUE;
                     }
                     else if (isBroadcast) {
                         const char *cmdStart = cmdBuf + prefLen;
                         while(*cmdStart == ' ') cmdStart++;
-                        handleNexusCommand(mp, cmdStart, true, mp.id, false, shouldStop);
-                        return shouldStop ? ProcessMessage::STOP : ProcessMessage::CONTINUE;
+                        handleNexusCommand(mp, cmdStart, true, mp.id, false);
+                        return ProcessMessage::CONTINUE;
                     }
                 } else {
                     LOG_WARN("Nexus: SECURITY REJECTED /nexus from !%08x — %s", (unsigned)mp.from, rejectReason ? rejectReason : "not authorized");
@@ -2513,8 +2496,7 @@ ProcessMessage NexusModule::handleReceived(const meshtastic_MeshPacket &mp) {
 
         // Nexus: DM Forwarding Logic (v10)
         // If enabled, forward non-CLI DMs to the Nexus channel with full SIGINT metadata
-        bool isShadowSender = false; // Debug variable that is no longer used.
-        if (dm_forward && mp.to == myNodeInfo.my_node_num && !isShadowSender) {
+                if (dm_forward && mp.to == myNodeInfo.my_node_num) {
             LOG_INFO("Nexus: DM Forwarding triggered for DM from !%08x", mp.from);
 
             // 1. Prepare Tactical Report
@@ -2575,82 +2557,25 @@ ProcessMessage NexusModule::handleReceived(const meshtastic_MeshPacket &mp) {
     return ProcessMessage::CONTINUE;
 }
 ProcessMessage NexusModule::handleLocal(const meshtastic_MeshPacket &mp) {
-    // Nexus: Handle CLI commands sent from the local phone
-    if (mp.which_payload_variant == meshtastic_MeshPacket_decoded_tag &&
-        mp.decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP &&
-        mp.decoded.payload.size > 2) {
-
-        const char* msg = (const char*)mp.decoded.payload.bytes;
-        // Reuse the persistent member buffer (not a stack local) to reduce loopTask pressure
-        char *cmdBuf = this->cmdBuf;
-        // Nexus: Full memset (not just cmdBuf[0]) so residual bytes from previous calls cannot
-        // bleed into strcasecmp/strlen reads and cause spurious 'Unknown command' mismatches.
-        memset(cmdBuf, 0, sizeof(this->cmdBuf));
-        size_t copyLen = (mp.decoded.payload.size < 127) ? mp.decoded.payload.size : 127;
-        memcpy(cmdBuf, msg, copyLen);
-
-        // 2. /nexus (broadcast), /nexus-local (local only), /nexus-device !id (targeted ID), /nexus-node shortname (targeted Name), or /nexus-mac hex (targeted MAC)
-        // Nexus v267 fix-up: also accept the /jt, /jent, /jentastic prefix roots (see NEXUS_PREFIX_ROOTS, file scope).
-        // The dispatch branches below use matchedRootLen to compute the offset past the
-        // root (root + suffix + trailing space) so that /jent-local, /jt STATS, etc. slice
-        // the command body correctly. Without this, /jent-local STATS would slice off the
-        // first 2 chars (delivering "AL STATS" to handleNexusCommand).
-        bool isLocalOnly = false;
-        bool isBroadcast = false;
-        bool isTargetedPrefix = false;
-        size_t matchedRootLen = 0;
-        for (size_t r = 0; r < NEXUS_PREFIX_ROOTS_COUNT; r++) {
-            const char* root = NEXUS_PREFIX_ROOTS[r];
-            size_t rootLen = strlen(root);
-            if (strncasecmp(cmdBuf, root, rootLen) != 0) continue;
-            const char* after = cmdBuf + rootLen;
-            if (strncasecmp(after, "-local", 6) == 0 && (after[6] == ' ' || after[6] == '\0')) {
-                isLocalOnly = true;
-                matchedRootLen = rootLen;
-            } else if (after[0] == '\0' || after[0] == ' ') {
-                isBroadcast = true;
-                matchedRootLen = rootLen;
-            } else if (strncasecmp(after, "-device ", 8) == 0
-                    || strncasecmp(after, "-node ", 6) == 0
-                    || strncasecmp(after, "-mac ", 5) == 0
-                    || strncasecmp(after, "-group ", 7) == 0) {
-                isTargetedPrefix = true;
-                matchedRootLen = rootLen;
-            }
-            break; // one prefix root matches at most
-        }
-
-
-        if (isLocalOnly || isBroadcast || isTargetedPrefix) {
-            LOG_INFO("Nexus: Local CLI triggered");
-            // Comparison for targeted commands
-            if (isTargetedPrefix) {
-                // Targeted: extract target token via the shared helper, then
-                // dispatch handleNexusCommand if (and only if) the target
-                // matches us. matchTargetedCmd() returns nullptr otherwise.
-                size_t kind = 0;
-                const char *cmdStart = matchTargetedCmd(cmdBuf, &kind);
-                if (cmdStart) {
-                    LOG_INFO("Nexus: Targeted command for us (kind=%u): %s", (unsigned)kind, cmdStart);
-                    handleNexusCommand(mp, cmdStart, false, mp.id);
-                }
-                return ProcessMessage::STOP;
-            }
-            else if (isLocalOnly) {
-                // Skip past root + "-local "; e.g. /nexus-local STATS -> "STATS", /jent-local STATS -> "STATS".
-                size_t offset = matchedRootLen + 7; // "-local " is 7 chars
-                const char *cmdStart = (strlen(cmdBuf) > offset) ? cmdBuf + offset : "";
-                handleNexusCommand(mp, cmdStart, true, mp.id, true);
-                return ProcessMessage::STOP;
-            }
-            else if (isBroadcast) {
-                // Skip past root + " " (1 char). For bare root (no space, no body), start at '\0'.
-                size_t offset = matchedRootLen + ((cmdBuf[matchedRootLen] == ' ') ? 1 : 0);
-                const char *cmdStart = cmdBuf + offset;
-                handleNexusCommand(mp, cmdStart, true, mp.id);
-                return ProcessMessage::STOP;
-            }
-        }
+    if (!nexusIsInternal(mp) || mp.which_payload_variant != meshtastic_MeshPacket_decoded_tag ||
+        mp.decoded.portnum != meshtastic_PortNum_TEXT_MESSAGE_APP)
+        return ProcessMessage::CONTINUE;
+    memset(cmdBuf, 0, sizeof(cmdBuf));
+    memcpy(cmdBuf, mp.decoded.payload.bytes, std::min<size_t>(mp.decoded.payload.size, sizeof(cmdBuf) - 1));
+    for (size_t r = 0; r < NEXUS_PREFIX_ROOTS_COUNT; ++r) {
+        size_t rootLength = strlen(NEXUS_PREFIX_ROOTS[r]);
+        if (strncasecmp(cmdBuf, NEXUS_PREFIX_ROOTS[r], rootLength) != 0)
+            continue;
+        const char *tail = cmdBuf + rootLength;
+        if (strncasecmp(tail, "-local", 6) != 0 || (tail[6] != ' ' && tail[6] != '\0'))
+            continue;
+        tail += 6;
+        while (*tail == ' ')
+            ++tail;
+        meshtastic_MeshPacket local = mp;
+        local.to = myNodeInfo.my_node_num;
+        handleNexusCommand(local, tail, false, mp.id, true);
+        return ProcessMessage::STOP;
     }
     return ProcessMessage::CONTINUE;
 }
@@ -2773,7 +2698,7 @@ void NexusModule::applyTS(uint32_t *traceId) {
 }
 
 int32_t NexusModule::runOnce() {
-    uint32_t now = millis();
+    uint32_t now = Time::getMillis();
 
     // 0. Delayed InputBroker Hook (Ensure inputBroker is initialized)
     if (!input_hooked && inputBroker) {
@@ -2783,7 +2708,7 @@ int32_t NexusModule::runOnce() {
     }
 
     // 1. Process Deferred Replies (Jitter)
-    if (pendingReply.active && now >= pendingReply.send_at) {
+    if (pendingReply.active && Throttle::deadlinePassedAt(now, pendingReply.send_at)) {
         meshtastic_MeshPacket *reply = (router) ? router->allocForSending() : nullptr;
         if (reply) {
             reply->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
@@ -2816,22 +2741,15 @@ int32_t NexusModule::runOnce() {
     }
 
     // 2. TRACE Watchdog (100s timeout)
-    if (trace_active && (now - trace_start_time > 100000)) {
+    if (trace_active && Throttle::hasElapsed(trace_start_time, 100000)) {
         trace_active = false;
-        if (!pendingReply.active) {
-            pendingReply.active = true;
-            pendingReply.to = trace_reply_to;
-            pendingReply.channel = trace_reply_channel;
-            pendingReply.send_at = now + 50;
-            strncpy(pendingReply.message, "JT: Trace Timeout (100s)", NEXUS_MAX_REPLY_BODY);
-            pendingReply.message[NEXUS_MAX_REPLY_BODY] = '\0';
-            setIntervalFromNow(50);
-        }
-        LOG_WARN("Nexus: Trace Watchdog triggered.");
+        trace_reply_to = 0;
+        const char *message = "JT: Trace Timeout (100s)";
+        sendReply(traceReply, message, strlen(message));
     }
 
     // 3. Process Deferred LoRa Changes
-    if (pendingLoRaConfig && now >= pendingLoRaApplyAt) {
+    if (pendingLoRaConfig && Throttle::deadlinePassedAt(now, pendingLoRaApplyAt)) {
         LOG_INFO("Nexus: Applying deferred LoRa configuration change (LIVE).");
         if (adminModule) adminModule->handleSetConfig(pendingConfig, false);
         pendingLoRaConfig = false;
@@ -2839,7 +2757,7 @@ int32_t NexusModule::runOnce() {
     }
 
     // 4.5 Multi-step Macro Runner (v30)
-    if (macro_running_cmd[0] != '\0' && now >= macro_next_step_at) {
+    if (macro_running_cmd[0] != '\0' && Throttle::deadlinePassedAt(now, macro_next_step_at)) {
         // Find next command in sequence (delimited by ;)
         static char current_cmd[128];
         memset(current_cmd, 0, sizeof(current_cmd));
@@ -2863,10 +2781,9 @@ int32_t NexusModule::runOnce() {
         if (*cmdPtr != '\0') {
             LOG_INFO("Nexus: Macro executing step: %s", cmdPtr);
             // Execute the command (as a shadow command to reuse existing logic)
-            meshtastic_MeshPacket mock_mp = meshtastic_MeshPacket_init_default;
-            mock_mp.from = macro_from_id;
-            mock_mp.channel = macro_reply_ch;
-            handleNexusCommand(mock_mp, cmdPtr, false, macro_reply_to, macro_to_phone, macro_is_shadow);
+            macroStepExecuting = true;
+            handleNexusCommand(macroRequest, cmdPtr, macroIsBroadcast, macro_reply_to, macro_to_phone, macroDepth);
+            macroStepExecuting = false;
 
             if (found_semi) {
                 macro_next_step_at = now + 10000; // 10s delay between steps
@@ -2876,43 +2793,38 @@ int32_t NexusModule::runOnce() {
                 macro_running_cmd[0] = '\0';
             }
         } else {
-            // Empty step or end of string
-            macro_running_cmd[0] = '\0';
+            if (found_semi) {
+                macro_next_step_at = now;
+                setIntervalFromNow(100);
+            } else {
+                macro_running_cmd[0] = '\0';
+            }
         }
     }
 
-    // 5. Multi-part Paging Sender
-    if (paging_ptr > 0 && now >= paging_next_send) {
-        if (router) {
-            paging_part++;
-            char partBuf[NEXUS_MAX_REPLY];
-            int headerLen = snprintf(partBuf, sizeof(partBuf), "P%d: ", paging_part);
-
-            // Take up to (NEXUS_MAX_REPLY_BODY - 20) bytes from the paging buffer
-            int remaining = paging_ptr;
-            int take = (remaining > (int)(NEXUS_MAX_REPLY_BODY - 20)) ? (int)(NEXUS_MAX_REPLY_BODY - 20) : remaining;
-
-            memcpy(partBuf + headerLen, paging_buf, take);
-            partBuf[headerLen + take] = '\0';
-
-            size_t pLen = strlen(partBuf);
-            // Reply packet: send to mesh, then echo to phone UI.
-            // Both use the same reply_id so the phone UI groups them as a
-            // single response.
-            sendToMeshPacket(paging_to, paging_ch, paging_reply_id, partBuf, pLen, false, true);
-            sendToPhone(0xFFFFFFFF, paging_ch, paging_reply_id, partBuf, pLen);
-            LOG_INFO("Nexus: Sent paging part %d (Mesh + Phone)", paging_part);
-
-            // Shift buffer
-            if (remaining > take) {
-                memmove(paging_buf, paging_buf + take, remaining - take);
-                paging_ptr -= take;
-                paging_next_send = now + 2000; // 2s delay between parts
-                setIntervalFromNow(100);
-            } else {
-                paging_ptr = 0; // Done!
-            }
+    // Re-render read-only reports into successive bounded windows.
+    if (paging_ptr == 0 && pagingWindow.hasMore() && pagingCommand[0] && !pagingRendering) {
+        pagingOffset = pagingWindow.end();
+        pagingRendering = true;
+        handleNexusCommand(pagingRequest, pagingCommand, pagingIsBroadcast, paging_reply_id, pagingReply.phoneOnly);
+        pagingRendering = false;
+    }
+    if (paging_ptr > 0 && Throttle::deadlinePassedAt(now, paging_next_send)) {
+        char partBuf[NEXUS_MAX_REPLY];
+        int headerLen = snprintf(partBuf, sizeof(partBuf), "P%d: ", paging_part + 1);
+        size_t take = std::min<size_t>(paging_ptr, NEXUS_MAX_REPLY_BODY - headerLen);
+        // Keep UTF-8 code points in a single transport packet.
+        if (take < paging_ptr)
+            while (take && (static_cast<uint8_t>(paging_buf[take]) & 0xC0) == 0x80)
+                --take;
+        memcpy(partBuf + headerLen, paging_buf, take);
+        partBuf[headerLen + take] = '\0';
+        if (sendReply(pagingReply, partBuf, headerLen + take)) {
+            ++paging_part;
+            memmove(paging_buf, paging_buf + take, paging_ptr - take);
+            paging_ptr -= take;
         }
+        paging_next_send = now + 2000;
     }
     if (netscan_active && (now - netscan_start > 60000)) {
         netscan_active = false; // Stop collection FIRST (ESP32 Atomic)
@@ -2922,8 +2834,7 @@ int32_t NexusModule::runOnce() {
             const char *msg = "JT NETSCAN: No direct neighbors heard.";
             size_t mLen = strlen(msg);
             if (mLen > NEXUS_MAX_REPLY_BODY) mLen = NEXUS_MAX_REPLY_BODY;
-            sendToMeshPacket(netscan_reply_to, netscan_reply_ch, 0, msg, mLen, false, false);
-            sendToPhone(0xFFFFFFFF, netscan_reply_ch, 0, msg, mLen);
+            sendReply(netscanReply, msg, mLen, false);
         } else {
             // Generate multi-part CSV reports
             char buf[NEXUS_MAX_REPLY];
@@ -2957,8 +2868,7 @@ int32_t NexusModule::runOnce() {
 
                 if (len + lLen >= (int)NEXUS_MAX_REPLY_BODY - 5) {
                     // Send current buffer
-                    sendToMeshPacket(netscan_reply_to, netscan_reply_ch, 0, buf, len, false, false);
-                    sendToPhone(0xFFFFFFFF, netscan_reply_ch, 0, buf, len);
+                    sendReply(netscanReply, buf, len, false);
 
                     // Reset buffer for next part
                     len = snprintf(buf, sizeof(buf), "NETSCAN P%d:\n", ++part);
@@ -2967,8 +2877,7 @@ int32_t NexusModule::runOnce() {
                 len += lLen;
             }
             // Send final part
-            sendToMeshPacket(netscan_reply_to, netscan_reply_ch, 0, buf, len, false, false);
-            sendToPhone(0xFFFFFFFF, netscan_reply_ch, 0, buf, len);
+            sendReply(netscanReply, buf, len, false);
         }
     }
 
@@ -2976,14 +2885,12 @@ int32_t NexusModule::runOnce() {
         clientscan_active = false; // Stop collection FIRST (ESP32 Atomic)
 
         if (clientscan_count == 0) {
-             // Send empty reply. Note: clientscan reuses paging_to/ch/reply_id
-             // as its destination context (the paging system isn't actively
-             // in use during a clientscan).
-             const char *msg = "JT CLIENTSCAN: No repeats heard.";
-             size_t mLen = strlen(msg);
-             if (mLen > NEXUS_MAX_REPLY_BODY) mLen = NEXUS_MAX_REPLY_BODY;
-             sendToMeshPacket(paging_to, paging_ch, paging_reply_id, msg, mLen, false, false);
-             sendToPhone(0xFFFFFFFF, paging_ch, paging_reply_id, msg, mLen);
+            // The scan owns its context independently of command paging.
+            const char *msg = "JT CLIENTSCAN: No repeats heard.";
+            size_t mLen = strlen(msg);
+            if (mLen > NEXUS_MAX_REPLY_BODY)
+                mLen = NEXUS_MAX_REPLY_BODY;
+            sendReply(clientscanReply, msg, mLen, false);
         } else {
             char buf[NEXUS_MAX_REPLY];
             int part = 1;
@@ -3023,51 +2930,26 @@ int32_t NexusModule::runOnce() {
                                    ryStr, (unsigned int)e.delay_ms, (int)e.rssi, usedHops, e.hop_start, e.snr);
 
                 if (len + lLen >= (int)NEXUS_MAX_REPLY_BODY - 5) {
-                    meshtastic_MeshPacket *r = (router) ? router->allocForSending() : nullptr;
-                    if (r) {
-                        r->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
-                        r->to = paging_to;
-                        r->channel = paging_ch;
-                        r->decoded.reply_id = paging_reply_id;
-                        memcpy(r->decoded.payload.bytes, buf, len);
-                        r->decoded.payload.size = len;
-                        if (service) {
-                            service->sendToMesh(r);
-
-                            // Local Copy
-                            meshtastic_MeshPacket *lr = router->allocForSending();
-                            if (lr) {
-                                lr->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
-                                lr->to = 0xFFFFFFFF;
-                                lr->channel = paging_ch;
-                                lr->decoded.reply_id = paging_reply_id;
-                                memcpy(lr->decoded.payload.bytes, buf, len);
-                                lr->decoded.payload.size = len;
-                                service->sendToPhone(lr);
-                            }
-                        }
-                    }
+                    sendReply(clientscanReply, buf, len, false);
                     len = snprintf(buf, sizeof(buf), "CLIENTSCAN P%d:\n", ++part);
                 }
                 memcpy(buf + len, line, lLen);
                 len += lLen;
             }
             // Send final part
-            sendToMeshPacket(paging_to, paging_ch, paging_reply_id, buf, len, false, false);
-            sendToPhone(0xFFFFFFFF, paging_ch, paging_reply_id, buf, len);
+            sendReply(clientscanReply, buf, len, false);
         }
     }
 
     // 6. Tactical Noise Floor Sampling
-    if (noise_sampling_active && now >= noise_sampling_next) {
+    if (noise_sampling_active && Throttle::deadlinePassedAt(now, noise_sampling_next)) {
         // Safety: Timeout after 15s or too many retries (300)
         if (now - noise_sampling_start > 15000 || noise_retry_count > 300) {
             noise_sampling_active = false;
             char errBuf[NEXUS_MAX_REPLY];
             snprintf(errBuf, sizeof(errBuf), "JT: Noise Floor Error\nTimeout / Busy (R:%d)", noise_retry_count);
             size_t eLen = strlen(errBuf);
-            sendToMeshPacket(noise_sampling_to, noise_sampling_ch, noise_sampling_reply_id, errBuf, eLen, false, false);
-            sendToPhone(0xFFFFFFFF, noise_sampling_ch, noise_sampling_reply_id, errBuf, eLen);
+            sendReply(noiseReply, errBuf, eLen, false);
             if (freqscan_active) {
                 config.lora = freqscan_backup;
                 if (service) service->configChanged.notifyObservers(nullptr);
@@ -3145,22 +3027,19 @@ int32_t NexusModule::runOnce() {
 
             size_t nLen = strlen(nBuf);
             if (nLen > NEXUS_MAX_REPLY_BODY) nLen = NEXUS_MAX_REPLY_BODY;
-            sendToMeshPacket(noise_sampling_to, noise_sampling_ch, noise_sampling_reply_id, nBuf, nLen, false, false);
-            sendToPhone(0xFFFFFFFF, noise_sampling_ch, noise_sampling_reply_id, nBuf, nLen);
+            sendReply(noiseReply, nBuf, nLen, false);
             setIntervalFromNow(1000);
         }
     }
 
     // Dynamic thread scheduling based on active tactical tasks!
-    if (noise_sampling_active || freqscan_active) return 50; // Fast polling
-    if (netscan_active || clientscan_active || pendingReply.active) return 100; // Medium polling
 
     // 7. Nexus-Cron Scheduler
     static uint32_t last_cron_check = 0;
     uint32_t wall_clock = getTime(false);
 
     // Run scheduler check every 1s
-    if (now - last_cron_check >= 1000) {
+    if (!freqscan_active && !noise_sampling_active && now - last_cron_check >= 1000) {
         last_cron_check = now;
 
         for (int i = 0; i < 8; i++) {
@@ -3171,12 +3050,13 @@ int32_t NexusModule::runOnce() {
 
             if (job.mode == 0) { // PER (Periodic)
                 // Safety: Periodic jobs MUST have a value >= 60s and a non-empty command to trigger
-                if (job.value >= 60 && job.command[0] != '\0' && (now / 1000 - job.last_run >= job.value)) trigger = true;
+                if (job.value >= 60 && job.command[0] != '\0' && (Throttle::hasElapsed(cronLastRunMs[i], job.value * 1000)))
+                    trigger = true;
             }
             else if (wall_clock > 1700000000) { // Wall-clock modes (SCH, AT)
                 if (job.mode == 1) { // SCH (Daily Schedule)
-                    uint32_t current_sod = wall_clock % 86400;
-                    if (current_sod >= job.value && (wall_clock - job.last_run > 600)) trigger = true;
+                    if (nexus::dailyDue(wall_clock, job.value, job.last_run))
+                        trigger = true;
                 }
                 else if (job.mode == 2) { // AT (One-shot)
                     if (wall_clock >= job.value && job.last_run < job.value) trigger = true;
@@ -3185,13 +3065,14 @@ int32_t NexusModule::runOnce() {
 
             if (trigger) {
                 LOG_INFO("Nexus: Cron Triggering Job %d: %s", i, job.command);
-                job.last_run = (job.mode == 0) ? (now / 1000) : wall_clock;
+                cronLastRunMs[i] = now;
+                job.last_run = (job.mode == 0) ? static_cast<uint32_t>(Time::getUptimeSecs()) : wall_clock;
                 if (job.mode == 2) job.active = 0;
 
                 meshtastic_MeshPacket dummy = meshtastic_MeshPacket_init_default;
                 dummy.from = myNodeInfo.my_node_num;
                 dummy.to = myNodeInfo.my_node_num;
-                handleNexusCommand(dummy, job.command, false, 0, true, false);
+                handleNexusCommand(dummy, job.command, false, 0, true);
             }
         }
     }
@@ -3223,6 +3104,11 @@ int32_t NexusModule::runOnce() {
         setIntervalFromNow(100);
     }
 
+    if (noise_sampling_active || freqscan_active)
+        return 50;
+    if (netscan_active || clientscan_active || pendingReply.active || pendingLoRaConfig || macro_running_cmd[0] || paging_ptr ||
+        pagingWindow.hasMore())
+        return 100;
     return 1000; // Default idle sleep
 }
 
@@ -3312,7 +3198,7 @@ void NexusModule::formatMCUInfo(char *buf, size_t bufSize) {
 
     // Uptime formatter (shared by both paths) — ms -> 'Dd HHh MMm SSs' for >=1d, else 'Hh MMm SSs'.
     // Use Time::getMillisMonotonic() (uint64_t) so the display never rolls over at the
-    // 49.7-day millis() boundary. Days stay in uint32_t (~136 years to overflow).
+    // 49.7-day Time::getMillis() boundary. Days stay in uint32_t (~136 years to overflow).
     auto writeUptime = [](char *out, size_t outSize) {
         uint64_t ms = Time::getMillisMonotonic();
         uint32_t s  = (uint32_t)(ms / 1000ULL);
@@ -3796,7 +3682,7 @@ void NexusModule::formatRLBuckets(char *buf, size_t bufSize)
     // Each row: <CODE>: <TOK>/<LIM> (<PCT>%) [ENABLED?] <seen> <pass> <drop> <drop%>%
     //   TOK = current float tokens (truncated to 1 decimal in the printed form,
     //         clamped to >=0 because refill could overshoot if a peer burst
-    //         happens during a millis() rollover)
+    //         happens during a Time::getMillis() rollover)
     //   LIM = configured pkts/hr limit (0 = bucket off, no enforcement)
     //   PCT = percent of limit remaining (0 if limit=0; clamps to 0-999)
     //   ENABLED = whether drop_rl_<bucket> is true (only matters if LIM > 0)
@@ -4272,7 +4158,7 @@ void NexusModule::appendFCDSection_BLUETOOTH()
     appendPaging("JT Full Config: BLUETOOTH\n--\n");
     FCD_LINE("enabled: %s\n", bt.enabled ? "true" : "false");
     FCD_LINE("mode: %s\n", pairingModeName(bt.mode));
-    FCD_LINE("fixed_pin: %u\n", (unsigned)bt.fixed_pin);
+    FCD_LINE("fixed_pin: [redacted]\n");
     appendPaging("--\n");
     #undef FCD_LINE
 }
@@ -4497,7 +4383,8 @@ size_t NexusModule::hopsToEmoji(char *out, size_t outSize, uint32_t hopsUsed) {
 }
 
 bool NexusModule::sendToPhone(uint32_t to, uint32_t ch, uint32_t replyId, const char *msg, size_t len, bool asReaction, const meshtastic_MeshPacket *src) {
-    if (!msg || len == 0) return false;
+    if (!msg || len == 0 || !router || !service)
+        return false;
     if (len > NEXUS_MAX_REPLY_BODY) len = NEXUS_MAX_REPLY_BODY;
     meshtastic_MeshPacket *p = (router) ? router->allocForSending() : nullptr;
     if (!p) return false;
@@ -4525,7 +4412,8 @@ bool NexusModule::sendToPhone(uint32_t to, uint32_t ch, uint32_t replyId, const 
 }
 
 bool NexusModule::sendToMeshPacket(uint32_t to, uint32_t ch, uint32_t replyId, const char *msg, size_t len, bool wantAck, bool reliable) {
-    if (!msg || len == 0) return false;
+    if (!msg || len == 0 || !router || !service)
+        return false;
     if (len > NEXUS_MAX_REPLY_BODY) len = NEXUS_MAX_REPLY_BODY;
     meshtastic_MeshPacket *p = (router) ? router->allocForSending() : nullptr;
     if (!p) return false;
@@ -4537,8 +4425,7 @@ bool NexusModule::sendToMeshPacket(uint32_t to, uint32_t ch, uint32_t replyId, c
     if (reliable) p->priority = meshtastic_MeshPacket_Priority_RELIABLE;
     memcpy(p->decoded.payload.bytes, msg, len);
     p->decoded.payload.size = len;
-    if (service) service->sendToMesh(p);
-    return true;
+    return service->sendToMesh(p) == ERRNO_OK;
 }
 
 bool NexusModule::queueMeshReply(uint32_t to, uint32_t ch, uint32_t replyId, const char *msg, size_t len, bool isReaction, bool wantAck) {
@@ -4557,10 +4444,10 @@ bool NexusModule::queueMeshReply(uint32_t to, uint32_t ch, uint32_t replyId, con
     pendingReply.message[len] = '\0';
     if (isBroadcast) {
         uint32_t jitter = broadcastReplyJitterMs();
-        pendingReply.send_at = millis() + jitter;
+        pendingReply.send_at = Time::getMillis() + jitter;
         LOG_INFO("Nexus: Queuing broadcast reply with %ums jitter", jitter);
     } else {
-        pendingReply.send_at = millis() + 50;
+        pendingReply.send_at = Time::getMillis() + 50;
         LOG_INFO("Nexus: Queuing DM reply (50ms yield)");
     }
     setIntervalFromNow(50);
@@ -4818,11 +4705,12 @@ int NexusModule::findChannelByNameOrIndex(const char* input, const char** nextTo
     return -1;
 }
 
-void NexusModule::saveVault() {
-    NexusVault *v = new NexusVault();
+bool NexusModule::saveVault()
+{
+    NexusVault *v = new (std::nothrow) NexusVault();
     if (!v) {
         LOG_ERROR("Nexus: Heap allocation failed for saveVault!");
-        return;
+        return false;
     }
     memset(v, 0, sizeof(NexusVault));
     memcpy(v->magic, "JenT", 4);
@@ -4980,207 +4868,44 @@ void NexusModule::saveVault() {
     // Integrity
     v->crc32 = crc32Buffer(v, sizeof(NexusVault) - 4);
 
-    FSCom.remove("/nexus.bin");
-    File f = FSCom.open("/nexus.bin", FILE_O_WRITE);
-    if (f) {
-        f.write((uint8_t*)v, sizeof(NexusVault));
-        f.close();
-        LOG_INFO("Nexus: Vault saved (v%u).", (unsigned int)v->version);
-    } else {
-        LOG_ERROR("Nexus: Failed to open vault for writing.");
+    bool saved;
+    {
+        concurrency::LockGuard guard(spiLock);
+        saved = nexus::writeVault(FSCom, v, sizeof(*v), FILE_O_READ, FILE_O_WRITE);
     }
     delete v;
+    if (!saved)
+        LOG_ERROR("Nexus: Vault save failed; previous file preserved.");
+    return saved;
 }
-
-// ─── Vault version window (2026-08-22) ────────────────────────
-// Backwards-compatible rolling acceptance window shared by readVaultForDisplay()
-// and loadVault(): a vault is accepted if and only if
-//   VAULT_MIN_VERSION <= vault.version <= VAULT_MAX_VERSION
-// and rejected otherwise.
-//
-// MIN_VERSION is the floor — vaults older than this are rejected outright
-// (no migration, RAM defaults). The v66 migration-fix commit reverted MIN
-// from 66 back to 65 so existing v65 nodes don't lose their state when they
-// boot on a v66 firmware: a v65 vault is 8 bytes shorter than the v66 struct
-// (no `features_mask` field), and loadVault() naturally handles the missing
-// bytes via the fileSize read-clamp + zero-init of the in-RAM NexusVault.
-// The new field gets the correct default (features_mask=0); all other v65
-// fields copy into runtime unchanged. The next /nexus SAVE flushes the v66
-// layout (CRC over sizeof(NexusVault_v66) - 4) to disk so the on-disk file
-// also migrates. The previous (v44→v64) jump used MIN=MAX=64 because the
-// struct was non-additive; v66 is purely additive so the rolling window
-// stays open for v65.
-//
-// MAX_VERSION is the ceiling — vaults NEWER than what this firmware knows
-// about are rejected to keep field semantics correct (a vault written by a
-// v67-firmware build may carry fields this v66-firmware doesn't understand).
-// Bump MAX_VERSION whenever a new release lands so existing nodes (which saved
-// under v65) can still load on a v66-firmware build of the same family.
-//
-// Today: MIN=65, MAX=67. Future bump to v68: MAX=68 (keep MIN=65 until v65
-// is end-of-life for the operator fleet). The window is inclusive on both
-// ends so an exact-match release (MIN=MAX=N) and a rolling-window release
-// (MIN=L..MAX=N where L < N) are both expressed by these two constants.
-static constexpr uint32_t VAULT_MIN_VERSION = 65; // preserved as-is (v67 bump kept MIN at 65; only MAX bumped). v66 migration-fix reverted MIN from 66 to 65 so existing v65 nodes don't lose their state — that logic also covers v65/v66 → v67 migration.
-static constexpr uint32_t VAULT_MAX_VERSION = 67; // v67 current release; bumped from 66 to add nexusVariantBits (generic variant-bitmask pool). Future bump to v68: MAX=68.
 
 bool NexusModule::readVaultForDisplay(NexusVault *out, const char **reason) {
-    static const char *REASON_MISSING = "no file";
-    static const char *REASON_BADMAGIC = "bad magic";
-    static const char *REASON_OLDVER = "version too old";
-    static const char *REASON_NEWERVER = "version too new";
-    static const char *REASON_BADCRC = "CRC mismatch";
-    static const char *REASON_VALID = "OK";
-    if (reason) *reason = REASON_MISSING;
+    if (reason)
+        *reason = "no file";
     if (!out) return false;
-
-    File f = FSCom.open("/nexus.bin", FILE_O_READ);
-    if (!f) {
-        return false; // reason already set
-    }
-    size_t fileSize = f.size();
-    size_t readSize = (fileSize < sizeof(NexusVault)) ? fileSize : sizeof(NexusVault);
-    if (f.read((uint8_t*)out, readSize) < 12) {
-        f.close();
+    concurrency::LockGuard guard(spiLock);
+    File file = FSCom.open("/nexus.bin", FILE_O_READ);
+    if (!file)
         return false;
-    }
-    f.close();
-
-    if (memcmp(out->magic, "JenT", 4) != 0) {
-        if (reason) *reason = REASON_BADMAGIC;
-        return false;
-    }
-    if (out->version < VAULT_MIN_VERSION) {
-        if (reason) *reason = REASON_OLDVER;
-        return false;
-    }
-    if (out->version > VAULT_MAX_VERSION) {
-        if (reason) *reason = REASON_NEWERVER;
-        return false;
-    }
-    uint32_t calcCrc = crc32Buffer(out, (fileSize < sizeof(NexusVault)) ? fileSize - 4 : sizeof(NexusVault) - 4);
-    if (calcCrc != out->crc32) {
-        // Migration case: a legacy vault (v65/v66) saved under a
-        // different struct layout doesn't byte-for-byte match what
-        // crc32Buffer() recomputes against the v67 struct shape (the
-        // field positions shifted when nexusVariantBits was added in v67).
-        // Accept when v->version is in the actual accepted window
-        // (VAULT_MIN_VERSION..VAULT_MAX_VERSION). The `version == 40`
-        // check that was here was a vestige from the pre-cleanup days
-        // when v40 was the floor — replaced 2026-09-16 with the actual
-        // window (Nexus-28005 code review 1B). Mirrors loadVault()'s
-        // migration-accept branch.
-        //
-        // Every migration path must carry the NEXUS_PRIVATE_BUILD gates.
-        // Mirrors loadVault()'s gate on the migration-accept branch. Public
-        // builds don't ship Nexus state to recover — they unconditionally
-        // report REASON_BADCRC on CRC mismatch (which was the pre-f93712f8c
-        // behavior anyway). Private builds keep the migration accept.
-#ifdef NEXUS_PRIVATE_BUILD
-        if (out->version >= VAULT_MIN_VERSION && out->version <= VAULT_MAX_VERSION) {
-            // Migration case: log but accept
-        } else
-#endif
-        {
-            if (reason) *reason = REASON_BADCRC;
-            return false;
-        }
-    }
-    if (reason) *reason = REASON_VALID;
-    return true;
+    size_t size = file.size();
+    memset(out, 0, sizeof(*out));
+    size_t read = file.read(reinterpret_cast<uint8_t *>(out), std::min(size, sizeof(*out)));
+    file.close();
+    return nexus::decodeVault(*out, size, read, reason);
 }
 
-void NexusModule::loadVault() {
-    File f = FSCom.open("/nexus.bin", FILE_O_READ);
-    if (!f) {
-        LOG_INFO("Nexus: No vault found. Using RAM defaults.");
-        return;
+bool NexusModule::loadVault()
+{
+    NexusVault *v = new (std::nothrow) NexusVault();
+    if (!v)
+        return false;
+    const char *reason = nullptr;
+    if (!readVaultForDisplay(v, &reason)) {
+        LOG_WARN("Nexus: Vault not loaded: %s. RAM unchanged.", reason ? reason : "allocation failure");
+        delete v;
+        return false;
     }
-
-    NexusVault *v = new NexusVault();
-    if (!v) {
-        LOG_ERROR("Nexus: Heap allocation failed for loadVault!");
-        f.close();
-        return;
-    }
-    memset(v, 0, sizeof(NexusVault)); // Ensure zero-init before read
-    size_t fileSize = f.size();
-    size_t readSize = (fileSize < sizeof(NexusVault)) ? fileSize : sizeof(NexusVault);
-    if (f.read((uint8_t*)v, readSize) >= 12) { // Read at least Magic + Version + Mask
-        f.close();
-
-        // Validate
-        if (memcmp(v->magic, "JenT", 4) != 0) {
-            LOG_ERROR("Nexus: Vault magic mismatch.");
-            delete v;
-            return;
-        }
-
-        // ─── Strict validation ───────────────────────────────────────────
-        // Per safety directive (2026-07-16, updated 2026-08-22):
-        // pre-v65 vaults are no longer migrated. Partial migration has
-        // produced corrupted runtime state on broken nodes (bootloop
-        // traceable to v37's GPIO Watch load path applying a stray mask
-        // during the constructor). Older vaults are rejected outright;
-        // operators must /nexus SAVE once on this firmware to persist a
-        // clean v65. Every numeric field below is bounds-checked before
-        // it touches live state — garbage in = safe default, never a
-        // silent corruption.
-        //
-        // Acceptance window: VAULT_MIN_VERSION <= v->version <= VAULT_MAX_VERSION
-        // (see readVaultForDisplay for the full rolling-window rationale).
-        // Today: MIN=MAX=65. Bump VAULT_MAX_VERSION on future vault releases
-        // so existing nodes can load their v65 vault on a v66+ build.
-        // Vault versions skipped (v44–v63) on purpose — see Vault-Bump
-        // policy: the jump leaves no migration surface for 2.8.0+
-        // upstream vault-checksum drift.
-
-        if (v->version < VAULT_MIN_VERSION || v->version > VAULT_MAX_VERSION) {
-            // v65/v66 → v67 migration: a v65 vault is 16 B shorter than v67
-            // (no features_mask, no nexusVariantBits); a v66 vault is 8 B shorter
-            // (no nexusVariantBits). The read-clamp in this function already
-            // truncates the read to fileSize bytes, so any newly-added fields
-            // stay at the zero-init default from the memset above. Field-copy
-            // block proceeds unchanged. Pre-v65 vaults (v44..v64) had
-            // non-additive struct changes and would need a real migration path;
-            // for v67 we accept v65 and v66 in-RAM only. Vaults NEWER than
-            // MAX_VERSION (v68+) are still strictly rejected — they may carry
-            // fields this v67-firmware doesn't understand.
-            if (v->version == 65) {
-                LOG_INFO("Nexus: Migrated v65 vault to v67 in-RAM (features_mask=0, nexusVariantBits=0, all other fields preserved). Run /nexus SAVE to persist the v67 layout.");
-            } else if (v->version == 66) {
-                LOG_INFO("Nexus: Migrated v66 vault to v67 in-RAM (nexusVariantBits=0, all other fields preserved). Run /nexus SAVE to persist the v67 layout.");
-            } else {
-                LOG_ERROR("Nexus: Vault version %u outside accepted window [%u..%u]. Rejecting (no migration). Using defaults.",
-                          (unsigned int)v->version,
-                          (unsigned int)VAULT_MIN_VERSION,
-                          (unsigned int)VAULT_MAX_VERSION);
-                delete v;
-                return;
-            }
-        }
-
-        uint32_t calcCrc = crc32Buffer(v, (fileSize < sizeof(NexusVault)) ? fileSize - 4 : sizeof(NexusVault) - 4);
-        if (calcCrc != v->crc32) {
-            // Migration case: a legacy vault (v65/v66) saved under a
-            // different struct layout doesn't byte-for-byte match what
-            // crc32Buffer() recomputes against the v67 struct shape
-            // (the field positions shifted when nexusVariantBits was
-	    //
-            if (v->version >= VAULT_MIN_VERSION && v->version <= VAULT_MAX_VERSION) {
-                LOG_WARN("Nexus: Vault CRC mismatch on accepted-version file (v%u, %u B). "
-                         "Accepting with in-RAM migration (fields preserved per the version-window block above). "
-                         "Run /nexus SAVE to persist a clean v67 layout.",
-                         (unsigned int)v->version, (unsigned int)fileSize);
-            } else
-            {
-                LOG_ERROR("Nexus: Vault CRC mismatch (Calc:%08x != Vault:%08x). Rejecting. Using defaults.",
-                          (unsigned int)calcCrc, (unsigned int)v->crc32);
-                delete v;
-                return;
-            }
-        }
-
+    {
         // Small inline sanitizer: clamp uint16 to [lo, hi], default to lo on garbage.
         auto clamp_u16 = [](uint16_t val, uint16_t lo, uint16_t hi) -> uint16_t {
             return (val >= lo && val <= hi) ? val : lo;
@@ -5245,7 +4970,13 @@ void NexusModule::loadVault() {
         T_S_id   = v->T_S_id;
 
         for (int i = 0; i < 8; i++) {
-            cron_table[i] = v->cron_table[i]; // NexusCronEntry: bounded uint8 fields, BoundedCommand string
+            cron_table[i] = v->cron_table[i];
+            auto &job = cron_table[i];
+            job.command[sizeof(job.command) - 1] = '\0';
+            if (job.mode > 2 || !job.command[0] || (job.mode == 0 && (job.value < 60 || job.value > INT32_MAX / 1000)) ||
+                (job.mode == 1 && job.value >= 86400) || (job.mode == 2 && job.value <= 1700000000))
+                job.active = 0;
+            cronLastRunMs[i] = Time::getMillis();
         }
 
         custom_pping_active = (v->custom_pping_active != 0);
@@ -5302,10 +5033,13 @@ void NexusModule::loadVault() {
         setNexusInvalidHex(v->invalid_mask);
 
         for (int i = 0; i < 16; i++) {
-            nexus_aliases[i] = v->aliases[i]; // NexusAliasEntry: bounded
+            nexus_aliases[i] = v->aliases[i];
+            nexus_aliases[i].alias[sizeof(nexus_aliases[i].alias) - 1] = '\0';
         }
         for (int i = 0; i < 4; i++) {
-            nexus_macros[i] = v->macros[i]; // NexusMacroEntry: bounded strings
+            nexus_macros[i] = v->macros[i];
+            nexus_macros[i].name[sizeof(nexus_macros[i].name) - 1] = '\0';
+            nexus_macros[i].command[sizeof(nexus_macros[i].command) - 1] = '\0';
         }
 
         for (int i = 0; i < 8; i++) {
@@ -5356,7 +5090,9 @@ void NexusModule::loadVault() {
         // ────────────────────────────────────────────────────────────────
 
         for (int i = 0; i < 8; i++) {
-            nexus_signatures[i] = v->signatures[i]; // NexusSignature: bounded
+            nexus_signatures[i] = v->signatures[i];
+            if (nexus_signatures[i].len > 16 || nexus_signatures[i].type > 2)
+                nexus_signatures[i].len = 0;
         }
 
         // Syncword: 0 = use Meshtastic default (0x2B). Anything else is a custom override.
@@ -5381,30 +5117,51 @@ void NexusModule::loadVault() {
         }
 
         LOG_INFO("Nexus: Vault loaded successfully (v%u).", (unsigned int)v->version);
-    } else {
-        f.close();
-        LOG_ERROR("Nexus: Failed to read vault.");
     }
     delete v;
+    return true;
 }
 
 void NexusModule::startPaging(uint32_t to, uint32_t ch, uint32_t replyId, const char* title) {
+    if (!pagingRendering) {
+        ++pagingGeneration;
+        pagingOffset = 0;
+        paging_part = 0;
+        paging_next_send = Time::getMillis();
+        pagingCommand[0] = '\0';
+        if (activeCommand && activeRequest) {
+            snprintf(pagingCommand, sizeof(pagingCommand), "%s", activeCommand);
+            pagingRequest = *activeRequest;
+            pagingIsBroadcast = activeIsBroadcast;
+        }
+        pagingReply = {to, ch, replyId, activePhoneOnly, activePhoneOnly || (to == 0xFFFFFFFF)};
+    }
     paging_to = to;
     paging_ch = ch;
     paging_reply_id = replyId;
-    paging_part = 0;
-    paging_next_send = millis();
     memset(paging_buf, 0, sizeof(paging_buf));
-    paging_ptr = snprintf(paging_buf, sizeof(paging_buf), "JT %s:\n", title);
+    pagingWindow.reset(pagingOffset);
+    paging_ptr = 0;
+    char header[96];
+    snprintf(header, sizeof(header), "JT %s:\n", title);
+    appendPaging(header);
     setIntervalFromNow(50);
 }
 
 void NexusModule::appendPaging(const char* entry) {
-    int eLen = strlen(entry);
-    if (paging_ptr + eLen < sizeof(paging_buf) - 2) {
-        memcpy(paging_buf + paging_ptr, entry, eLen);
-        paging_ptr += eLen;
-    }
+    pagingWindow.append(paging_buf, sizeof(paging_buf) - 4, entry);
+    paging_ptr = pagingWindow.size();
+}
+
+bool NexusModule::sendReply(const ReplyContext &context, const char *message, size_t length, bool reliable)
+{
+    if (context.phoneOnly)
+        return sendToPhone(0xFFFFFFFF, context.channel, context.replyId, message, length);
+    if (!sendToMeshPacket(context.to, context.channel, context.replyId, message, length, false, reliable))
+        return false;
+    if (context.copyToPhone)
+        sendToPhone(0xFFFFFFFF, context.channel, context.replyId, message, length);
+    return true;
 }
 
 bool NexusModule::shouldDropOutput(const meshtastic_MeshPacket &mp) {
