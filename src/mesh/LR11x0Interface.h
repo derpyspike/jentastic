@@ -104,6 +104,10 @@ template <class T> class LR11x0Interface : public RadioLibInterface
     /// setOutputPower() on the PA the board needs; LR11X0_FORCE_HP_PA forces the sub-GHz high-power PA.
     int16_t applyOutputPower();
 
+    // Nexus SETFSK (Phase 2): GFSK programming for LR11x0 (T1000-E); no FLRC on this family.
+    int16_t programAltModemFSK();
+    uint8_t altModemCaps() const override { return 0x01; } // FSK only
+
     /** Reset and re-begin() a chip that lost its runtime configuration (reset/brownout) */
     bool reinitChip();
 
