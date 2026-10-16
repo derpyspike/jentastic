@@ -5060,6 +5060,116 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             }
         }
     }
+    else if (strncasecmp(cmd, "SETFSK ", 7) == 0 || strcasecmp(cmd, "SETFSK") == 0 ||
+             strncasecmp(cmd, "SETFLRC ", 8) == 0 || strcasecmp(cmd, "SETFLRC") == 0) {
+        // Nexus SETFSK/SETFLRC (research 2026-10-09; Jenny rulings 2026-10-14):
+        //  public, RAM-only, persist-until-disabled, deferred 5s apply. Staging is
+        //  identical to SETSYNCWORD: mutate the RAM state NOW, stage an unchanged
+        //  LoRa config so the deferred apply re-enters applyModemConfig() and
+        //  programModemParams() picks the FSK path via altModem.mode.
+        bool isFlrc = (strncasecmp(cmd, "SETFLRC", 7) == 0);
+        const char *sub = skipToken(cmd);
+        RadioInterface *radioIf = (router) ? router->getInterface() : nullptr;
+        uint8_t caps = radioIf ? radioIf->altModemCaps() : 0;
+        uint8_t need = isFlrc ? 0x02 : 0x01;
+
+        if (strcasecmp(sub, "OFF") == 0 || strcasecmp(sub, "RESET") == 0 || strcasecmp(sub, "DEFAULT") == 0) {
+            if (altModem.mode == 0) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT: Alt modem already off (LoRa).");
+            } else {
+                altModem = NexusAltModem{0, 0.0f, 0.0f, 0.0f, 0};
+                pendingLoRaConfig = true;
+                pendingLoRaApplyAt = Time::getMillis() + 5000;
+                meshtastic_Config pc = meshtastic_Config_init_default;
+                pc.which_payload_variant = meshtastic_Config_lora_tag;
+                pc.payload_variant.lora = config.lora;
+                pendingConfig = pc;
+                setIntervalFromNow(50);
+                snprintf(replyMsg, sizeof(replyMsg), "JT: Alt modem disabled (back to LoRa). Applying in 5s...");
+            }
+        } else if (*sub == '\0') {
+            static const char *modeName[] = {"LORA", "FSK", "FLRC"};
+            snprintf(replyMsg, sizeof(replyMsg), "JT Alt Modem: %s BR:%.1fk dev:%.1fk bw:%.1fk pre:%u | caps:%s%s%s",
+                     modeName[altModem.mode <= 2 ? altModem.mode : 0], altModem.brKbps, altModem.freqDevKHz,
+                     altModem.rxBwKHz, (unsigned)altModem.preambleBits,
+                     (caps & 0x01) ? "FSK " : "", (caps & 0x02) ? "FLRC " : "", (caps == 0) ? "none" : "");
+        } else {
+            if (!(caps & need)) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT: %s not supported on this radio", isFlrc ? "SETFLRC" : "SETFSK");
+            } else if (isFlrc) {
+                // SETFLRC <br_kbps> <cr 2|3|4> [bt 0|1|2] [preamble_bits]
+                //   cr: 2 -> 1/2, 3 -> 3/4, 4 -> uncoded 1/1 (per-chip RadioLib constants)
+                //   bt: 0 -> NONE/NRZ, 1 -> BT 0.3, 2 -> BT 0.5 (default 2 = RadioLib default)
+                // FLRC is family-local by physics: 2.4 GHz SX128x pairs talk to SX128x peers,
+                // sub-GHz LR2021 (X1) pairs talk to LR2021 peers — params are explicit so both
+                // sides of a pair always match (Jenny ruling 2026-10-14: whatever it takes).
+                const char *p = sub;
+                float br = atof(p); while (*p && *p != ' ') p++; while (*p == ' ') p++;
+                int crc = (*p) ? atoi(p) : 0; while (*p && *p != ' ') p++; while (*p == ' ') p++;
+                int bt = (*p) ? atoi(p) : 2; while (*p && *p != ' ') p++; while (*p == ' ') p++;
+                int pre = (*p) ? atoi(p) : 16;
+                bool brOk = (br >= 1.0f && br <= 2600.0f); // broad — chip's beginFLRC range-checks
+                bool crOk = (crc == 2 || crc == 3 || crc == 4);
+                bool btOk = (bt >= 0 && bt <= 2);
+                bool preOk = (pre >= 4 && pre <= 1024);
+                if (brOk && crOk && btOk && preOk) {
+                    altModem.mode = 2;
+                    altModem.brKbps = br;
+                    altModem.cr = (uint8_t)crc;
+                    altModem.bt = (uint8_t)bt;
+                    altModem.preambleBits = (uint16_t)pre;
+                    altModem.freqDevKHz = 0.0f;
+                    altModem.rxBwKHz = 0.0f;
+                    pendingLoRaConfig = true;
+                    pendingLoRaApplyAt = Time::getMillis() + 5000;
+                    meshtastic_Config pc = meshtastic_Config_init_default;
+                    pc.which_payload_variant = meshtastic_Config_lora_tag;
+                    pc.payload_variant.lora = config.lora;
+                    pendingConfig = pc;
+                    setIntervalFromNow(50);
+                    const char *crName = (crc == 2) ? "1/2" : (crc == 3) ? "3/4" : "1/1";
+                    snprintf(replyMsg, sizeof(replyMsg),
+                             "JT: FLRC accepted. BR:%.1fk CR:%s BT:%d PRE:%d. Applying LIVE in 5s.",
+                             br, crName, bt, pre);
+                } else {
+                    snprintf(replyMsg, sizeof(replyMsg),
+                             "JT: Invalid FLRC params (BR:1-2600k, CR:2|3|4 = 1/2|3/4|uncoded, BT:0|1|2, PRE:4-1024)");
+                }
+            } else {
+                // SETFSK <br_kbps> [freqDev_kHz] [rxBw_kHz] [preamble_bits]
+                // Defaults match the research-doc example: SETFSK 50 25 39 16
+                const char *p = sub;
+                float br = atof(p); while (*p && *p != ' ') p++; while (*p == ' ') p++;
+                float dev = (*p) ? atof(p) : 25.0f; while (*p && *p != ' ') p++; while (*p == ' ') p++;
+                float rbw = (*p) ? atof(p) : 39.0f; while (*p && *p != ' ') p++; while (*p == ' ') p++;
+                int pre = (*p) ? atoi(p) : 16;
+                bool brOk = (br >= 0.6f && br <= 300.0f);   // SX126x beginFSK range
+                bool devOk = (dev >= 1.5f && dev <= 200.0f); // SX126x/GFSK deviation limit
+                bool rbwOk = (rbw >= 4.8f && rbw <= 500.0f); // SX126x GFSK RX filter
+                bool preOk = (pre >= 4 && pre <= 1024);
+                if (brOk && devOk && rbwOk && preOk) {
+                    altModem.mode = 1;
+                    altModem.brKbps = br;
+                    altModem.freqDevKHz = dev;
+                    altModem.rxBwKHz = rbw;
+                    altModem.preambleBits = (uint16_t)pre;
+                    pendingLoRaConfig = true;
+                    pendingLoRaApplyAt = Time::getMillis() + 5000;
+                    meshtastic_Config pc = meshtastic_Config_init_default;
+                    pc.which_payload_variant = meshtastic_Config_lora_tag;
+                    pc.payload_variant.lora = config.lora;
+                    pendingConfig = pc;
+                    setIntervalFromNow(50);
+                    snprintf(replyMsg, sizeof(replyMsg),
+                             "JT: FSK accepted. BR:%.1fk DEV:%.1fk BW:%.1fk PRE:%d. Applying LIVE in 5s.",
+                             br, dev, rbw, pre);
+                } else {
+                    snprintf(replyMsg, sizeof(replyMsg),
+                             "JT: Invalid FSK params (BR:0.6-300k, DEV:1.5-200k, BW:4.8-500k, PRE:4-1024)");
+                }
+            }
+        }
+    }
     else if (strncasecmp(cmd, "SEARCHRELAY ", 12) == 0 || strncasecmp(cmd, "SRELAY ", 7) == 0) {
         const char *p = cmd + (strncasecmp(cmd, "SRELAY ", 7) == 0 ? 7 : 12);
         while (*p == ' ') p++;

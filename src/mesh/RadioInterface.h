@@ -355,6 +355,13 @@ class RadioInterface
     // NexusModule::syncword_override (vault v40) and write to its member.
     virtual void applyNexusSyncwordOverride() {}
 
+  public:
+    // Nexus SETFSK/SETFLRC (Jenny rulings 2026-10-14): capability bits for the
+    // alternate modem so the command parser (NexusCommands.cpp) can reject
+    // unsupported radios early: bit0 = FSK/GFSK, bit1 = FLRC. Default 0 = none;
+    // subclasses override (SX126x returns FSK only — no FLRC hardware there).
+    virtual uint8_t altModemCaps() const { return 0; }
+
   private:
     /**
      * Convert our modemConfig enum into wf, sf, etc...

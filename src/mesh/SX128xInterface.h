@@ -82,6 +82,11 @@ template <class T> class SX128xInterface : public RadioLibInterface
     /** Program all modem parameters into the chip; returns the first RadioLib error, or RADIOLIB_ERR_NONE */
     int16_t programModemParams();
 
+    // Nexus SETFSK/SETFLRC (Phase 2): GFSK + FLRC programming for SX128x (2.4 GHz).
+    int16_t programAltModemFSK();
+    int16_t programAltModemFLRC();
+    uint8_t altModemCaps() const override { return 0x03; } // FSK + FLRC
+
     /** begin() and chip-side setup, shared by init() and by reconfigure()'s recovery of a chip that lost its state */
     /** @param fromInit true only for the boot-time call, which may adjust region and reboot on a
      *  2.4GHz-only part; a runtime recovery must never reboot the node. */

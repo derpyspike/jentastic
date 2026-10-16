@@ -737,6 +737,29 @@ public:
     uint16_t preamble_override = 0;   // v35: RAM preamble override (0 = default)
     uint8_t syncword_override = 0;    // v40: RAM syncword override (0 = Meshtastic default 0x2B)
 
+    // Nexus SETFSK/SETFLRC (research 2026-10-09; Jenny rulings 2026-10-14): RAM-only
+    // alternate-modem state. mode: 0 = LoRa (disabled), 1 = FSK/GFSK, 2 = FLRC.
+    // NOT vaulted (RAM-only ruling) and re-read on every applyModemConfig() /
+    // programModemParams() so it persists until explicitly disabled
+    // (persist-until-disabled ruling); a reboot returns the node to LoRa.
+    struct NexusAltModem {
+        uint8_t mode;       // 0 = LoRa, 1 = FSK/GFSK, 2 = FLRC
+        float brKbps;       // bit rate (kbps)
+        float freqDevKHz;   // FSK frequency deviation (kHz)
+        float rxBwKHz;      // RX bandwidth (kHz)
+        uint16_t preambleBits;
+        uint8_t cr;         // FLRC coding-rate shorthand: 2=1/2, 3=3/4, 4=uncoded (Phase 2)
+        uint8_t bt;         // shaping selector: 0=NONE, 1=BT 0.3, 2=BT 0.5 (Phase 2)
+    };
+    NexusAltModem altModem = {};
+
+    // FSK pseudo-SNR: GFSK has no chirp SNR — map RSSI [-120..-50] dBm -> [-10..+10] dB
+    // so getCWsize()/TX-delay math keeps differentiating near/far (RSSI-based ruling).
+    static float altPseudoSnr(float rssi) {
+        float s = (rssi + 120.0f) * (20.0f / 70.0f) - 10.0f;
+        return s < -10.0f ? -10.0f : (s > 10.0f ? 10.0f : s);
+    }
+
     // Nexus Channel Helpers
     bool isNexusChannel(uint32_t channelIndex);
     uint32_t findFirstNexusChannel();
