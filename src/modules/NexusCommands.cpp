@@ -5499,6 +5499,27 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             float freqMHz = radio->getFreq();
             uint8_t syncByte = static_cast<RadioLibInterface *>(radio)->getSyncWord();
 
+            // Alt-modem active (SETFSK/SETFLRC): bw/sf/cr/Pre/Slot/CW/SW/Speed are
+            // the PARKED LoRa config — the modulation on air is FSK/FLRC, which has
+            // no SF/BW/CR. Report alt-modem reality instead (Jenny, 2026-10-16).
+            // Freq/ChipPwr stay valid: both alt paths reuse applyModemConfig's
+            // freq/power pipeline. SW: FSK pins the 2-byte wire profile 0x12AD
+            // explicitly; FLRC's word-sync lives inside beginFLRC's chip config.
+            if (altModem.mode != 0) {
+                const uint32_t altSpeed = (uint32_t)(altModem.brKbps * 1000.0f);
+                if (altModem.mode == 2) {
+                    const char *crName = (altModem.cr == 2) ? "1/2" : (altModem.cr == 3) ? "3/4" : "1/1";
+                    snprintf(replyMsg, sizeof(replyMsg),
+                        "JT LORA Status:\nMode: FLRC\nFreq: %.3fMHz\nBR:%.1fk CR:%s BT:%d\nPre:%u bits\nChipPwr:%ddBm\nSpeed:%u b/s",
+                        freqMHz, altModem.brKbps, crName, (int)altModem.bt,
+                        (unsigned)altModem.preambleBits, chipPwr, altSpeed);
+                } else {
+                    snprintf(replyMsg, sizeof(replyMsg),
+                        "JT LORA Status:\nMode: FSK (GFSK)\nFreq: %.3fMHz\nBR:%.1fk dev:%.1fk RXBW:%.1fk\nPre:%u bits\nSW:0x12AD (wire profile)\nChipPwr:%ddBm\nSpeed:%u b/s",
+                        freqMHz, altModem.brKbps, altModem.freqDevKHz, altModem.rxBwKHz,
+                        (unsigned)altModem.preambleBits, chipPwr, altSpeed);
+                }
+            } else {
             // LoRa useful bit rate (Semtech formula, accounting for FEC).
             //   R_b = SF * BW_Hz * 4 / (2^SF * CR_denom)
             // BW is stored in kHz (float); multiply by 1000 to get Hz. CR_denom is 5..8.
@@ -5515,6 +5536,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 (unsigned)slotMs, (unsigned)RadioInterface::CWmin, (unsigned)RadioInterface::CWmax,
                 syncByte, chipPwr,
                 speedBps);
+            }
         }
     }
     else if (strcasecmp(cmd, "HOPMATRIX") == 0 || strcasecmp(cmd, "HM") == 0) {
