@@ -324,6 +324,8 @@ Again: The 2.8 already does this automatically, but if you wanna override it man
 | `LORA` / `LR` | `LORA` | Modem summary: SF, BW, CR, preset number/state, frequency, power, MQTT-ignore and rebroadcast mode. | `JT LORA:`<br>`SF:<sf> BW:<bw> CR:<cr>`<br>`Preset:<n> (ACTIVE\|OFF)`<br>`Freq:<freq>MHz`<br>`Power:<pwr>dBm`<br>`IgnoreMQTT:<0/1>`<br>`Rebroadcast:<mode>` |
 | `LORA-STATUS` / `LRS` | `LORA-STATUS` | Real-time hardware status: frequency, bandwidth, SF, CR, preamble, slot/CW timing, syncword, chip power, air rate. | `JT LORA Status:`<br>`Freq: <freq>MHz`<br>`BW:<bw>kHz SF:<sf> CR:<cr>`<br>`Pre:<n> (<us>ms)`<br>`Slot:<ms> CW:<lo>-<hi>`<br>`SW:0x<HEX>`<br>`ChipPwr:<dBm>dBm`<br>`Speed:<bps> b/s` |
 | `SETLORA` | `SETLORA <sf> <bw> <cr> <freq>` | Reconfigure modem parameters directly in RAM (applies after deferred timer). Example: `SETLORA 7 62 5 869.618`. | `JT: LoRa accepted. SF:<sf> BW:<bw> CR:<cr> Freq:<freq>MHz. Applying LIVE in 5s.` |
+| `SETFSK` | `SETFSK <br_kbps> [freqDev_kHz] [rxBw_kHz] [preamble_bits]` · bare = status · `SETFSK OFF\|RESET\|DEFAULT` | Switch the radio from LoRa to **FSK/GFSK** modulation (whole fleet: SX126x, LR11x0, SX128x, LR2021 — not SX127x/RF95). Params & theory: see **SETFSK/SETFLRC reference** below. RAM-only; deferred apply like `SETLORA`. Example: `SETFSK 50 25 39 16`. | `JT: FSK accepted. BR:<br>k DEV:<dev>k BW:<bw>k PRE:<pre>. Applying LIVE in 5s.`<br>`JT: Invalid FSK params (BR:0.6-300k, DEV:1.5-200k, BW:4.8-500k, PRE:4-1024)`<br>`JT: SETFSK not supported on this radio` |
+| `SETFLRC` | `SETFLRC <br_kbps> <cr> [bt] [preamble_bits]` · bare = status · `SETFLRC OFF\|RESET\|DEFAULT` | Switch the radio to **FLRC** modulation — SX128x (2.4 GHz) and LR2021 (X1, sub-GHz) only; `cr` is required. Params & theory: see **SETFSK/SETFLRC reference** below. Example: `SETFLRC 600 3`. | `JT: FLRC accepted. BR:<br>k CR:<cr> BT:<bt> PRE:<pre>. Applying LIVE in 5s.`<br>`JT: Invalid FLRC params (BR:1-2600k, CR:2\|3\|4 = 1/2\|3/4\|uncoded, BT:0\|1\|2, PRE:4-1024)`<br>`JT: SETFLRC not supported on this radio` |
 | `PRESET` / `SETPRESET` | `PRESET <preset>` | Load various LoRa presets (Warning, all these are EU_868 ONLY): `SF`, `LF`/`LM`/`LS`, `MS`, `MF`, `SS`, `ST`, `LT`, `SP`/`SPM`, `P1`, `P7`, `NAP-1..5`, `NAPN-1..5`, `NARROWPROMAX`/`NARROWPREMIUM` (plus long names: `LONGFAST`, `LONGMODERATE`, `LONGSLOW`, `LONGTURBO`, `MEDFAST`, `MEDSLOW`, `SHORTPLUS`, `SHORTPROMAX`, `SHORTSLOW`, `SHORTFAST`, `SHORTTURBO`, `SFNARROW`). Example: `PRESET SF`. | `JT: Preset '<preset>' accepted. SF:<sf> BW:<bw> Freq:<freq>MHz. Applying LIVE in 5s.` |
 | `SETPREAMBLE` / `SETPRE` | `SETPREAMBLE <len>` | Set custom preamble length (6-1024 symbols). Example: `SETPREAMBLE 16`. | `JT: Preamble Length set to <len>. Applying in 5s...` |
 | | `SETPREAMBLE` | Show active preamble override. | `JT Preamble Override: <len>` |
@@ -373,6 +375,80 @@ Again: The 2.8 already does this automatically, but if you wanna override it man
 | NAPN (BW 62) | `NAPN-4` | — | 7 | 62 | 4/5 | 867.500 |
 
 *`PRESET` writes a custom modem config (`use_preset = false`): `spread_factor`, `bandwidth`, `coding_rate` and `override_frequency`, applied LIVE 5 s after the reply. CR shown as `4/x` (raw `coding_rate` values are `5` or `8`).*
+
+**SETFSK / SETFLRC reference — switching away from LoRa (FSK / GFSK / FLRC):**
+**Status: experimental.** Both commands are compile-verified across all target chips but not yet bench-proven on air — test with a known pair before relying on a link.
+
+If you know LoRa, you already know the trade you're making: LoRa is *chirp spread spectrum* — the radio sweeps the carrier continuously (the "chirp"), and each chirp's spreading factor buys processing gain, so it demodulates below the noise floor. That's why LoRa is slow but reaches kilometers.
+
+- **FSK** (frequency-shift keying) is the classical alternative every walkie-talkie, BLE and old packet-radio link used: the carrier simply shifts between two frequencies to mean 0 and 1. No chirp, no processing gain → it needs a cleaner signal, but it's fast and simple.
+- **GFSK** = FSK with a *Gaussian* filter shaping the transmit pulses so the signal doesn't splatter outside its channel (that's the `BT` knob on the FLRC side). For reception it is equivalent to FSK — a mismatched shaper costs a little SNR, not the link. (On SX126x, RadioLib's "FSK" is literally GFSK with shaping off.)
+- **FLRC** (Fast Long Range Coding) is Semtech's high-speed mode built into LoRa-class silicon (SX128x, LR2021): near-raw bit rates with forward-error correction and a fixed prefix/sync word — much faster than FSK, more robust than plain FSK at short range, but without LoRa's chirp gain, so nothing like LoRa's range.
+
+**Knob mapping** — what replaces what when you leave LoRa:
+
+| LoRa concept | FSK equivalent | FLRC equivalent |
+|---|---|---|
+| `SF` (rate ↔ range trade) | `br_kbps` | `br_kbps` |
+| `BW` (signal width / filter) | `freqDev_kHz` + `rxBw_kHz` | set by rate family |
+| `CR` (redundancy) | none — FSK payload is uncoded | `cr` |
+| preamble (symbols) | `preamble_bits` (raw bits — far cheaper per packet) | `preamble_bits` |
+| — (shaping) | implicit (NRZ) | `bt` |
+
+**`SETFSK <br_kbps> [freqDev_kHz] [rxBw_kHz] [preamble_bits]`** — defaults in brackets. Frequency and TX power are NOT part of this command: set them with `SETLORA`/`PRESET` and `SETPOWER` as usual; FSK just rides the configured frequency.
+
+| Param | Range | Default | What it actually does |
+|---|---|---|---|
+| `br_kbps` | 0.6 – 300 | *required* | Raw bit rate in kbps. Same direction as trading SF down: higher = shorter airtime and more bits per joule, but each bit carries less energy, so range and weak-signal tolerance drop fast. |
+| `freqDev_kHz` | 1.5 – 200 | 25 | How far the carrier shifts for a 1 vs a 0 (FSK deviation). Wider = easier, more drift-tolerant demodulation and a wider spectrum footprint; narrower = tighter channel but the PLL must track cleanly. **Both ends must use the same value** — a deviation mismatch is a silent no-link. A sane starting point is roughly half the bit rate (the reference profile `SETFSK 50 25 39 16`). |
+| `rxBw_kHz` | 4.8 – 500 | 39 | The receiver's IF filter. Narrow rejects neighbouring traffic and front-end noise; too narrow clips your own dev+rate signal (worse with cheap-crystal offset between boards). Widen it if two boards refuse to hear each other, narrow it if you're fighting adjacent-channel interference. |
+| `preamble_bits` | 4 – 1024 | 16 | Leading alternating pattern so the receiver's AGC settles and bit clock locks before the payload. Raw **bits**, not LoRa symbols — 16 bits costs a rounding error of airtime vs 16 LoRa symbols. Lengthen on marginal links, shorten when every µs counts. |
+
+**`SETFLRC <br_kbps> <cr> [bt] [preamble_bits]`** — `cr` is mandatory; `bt` and `preamble` optional. **Family-local by physics:** 2.4 GHz FLRC pairs talk to SX128x peers only, sub-GHz FLRC pairs talk to LR2021 (X1) peers only — they cannot cross bands or chip families.
+
+| Param | Range | Default | What it actually does |
+|---|---|---|---|
+| `br_kbps` | 1 – 2600 (parser) | *required* | Raw bit rate. The parser accepts broadly, but the **chip is authoritative** (SX128x: ~0.26–1.3 Mbps; LR2021 per its driver) and rejects out-of-family rates at init — stick to your chip's documented window. |
+| `cr` | `2`\|`3`\|`4` | *required* | Forward-error-correction ratio: `2` = 1/2 (half the transmission is redundancy — max robustness), `3` = 3/4 (balanced), `4` = 1/1 uncoded (max throughput, no safety net). Same *idea* as LoRa's CR, different code — do not mix values between peers either. |
+| `bt` | 0 – 2 | 2 | Gaussian TX pulse shaping: `0` = unshaped NRZ (cleanest eyes, widest spectral shoulders), `1` = BT 0.3 (tightest spectrum), `2` = BT 0.5 (default — good containment without much ISI). Prefer matching on both ends; a mismatch costs SNR, not the link. |
+| `preamble_bits` | 4 – 1024 | 16 | Same role as FSK's preamble. |
+
+**Which chips accept what** (bare `SETFSK`/`SETFLRC` reports your radio's capability as `caps:`):
+
+| Chip family | Typical boards | `SETFSK` | `SETFLRC` |
+|---|---|---|---|
+| SX126x (1261/1262/1268, LLCC68) | heltec-v4, station-g3, t-beam-1w, T-Deck, RAK4631, T-Echo, ProMicro DIY | ✅ GFSK | ❌ no FLRC hardware |
+| SX127x / RF95 | heltec v1/v2, older TLora | ❌ (`caps: none`) | ❌ |
+| LR11x0 (1110/1120/1121) | T1000-E, dreamcatcher | ✅ GFSK | ❌ (driver exposes none) |
+| SX128x (2.4 GHz) | betafpv 2400, ProMicro DIY E28/24G, MakePython 2.4G | ✅ GFSK | ✅ |
+| LR2021 | X1 | ✅ GFSK | ✅ sub-GHz FLRC |
+
+**How the mode behaves:**
+
+- **Reply first, apply in 5 s** — identical deferred pattern to `SETLORA`/`SETSYNCWORD`, so your confirmation always reaches the mesh before the radio re-initializes.
+- **Persists until disabled**: channel changes and other reconfigures re-apply the alt modem instead of silently reverting to LoRa. `SETFSK OFF` (aliases `RESET`, `DEFAULT`) returns to LoRa; a **reboot also returns to LoRa** — the state is RAM-only.
+- **Status**: bare `SETFSK` (or `SETFLRC`) → `JT Alt Modem: <LORA|FSK|FLRC> BR:<x>k dev:<x>k bw:<x>k pre:<n> | caps:<FSK FLRC|none>`.
+- **No SNR in FSK/FLRC**: the chip has no LoRa-style SNR, so `rx_snr` is an RSSI-derived pseudo-SNR (−120…−50 dBm mapped to −10…+10 dB) — near/far timing math still works.
+- **No LoRa CAD**: channel-activity uses an RSSI energy sniff (≳−100 dBm ⇒ busy) instead of LoRa's preamble detector — collision behaviour differs from LoRa networks.
+
+**Interoperability rules:**
+
+- Every chip gets the same **Nexus wire profile** pinned explicitly (sync word `0x12AD`, whitening **off**, NRZ, 2-byte CCITT CRC, variable-length packets) instead of per-chip defaults — so any FSK-capable Nexus pair matches **across families** (SX126x ↔ LR1110 ↔ SX128x ↔ LR2021). The dangerous default (SX128x whitening on) is deliberately overridden.
+- **Both ends must use byte-identical parameters.** There is no negotiation.
+- **Stock Meshtastic nodes hear nothing** of FSK/FLRC traffic (and vice versa) — that isolation is the point: a private test channel on public spectrum. You need two Nexus nodes.
+- FLRC never crosses families (SX128x↔SX128x 2.4 GHz, LR2021↔LR2021 sub-GHz). **T1000-E has no FLRC** — for the standard T1000-E + X1 pair, GFSK is the shared link modulation.
+- Observe band/duty rules as always — `SETFSK`/`SETFLRC` change the modulation, not your legal limits.
+
+**Examples:**
+
+```
+SETFSK                 → status + caps of this radio
+SETFSK 50 25 39 16     → reference profile: 50 kbps, dev 25 kHz, RXBW 39 kHz, 16-bit preamble
+SETFSK 200             → 200 kbps with the 25/39/16 defaults
+SETFLRC 600 3          → 600 kbps, CR 3/4, BT 0.5, 16-bit preamble (SX128x/LR2021)
+SETFLRC 600 4 1 32     → uncoded max throughput, BT 0.3, 32-bit preamble
+SETFSK OFF             → back to LoRa (applies in 5 s)
+```
 
 ---
 
@@ -774,6 +850,8 @@ Nexus stores its persistent configuration in an encrypted / versioned flash segm
 | `SETCONFIG` | §12 Channels & Config | Direct protobuf configuration write |
 | `SETHEX` | §3 Firewall & Filtering | Set inbound drops from 64-bit hex |
 | `SETHEXOUT` | §3 Firewall & Filtering | Set outbound drops from 64-bit hex |
+| `SETFLRC` | §7 Radio & RF Control | Switch modem to FLRC (SX128x/LR2021 only) |
+| `SETFSK` | §7 Radio & RF Control | Switch modem to FSK/GFSK modulation |
 | `SETLNA` | §7 Radio & RF Control | Set LNA gain mode |
 | `SETLORA` | §7 Radio & RF Control | Reconfigure SF, BW, CR, Frequency |
 | `SETPOWER` / `SETPWR` / `SETTXPOWER` | §7 Radio & RF Control | Set radio transmit power (dBm) |
