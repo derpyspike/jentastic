@@ -490,7 +490,7 @@ template <typename T> bool SX128xInterface<T>::isChannelActive()
     if (result == RADIOLIB_ERR_NONE) {
         // Nexus SETFSK/SETFLRC: no LoRa CAD in GFSK/FLRC — RSSI energy sniff (2026-10-14).
         if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
-            float rssi = lora.getRSSI();
+            float rssi = lora.getRSSI(false); // instantaneous, not last-packet status
             LOG_TRACE("SX128X alt-modem channel sniff RSSI=%.1f dBm", rssi);
             return rssi > -100.0f;
         }
@@ -514,8 +514,18 @@ template <typename T> bool SX128xInterface<T>::isActivelyReceiving()
     // Nexus SETFSK/SETFLRC: LoRa detects on HEADER_VALID; GFSK/FLRC detect on
     // SYNC_WORD_VALID (the GFSK packet-start event).
     if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
-        return receiveDetected(lora.getIrqStatus(), RADIOLIB_SX128X_IRQ_SYNC_WORD_VALID,
-                               RADIOLIB_SX128X_IRQ_PREAMBLE_DETECTED);
+        const uint16_t irq = lora.getIrqStatus();
+        const uint16_t latch = RADIOLIB_SX128X_IRQ_SYNC_WORD_VALID | RADIOLIB_SX128X_IRQ_PREAMBLE_DETECTED;
+        const bool detected = receiveDetected(irq, RADIOLIB_SX128X_IRQ_SYNC_WORD_VALID,
+                                              RADIOLIB_SX128X_IRQ_PREAMBLE_DETECTED);
+        // Stale-latch hazard (bench 2026-10-17, same as SX126x FSK): false noise
+        // detections latch non-terminal IRQ bits that the interrupt path never clears
+        // -> busyRx latches forever -> TX starved. Clear once receiveDetected() rules it stale.
+        if (!detected && (irq & latch)) {
+            lora.clearIrqFlags(latch);
+            LOG_TRACE("SX128X alt-modem stale RX latch cleared (irq=0x%04X)", (unsigned)irq);
+        }
+        return detected;
     }
     return receiveDetected(lora.getIrqStatus(), RADIOLIB_SX128X_IRQ_HEADER_VALID, RADIOLIB_SX128X_IRQ_PREAMBLE_DETECTED);
 }

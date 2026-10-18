@@ -416,6 +416,25 @@ void RadioLibInterface::onNotify(uint32_t notification)
         setTransmitDelay();
         break;
     case ISR_RX:
+        // PREAMBLE_DETECTED/HEADER_VALID/SYNC are routed to the edge-triggered DIO1
+        // (MESHTASTIC_RADIOLIB_IRQ_RX_FLAGS), so every packet's own preamble fires this
+        // notification BEFORE RX_DONE. Handled as a completed receive it reads an empty
+        // buffer (silent rxBad) and the startReceive() below puts the chip in standby —
+        // aborting the packet in flight. LoRa only survives because its 32 ms preamble
+        // outlasts the ~1 ms abort+re-arm; FSK's whole preamble+sync is ~0.3 ms (16 bits
+        // @ 50 kbps), so the chip never re-syncs and the receiver is deaf to every
+        // packet — bench 2026-10-18: SX1262 AND SX1280 pairs both deaf, clean logs.
+        // Guard: terminal events only. A preamble/header-only edge: clear the latch so
+        // DIO1 drops (RX_DONE then produces a fresh edge instead of waiting for the
+        // ~1 s pollMissedIrqs backup), re-arm the interrupt, no abort.
+        if (!iface->checkIrq(RADIOLIB_IRQ_RX_DONE) && !iface->checkIrq(RADIOLIB_IRQ_TIMEOUT) &&
+            !iface->checkIrq(RADIOLIB_IRQ_CRC_ERR) && !iface->checkIrq(RADIOLIB_IRQ_HEADER_ERR)) {
+            iface->clearIrq((1UL << RADIOLIB_IRQ_PREAMBLE_DETECTED) | (1UL << RADIOLIB_IRQ_HEADER_VALID) |
+                            (1UL << RADIOLIB_IRQ_SYNC_WORD_VALID));
+            if (!sendingPacket)
+                enableInterrupt(isrRxLevel0);
+            return;
+        }
         handleReceiveInterrupt();
         startReceive();
         setTransmitDelay();

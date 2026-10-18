@@ -803,7 +803,7 @@ template <typename T> bool LR20x0Interface<T>::isChannelActive()
     if (result == RADIOLIB_ERR_NONE) {
         // Nexus SETFSK/SETFLRC: no LoRa CAD in GFSK/FLRC — RSSI energy sniff (2026-10-14).
         if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
-            float rssi = lora.getRSSI();
+            float rssi = lora.getRSSI(false, true); // instantaneous, not last-packet status
             LOG_TRACE("LR2021 alt-modem channel sniff RSSI=%.1f dBm", rssi);
             return rssi > -100.0f;
         }
@@ -824,6 +824,20 @@ template <typename T> bool LR20x0Interface<T>::isActivelyReceiving()
 {
     // The IRQ status will be cleared when we start our read operation. Check if we've started a header, but haven't yet
     // received and handled the interrupt for reading the packet/handling errors.
+    // Nexus SETFSK/SETFLRC: the shared header/sync bit also covers alt-modem packet start,
+    // so the LoRa flags stay valid there — but the stale-latch hazard (bench 2026-10-17,
+    // same as SX126x FSK) applies: clear false-detection latches in alt mode.
+    if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
+        const uint16_t irq = lora.getIrqStatus();
+        const uint16_t latch = RADIOLIB_LR2021_IRQ_LORA_HEADER_VALID | RADIOLIB_LR2021_IRQ_PREAMBLE_DETECTED;
+        const bool detected = receiveDetected(irq, RADIOLIB_LR2021_IRQ_LORA_HEADER_VALID,
+                                              RADIOLIB_LR2021_IRQ_PREAMBLE_DETECTED);
+        if (!detected && (irq & latch)) {
+            lora.clearIrqFlags(latch);
+            LOG_TRACE("LR2021 alt-modem stale RX latch cleared (irq=0x%04X)", (unsigned)irq);
+        }
+        return detected;
+    }
     return receiveDetected(lora.getIrqStatus(), RADIOLIB_LR2021_IRQ_LORA_HEADER_VALID, RADIOLIB_LR2021_IRQ_PREAMBLE_DETECTED);
 }
 

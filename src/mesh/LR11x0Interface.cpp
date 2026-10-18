@@ -296,7 +296,12 @@ template <typename T> int16_t LR11x0Interface<T>::programAltModemFSK()
     // (same shape as SX126x); frequency/power/gain below mirror the LoRa tail so
     // T1000-E and SX126x boards share one uniform wire profile (Jenny ruling
     // 2026-10-14: GFSK chips must interop with each other).
-    int16_t err = lora.beginGFSK(m.brKbps, m.freqDevKHz, m.rxBwKHz, m.preambleBits);
+    // QUALIFIED CALL — do NOT un-qualify: LR1110/LR1120 declare their own
+    // beginGFSK(freq, br, freqDev, rxBw, ...) chip-level overload with no
+    // `using LR11x0::beginGFSK`, so name hiding would bind an unqualified 4-arg
+    // call to that one with our bit rate read as the FREQUENCY (same bug as
+    // SX126x SETFSK, bench 2026-10-17 -> INVALID_FREQUENCY, radio down).
+    int16_t err = lora.LR11x0::beginGFSK(m.brKbps, m.freqDevKHz, m.rxBwKHz, m.preambleBits);
     if (err != RADIOLIB_ERR_NONE) {
         LOG_ERROR("LR11x0 beginGFSK(%.1fk/%.1fk/%.1fk/%u) %s%d", m.brKbps, m.freqDevKHz,
                   m.rxBwKHz, m.preambleBits, radioLibErr, err);
@@ -595,7 +600,7 @@ template <typename T> bool LR11x0Interface<T>::isChannelActive()
         // Nexus SETFSK: GFSK has no LoRa CAD — RSSI energy sniff instead (Jenny ruling
         // 2026-10-14): an active FSK carrier sits well above -100 dBm.
         if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
-            float rssi = lora.getRSSI();
+            float rssi = lora.getRSSI(false, true); // instantaneous, not last-packet status
             LOG_TRACE("LR11x0 alt-modem channel sniff RSSI=%.1f dBm", rssi);
             return rssi > -100.0f;
         }
@@ -616,6 +621,20 @@ template <typename T> bool LR11x0Interface<T>::isActivelyReceiving()
 {
     // The IRQ status will be cleared when we start our read operation. Check if we've started a header, but haven't yet
     // received and handled the interrupt for reading the packet/handling errors.
+    // Nexus SETFSK: the shared sync/header bit also covers GFSK sync-word detection, so the
+    // LoRa flags stay valid in alt mode — but the stale-latch hazard (bench 2026-10-17,
+    // same as SX126x FSK) applies there: clear false-detection latches.
+    if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
+        const uint16_t irq = lora.getIrqStatus();
+        const uint16_t latch = RADIOLIB_LR11X0_IRQ_SYNC_WORD_HEADER_VALID | RADIOLIB_LR11X0_IRQ_PREAMBLE_DETECTED;
+        const bool detected = receiveDetected(irq, RADIOLIB_LR11X0_IRQ_SYNC_WORD_HEADER_VALID,
+                                              RADIOLIB_LR11X0_IRQ_PREAMBLE_DETECTED);
+        if (!detected && (irq & latch)) {
+            lora.clearIrqFlags(latch);
+            LOG_TRACE("LR11x0 alt-modem stale RX latch cleared (irq=0x%04X)", (unsigned)irq);
+        }
+        return detected;
+    }
     return receiveDetected(lora.getIrqStatus(), RADIOLIB_LR11X0_IRQ_SYNC_WORD_HEADER_VALID,
                            RADIOLIB_LR11X0_IRQ_PREAMBLE_DETECTED);
 }
