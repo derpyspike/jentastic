@@ -1,0 +1,893 @@
+# Nexus fork of main_matrix.yml — identical matrix/release logic, but the two
+# meshtastic/gh-action-firmware container calls are replaced with direct
+# pip-installed PlatformIO (same recipe as nexus_build_firmware.yml). The
+# develop-* container images regressed on 2026-10-12 (image rev c48ef2c) and
+# every ESP-family job dies at link with
+#   ModuleNotFoundError: No module named 'SCons.Tool.FortranCommon'
+# Shared upstream files (main_matrix.yml, build_firmware.yml) stay untouched so
+# upstream merges remain clean; sync this copy manually when upstream changes
+# them. Concurrency group is namespaced ci-nexus- so runs here never cancel (or
+# get cancelled by) main_matrix.yml runs on the same branch.
+name: CI (Nexus)
+concurrency:
+  group: ci-nexus-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+on:
+  # The merge queue is the pre-merge gate for the protected branches (master,
+  # develop): a merge_group run validates the merged result before code lands. For
+  # now PRs and merge_group runs build the same narrowed board subset (--level pr);
+  # see the setup job. push still runs the full matrix on master/develop (post-merge)
+  # as well as on the event/* and feature/* branches, which have no merge queue.
+  merge_group:
+    types: [checks_requested]
+    branches:
+      - master
+      - develop
+
+  push:
+    branches:
+      - master
+      - develop
+      - event/*
+      - feature/*
+    paths-ignore:
+      - "**.md"
+      - version.properties
+
+  # No paths-ignore here: ci-gate is the required status check, and a PR that
+  # never runs this workflow never reports it, so a docs-only PR cannot merge.
+  pull_request:
+    branches:
+      - master
+      - develop
+      - event/*
+      - feature/*
+
+  schedule:
+    # Nightly develop build, published to the meshtastic-firmware-nightly R2
+    # bucket (no GitHub release).
+    # Scheduled runs execute on the default branch (develop). 07:00 UTC avoids the 00:00 tests
+    # and 02:00 daily_packaging crons.
+    - cron: 0 7 * * * # Nightly develop build/publish (default branch is develop)
+
+  workflow_dispatch:
+    inputs:
+      # trunk-ignore(checkov/CKV_GHA_7): intentional manual-test switch for the nightly publish path
+      nightly:
+        description: "Nightly mode: build + publish develop to the nightly R2 bucket (skips creating a GitHub release)"
+        type: boolean
+        default: false
+
+permissions: read-all
+
+jobs:
+  setup:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Needed to diff against the base branch for newly added variants.
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: 3.x
+          cache: pip
+      - run: pip install -U platformio==6.1.19
+      - name: Generate matrix
+        id: jsonStep
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          # A new board is 'release' and gets no CI until after merge, so force-build the
+          # first env of each ADDED variant config. A new env in an existing one does not count.
+          DIFF_BASE=""
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            # checkout above already fetched every branch (fetch-depth: 0), so the base ref
+            # is local. Do not re-fetch it with --depth=1: that grafts the fetched tip as
+            # parentless, and merge-base then finds no common commit whenever the base
+            # branch has moved past this merge commit, which is every re-run of an older run.
+            DIFF_BASE=$(git merge-base "origin/$BASE_REF" HEAD)
+          elif [[ "$GITHUB_EVENT_NAME" == "merge_group" ]]; then
+            DIFF_BASE="$MERGE_GROUP_BASE_SHA"
+          fi
+          ADDED_ARGS=()
+          if [[ -n "$DIFF_BASE" ]]; then
+            # Assign rather than pipe: a failing diff must abort the step under 'set -e',
+            # not silently yield an empty list and drop the new board from the matrix.
+            ADDED_CONFIGS=$(git diff --name-only --diff-filter=A \
+              "$DIFF_BASE" HEAD -- 'variants/**/platformio.ini')
+            while IFS= read -r cfg; do
+              [[ -n "$cfg" ]] && ADDED_ARGS+=(--added-config "$cfg")
+            done <<<"$ADDED_CONFIGS"
+          fi
+          # PRs and (for now) merge_group builds use the narrowed --level pr board
+          # subset. Full-matrix builds run on push / schedule / workflow_dispatch.
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" || "$GITHUB_EVENT_NAME" == "merge_group" ]]; then
+            TARGETS=$(./bin/generate_ci_matrix.py all --level pr "${ADDED_ARGS[@]}")
+          else
+            TARGETS=$(./bin/generate_ci_matrix.py all)
+          fi
+          echo "Name: $GITHUB_REF_NAME Base: $GITHUB_BASE_REF Ref: $GITHUB_REF"
+          echo "all=$TARGETS" >> $GITHUB_OUTPUT
+          echo "$TARGETS" >> $GITHUB_STEP_SUMMARY
+    outputs:
+      all: ${{ steps.jsonStep.outputs.all }}
+
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Get release version string
+        run: |
+          echo "long=$(./bin/buildinfo.py long)" >> $GITHUB_OUTPUT
+          echo "deb=$(./bin/buildinfo.py deb)" >> $GITHUB_OUTPUT
+        id: version
+        env:
+          BUILD_LOCATION: local
+    outputs:
+      long: ${{ steps.version.outputs.long }}
+      deb: ${{ steps.version.outputs.deb }}
+
+  check:
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix:
+        check: ${{ fromJson(needs.setup.outputs.all) }}
+    # Runs on GitHub-hosted runners so checks don't compete with builds for the
+    # self-hosted 'arctastic' pool (which builds use).
+    runs-on: ubuntu-latest
+    # Only run checks for PRs and Merge Queue runs.
+    if: contains(fromJSON('["pull_request", "merge_group"]'), github.event_name)
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v7
+        with:
+          python-version: 3.x
+
+      # Direct-PIO preamble identical to nexus_build_firmware.yml: cache key is
+      # scoped to the pinned PIO version (6119) so a poisoned tool-scons cache
+      # from the 6.2.0 era is never restored, and the guard drops any restored
+      # tool-scons whose FortranCommon.py marker is missing.
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio6119-${{ runner.os }}-${{ matrix.check.platform }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            pio6119-${{ runner.os }}-${{ matrix.check.platform }}-
+
+      - name: Guard against gutted tool-scons cache
+        run: |
+          TS="$HOME/.platformio/packages/tool-scons"
+          if [ -d "$TS" ] && ! find "$TS" -name FortranCommon.py -print -quit | grep -q .; then
+            echo "tool-scons present but gutted — removing for clean reinstall"
+            rm -rf "$TS"
+          else
+            echo "tool-scons OK or absent (PIO installs on demand)"
+          fi
+
+      - name: Install PlatformIO
+        # PINNED: 6.2.0 wipes tool-scons during ESP-IDF builds (see
+        # nexus_build_firmware.yml). Do not un-pin until 6.2.1+ ships.
+        run: pip install -U platformio==6.1.19
+
+      - name: Check ${{ matrix.check.board }}
+        env:
+          PIP_BREAK_SYSTEM_PACKAGES: "1"
+        run: bash bin/check-all.sh "${{ matrix.check.board }}"
+
+  build:
+    needs: [setup, version]
+    strategy:
+      fail-fast: false
+      matrix:
+        build: ${{ fromJson(needs.setup.outputs.all) }}
+    uses: ./.github/workflows/nexus_build_firmware.yml
+    with:
+      version: ${{ needs.version.outputs.long }}
+      pio_env: ${{ matrix.build.board }}
+      platform: ${{ matrix.build.platform }}
+
+  build-debian-src:
+    if: github.repository_owner == 'meshtastic' && github.event_name != 'schedule' && github.event.inputs.nightly != 'true'
+    uses: ./.github/workflows/build_debian_src.yml
+    with:
+      series: UNRELEASED
+      build_location: local
+    secrets: inherit
+
+  MacOS:
+    if: github.event_name != 'schedule' && github.event.inputs.nightly != 'true' && !contains(github.ref_name, 'event/')
+    strategy:
+      fail-fast: false
+      matrix:
+        macos_ver:
+          - "27" # ARM64
+          - "26" # ARM64
+          # - '26-intel' # x86_64
+    uses: ./.github/workflows/build_macos_bin.yml
+    with:
+      macos_ver: ${{ matrix.macos_ver }}
+    # secrets: inherit
+
+  Windows:
+    if: github.event_name != 'schedule' && github.event.inputs.nightly != 'true' && !contains(github.ref_name, 'event/')
+    strategy:
+      fail-fast: false
+      matrix:
+        windows_ver:
+          - "2025" # x86_64
+    uses: ./.github/workflows/build_windows_bin.yml
+    with:
+      windows_ver: ${{ matrix.windows_ver }}
+    # secrets: inherit
+
+  package-pio-deps-native-tft:
+    if: github.repository_owner == 'meshtastic' && github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/package_pio_deps.yml
+    with:
+      pio_env: native-tft
+    secrets: inherit
+
+  test-native:
+    if: github.repository_owner == 'meshtastic' && github.event_name != 'schedule' && github.event.inputs.nightly != 'true' && !contains(github.ref_name, 'event/')
+    permissions: # Needed for dorny/test-reporter.
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/test_native.yml
+
+  build-wasm:
+    if: github.event_name != 'schedule' && github.event.inputs.nightly != 'true' && !contains(github.ref_name, 'event/')
+    # Build the WebAssembly portduino node ([env:native-wasm]) as part of normal CI,
+    # like the other platforms. It's a dedicated job (not a row in the `build`
+    # matrix) because its artifact is meshnode.{mjs,wasm} - not a flashable
+    # .bin/.uf2/.hex - and it needs the Emscripten SDK; board_level=extra keeps
+    # it out of generate_ci_matrix.py.
+    uses: ./.github/workflows/build_portduino_wasm.yml
+
+  docker:
+    if: github.event_name != 'schedule' && github.event.inputs.nightly != 'true' && !contains(github.ref_name, 'event/')
+    permissions: # Needed for pushing to GHCR.
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [debian, alpine]
+        platform: [linux/arm64]
+        pio_env: [native-tft]
+    uses: ./.github/workflows/docker_build.yml
+    with:
+      distro: ${{ matrix.distro }}
+      platform: ${{ matrix.platform }}
+      runs-on: ${{ contains(matrix.platform, 'arm') && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+      pio_env: ${{ matrix.pio_env }}
+      push: false
+
+  # Single, stable status check for branch protection.
+  # Always runs and passes only if every build and check that ran succeeded.
+  ci-gate:
+    # Consumed in PRs and Merge Queue
+    if: contains(fromJSON('["pull_request", "merge_group"]'), github.event_name) && !cancelled()
+    needs: [build, check]
+    runs-on: ubuntu-slim
+    steps:
+      - name: Verify build and check results
+        run: |
+          echo "build=${{ needs.build.result }} check=${{ needs.check.result }}"
+          if [[ "${{ needs.build.result }}" != "success" ]]; then
+            echo "::error::One or more firmware builds failed, were cancelled, or did not run."
+            exit 1
+          fi
+          case "${{ needs.check.result }}" in
+            success | skipped) ;;
+            *)
+              echo "::error::One or more checks failed or were cancelled (${{ needs.check.result }})."
+              exit 1
+              ;;
+          esac
+
+  gather-artifacts:
+    # Only run on Release (workflow_dispatch) and Nightly (schedule) runs, not on PRs or merge_group runs.
+    if: github.repository_owner == 'meshtastic' && contains(fromJSON('["workflow_dispatch", "schedule"]'), github.event_name)
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - esp32
+          - esp32s3
+          - esp32c3
+          - esp32c6
+          - nrf52840
+          - rp2040
+          - rp2350
+          - stm32
+    runs-on: ubuntu-latest
+    needs: [version, build]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: ./
+          pattern: firmware-${{matrix.arch}}-*
+          merge-multiple: true
+
+      - name: Display structure of downloaded files
+        run: ls -R
+
+      - name: Repackage in single firmware zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: firmware-${{matrix.arch}}-${{ needs.version.outputs.long }}
+          overwrite: true
+          path: |
+            ./firmware-*.mt.json
+            ./firmware-*.bin
+            ./firmware-*.uf2
+            ./firmware-*.hex
+            ./firmware-*.zip
+            ./device-*.sh
+            ./device-*.bat
+            ./littlefs-*.bin
+            ./bleota*bin
+            ./mt-*-ota.bin
+            ./Meshtastic_nRF52_factory_erase*.uf2
+          retention-days: 30
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: firmware-${{matrix.arch}}-${{ needs.version.outputs.long }}
+          merge-multiple: true
+          path: ./output
+
+      # For diagnostics
+      - name: Show artifacts
+        run: ls -lR
+
+      - name: Device scripts permissions
+        run: |
+          chmod +x ./output/device-install.sh || true
+          chmod +x ./output/device-update.sh || true
+
+      - name: Zip firmware
+        run: zip -j -9 -r ./firmware-${{matrix.arch}}-${{ needs.version.outputs.long }}.zip ./output
+
+      - name: Repackage in single elfs zip
+        uses: actions/upload-artifact@v7
+        with:
+          name: debug-elfs-${{matrix.arch}}-${{ needs.version.outputs.long }}
+          overwrite: true
+          path: ./*.elf
+          retention-days: 30
+
+  firmware-size-report:
+    if: github.repository_owner == 'meshtastic' && github.event_name != 'schedule' && github.event.inputs.nightly != 'true'
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download current manifests
+        uses: actions/download-artifact@v8
+        with:
+          path: ./manifests/
+          pattern: manifest-*
+          merge-multiple: true
+
+      - name: Collect current firmware sizes
+        run: python3 bin/collect_sizes.py ./manifests/ ./current-sizes.json
+
+      - name: Upload size report artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: firmware-sizes-${{ github.sha }}
+          overwrite: true
+          path: ./current-sizes.json
+          retention-days: 90
+
+      - name: Download baseline sizes from develop
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        id: baseline-develop
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN_ID=$(gh run list -R "${{ github.repository }}" \
+            --workflow CI --branch develop --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -n "$RUN_ID" ]; then
+            ARTIFACT_NAME=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/artifacts" \
+              --jq '.artifacts[] | select(.name | startswith("firmware-sizes-")) | select(.expired == false) | .name' | head -1)
+            if [ -n "$ARTIFACT_NAME" ]; then
+              gh run download "$RUN_ID" -R "${{ github.repository }}" \
+                --name "$ARTIFACT_NAME" --dir ./baseline-develop/
+              cp "./baseline-develop/current-sizes.json" ./develop-sizes.json
+              echo "found=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "found=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download baseline sizes from master
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        id: baseline-master
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN_ID=$(gh run list -R "${{ github.repository }}" \
+            --workflow CI --branch master --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -n "$RUN_ID" ]; then
+            ARTIFACT_NAME=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/artifacts" \
+              --jq '.artifacts[] | select(.name | startswith("firmware-sizes-")) | select(.expired == false) | .name' | head -1)
+            if [ -n "$ARTIFACT_NAME" ]; then
+              gh run download "$RUN_ID" -R "${{ github.repository }}" \
+                --name "$ARTIFACT_NAME" --dir ./baseline-master/
+              cp "./baseline-master/current-sizes.json" ./master-sizes.json
+              echo "found=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "found=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate size comparison report
+        if: github.event_name == 'pull_request'
+        id: report
+        run: |
+          ARGS="./current-sizes.json --budgets bin/ram_budgets.json"
+          if [ -f ./develop-sizes.json ]; then
+            ARGS="$ARGS --baseline develop:./develop-sizes.json"
+          fi
+          if [ -f ./master-sizes.json ]; then
+            ARGS="$ARGS --baseline master:./master-sizes.json"
+          fi
+          REPORT=$(python3 bin/size_report.py $ARGS)
+          if [ -z "$REPORT" ]; then
+            echo "has_report=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_report=true" >> "$GITHUB_OUTPUT"
+            {
+              echo '<!-- firmware-size-report -->'
+              echo '# Firmware Size Report'
+              echo ''
+              echo "$REPORT"
+              echo ''
+              echo '---'
+              echo "*Updated for ${{ github.sha }}*"
+            } > ./size-report.md
+            cat ./size-report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Save PR number
+        if: github.event_name == 'pull_request' && steps.report.outputs.has_report == 'true'
+        run: echo "${{ github.event.pull_request.number }}" > ./pr-number.txt
+
+      - name: Upload size report
+        if: github.event_name == 'pull_request' && steps.report.outputs.has_report == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: size-report
+          path: |
+            ./size-report.md
+            ./pr-number.txt
+          retention-days: 5
+
+  # RAM/flash guardrails: fails CI when an env listed in bin/ram_budgets.json
+  # exceeds its static RAM (.data+.bss) or flash budget. Kept separate from
+  # firmware-size-report, which is informational and continue-on-error.
+  size-budget-gate:
+    if: github.event_name != 'schedule' && github.event.inputs.nightly != 'true'
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v7
+
+      # No continue-on-error / empty-dir fallback: the gate must fail closed when
+      # the data it enforces on cannot be fetched (size_report.py additionally
+      # fails on missing budgeted envs under --enforce-budgets).
+      - name: Download current manifests
+        uses: actions/download-artifact@v8
+        with:
+          path: ./manifests/
+          pattern: manifest-*
+          merge-multiple: true
+
+      - name: Collect current firmware sizes
+        run: python3 bin/collect_sizes.py ./manifests/ ./current-sizes.json
+
+      - name: Enforce RAM/flash budgets
+        run: python3 bin/size_report.py ./current-sizes.json --budgets bin/ram_budgets.json --enforce-budgets
+
+  release-artifacts:
+    permissions: # Needed for 'gh release upload'.
+      contents: write
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'meshtastic' && github.event_name == 'workflow_dispatch' && github.event.inputs.nightly != 'true'
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    needs:
+      - setup
+      - version
+      - gather-artifacts
+      - build-debian-src
+      - package-pio-deps-native-tft
+      # - MacOS
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: 3.x
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          chmod +x ./bin/generate_release_notes.py
+          NOTES=$(./bin/generate_release_notes.py ${{ needs.version.outputs.long }} --compare-ref HEAD 2>release_notes.log)
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          echo "$NOTES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          echo "### Release note range" >> $GITHUB_STEP_SUMMARY
+          cat release_notes.log >> $GITHUB_STEP_SUMMARY
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create release
+        uses: softprops/action-gh-release@v3
+        id: create_release
+        with:
+          draft: true
+          prerelease: true
+          name: Meshtastic Firmware ${{ needs.version.outputs.long }} Alpha
+          tag_name: v${{ needs.version.outputs.long }}
+          target_commitish: ${{ github.sha }}
+          body: ${{ steps.release_notes.outputs.notes }}
+
+      - name: Download source deb
+        uses: actions/download-artifact@v8
+        with:
+          pattern: firmware-debian-${{ needs.version.outputs.deb }}~UNRELEASED-src
+          merge-multiple: true
+          path: ./output/debian-src
+
+      - name: Download `native-tft` pio deps
+        uses: actions/download-artifact@v8
+        with:
+          pattern: platformio-deps-native-tft-${{ needs.version.outputs.long }}
+          merge-multiple: true
+          path: ./output/pio-deps-native-tft
+
+      - name: Zip Linux sources
+        working-directory: output
+        run: |
+          zip -j -9 -r ./meshtasticd-${{ needs.version.outputs.deb }}-src.zip ./debian-src
+          zip -9 -r ./platformio-deps-native-tft-${{ needs.version.outputs.long }}.zip ./pio-deps-native-tft
+
+      # For diagnostics
+      - name: Display structure of downloaded files
+        run: ls -lR
+
+      - name: Generate Release manifest
+        run: |
+          jq -n --arg ver "${{ needs.version.outputs.long }}" --argjson targets ${{ toJson(needs.setup.outputs.all) }} '{
+            "version": $ver,
+            "targets": $targets
+          }' > firmware-${{ needs.version.outputs.long }}.json
+
+      - name: Save Release manifest artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: manifest-${{ needs.version.outputs.long }}
+          overwrite: true
+          path: firmware-${{ needs.version.outputs.long }}.json
+
+      - name: Add sources to GitHub Release
+        # Only run when targeting the default branch with workflow_dispatch
+        if: github.ref_name == github.event.repository.default_branch
+        run: |
+          gh release upload v${{ needs.version.outputs.long }} ./firmware-${{ needs.version.outputs.long }}.json
+          gh release upload v${{ needs.version.outputs.long }} ./output/meshtasticd-${{ needs.version.outputs.deb }}-src.zip
+          gh release upload v${{ needs.version.outputs.long }} ./output/platformio-deps-native-tft-${{ needs.version.outputs.long }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-firmware:
+    permissions: # Needed for 'gh release upload'.
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - esp32
+          - esp32s3
+          - esp32c3
+          - esp32c6
+          - nrf52840
+          - rp2040
+          - rp2350
+          - stm32
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'meshtastic' && github.event_name == 'workflow_dispatch' && github.event.inputs.nightly != 'true'
+    needs: [release-artifacts, version]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: 3.x
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: firmware-${{matrix.arch}}-${{ needs.version.outputs.long }}
+          merge-multiple: true
+          path: ./output
+
+      - name: Display structure of downloaded files
+        run: ls -lR
+
+      - name: Device scripts permissions
+        run: |
+          chmod +x ./output/device-install.sh || true
+          chmod +x ./output/device-update.sh || true
+
+      - name: Zip firmware
+        run: zip -j -9 -r ./firmware-${{matrix.arch}}-${{ needs.version.outputs.long }}.zip ./output
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: debug-elfs-${{matrix.arch}}-${{ needs.version.outputs.long }}
+          merge-multiple: true
+          path: ./elfs
+
+      - name: Zip debug elfs
+        run: zip -j -9 -r ./debug-elfs-${{matrix.arch}}-${{ needs.version.outputs.long }}.zip ./elfs
+
+      # For diagnostics
+      - name: Display structure of downloaded files
+        run: ls -lR
+
+      - name: Add bins and debug elfs to GitHub Release
+        # Only run when targeting the default branch with workflow_dispatch
+        if: github.ref_name == github.event.repository.default_branch
+        run: |
+          gh release upload v${{ needs.version.outputs.long }} ./firmware-${{matrix.arch}}-${{ needs.version.outputs.long }}.zip
+          gh release upload v${{ needs.version.outputs.long }} ./debug-elfs-${{matrix.arch}}-${{ needs.version.outputs.long }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-firmware:
+    runs-on: ubuntu-24.04
+    if: github.repository_owner == 'meshtastic' && github.event_name == 'workflow_dispatch' && github.event.inputs.nightly != 'true'
+    needs: [release-firmware, version]
+    env:
+      targets: |-
+        esp32,esp32s3,esp32c3,esp32c6,nrf52840,rp2040,rp2350,stm32
+      r2_bucket: meshtastic-firmware-release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: 3.x
+
+      - name: Get firmware artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: firmware-{${{ env.targets }}}-${{ needs.version.outputs.long }}
+          merge-multiple: true
+          path: ./publish
+
+      - name: Get manifest artifact
+        uses: actions/download-artifact@v8
+        with:
+          pattern: manifest-${{ needs.version.outputs.long }}
+          path: ./publish
+
+      - name: Generate release notes
+        run: |
+          chmod +x ./bin/generate_release_notes.py
+          ./bin/generate_release_notes.py ${{ needs.version.outputs.long }} --compare-ref HEAD > ./publish/release_notes.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish firmware to meshtastic.github.io
+        uses: peaceiris/actions-gh-pages@v4
+        env:
+          # On event/* branches, use the event name as the destination prefix
+          DEST_PREFIX: ${{ contains(github.ref_name, 'event/') && format('{0}/', github.ref_name) || '' }}
+        with:
+          deploy_key: ${{ secrets.DIST_PAGES_DEPLOY_KEY }}
+          external_repository: meshtastic/meshtastic.github.io
+          publish_branch: master
+          publish_dir: ./publish
+          destination_dir: ${{ env.DEST_PREFIX }}firmware-${{ needs.version.outputs.long }}
+          keep_files: true
+          user_name: github-actions[bot]
+          user_email: github-actions[bot]@users.noreply.github.com
+          commit_message: ${{ needs.version.outputs.long }}
+          enable_jekyll: true
+
+      # Mirror the same staged directory to Cloudflare R2, under a version prefix
+      # at the bucket root. Additive (no --delete), matching keep_files:true
+      # above: release_channels.yml later publishes an updated release_notes.md
+      # into this same prefix, and a --delete sync on a re-run would remove it.
+      - name: Publish firmware to Cloudflare R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          # R2 is single-region; the S3 API still requires a region to be set.
+          AWS_DEFAULT_REGION: auto
+          # Cloudflare's documented aws-cli settings for R2. Left at the AWS
+          # default, CLI >= 2.23 attaches CRC32 request checksums that R2 can
+          # reject, so both of these must stay at when_required.
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          # Same event/* prefixing as the github.io publish above.
+          DEST_PREFIX: ${{ contains(github.ref_name, 'event/') && format('{0}/', github.ref_name) || '' }}
+          VERSION: ${{ needs.version.outputs.long }}
+        run: |
+          set -euo pipefail
+          aws --version
+          # Cache for 1 day in browser, 1 month on CDN.
+          aws s3 sync ./publish "s3://${r2_bucket}/${DEST_PREFIX}${VERSION}/" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --no-progress \
+            --metadata "commit=${{ github.sha }},run=${{ github.run_id }},version=${VERSION}" \
+            --cache-control 'public, max-age=86400, s-maxage=2592000'
+
+  # Nightly publish: refresh the root of the meshtastic-firmware-nightly R2
+  # bucket with the current develop build. Runs on the cron schedule (or a manual
+  # nightly=true dispatch) and never creates a GitHub release. The bucket's
+  # release_notes.md is published from .github/nightly/ in this repo.
+  publish-nightly:
+    runs-on: ubuntu-24.04
+    if: github.repository_owner == 'meshtastic' && (github.event_name == 'schedule' || github.event.inputs.nightly == 'true')
+    needs: [setup, version, gather-artifacts]
+    env:
+      targets: |-
+        esp32,esp32s3,esp32c3,esp32c6,nrf52840,rp2040,rp2350,stm32
+      r2_bucket: meshtastic-firmware-nightly
+    steps:
+      # Only the index templates and release notes are needed here.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/nightly
+
+      - name: Get firmware artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: firmware-{${{ env.targets }}}-${{ needs.version.outputs.long }}
+          merge-multiple: true
+          path: ./stage
+
+      - name: Generate Release manifest
+        run: |
+          jq -n --arg ver "${{ needs.version.outputs.long }}" --argjson targets ${{ toJson(needs.setup.outputs.all) }} '{
+            "version": $ver,
+            "targets": $targets
+          }' > ./stage/firmware-${{ needs.version.outputs.long }}.json
+
+      - name: Generate nightly pointer
+        run: |
+          jq -n \
+            --arg ver "${{ needs.version.outputs.long }}" \
+            --arg sha "${{ github.sha }}" \
+            '{version: $ver, id: ("v" + $ver), title: ("Meshtastic Firmware " + $ver + " Nightly"), commit: $sha}' \
+            > ./stage/index.json
+
+      # The notes are maintained in-tree and published to the bucket root.
+      - name: Stage the nightly release notes
+        run: cp .github/nightly/release_notes.md ./stage/release_notes.md
+
+      # For diagnostics
+      - name: Display structure of files to publish
+        run: ls -lR ./stage
+
+      - name: Verify the staged nightly is not empty
+        # The publish below refreshes the bucket in place (the R2 sync runs with
+        # --delete), so an empty ./stage would clear the live nightly rather than
+        # replace it. A failed or pattern-mismatched artifact download is the way
+        # that happens, so fail closed here instead.
+        run: |
+          set -euo pipefail
+          images=$(find ./stage -type f \
+            \( -name 'firmware-*.bin' -o -name 'firmware-*.uf2' -o -name 'firmware-*.hex' \) | wc -l)
+          echo "Staged firmware images: $images"
+          if [ "$images" -eq 0 ]; then
+            echo "::error::No firmware images in ./stage; refusing to publish an empty nightly."
+            exit 1
+          fi
+
+      # tree renders the file listing; .github/nightly wraps it in the page
+      # chrome. tree silently skips an --hintro/--houtro file it cannot open, so
+      # the rendered page is checked for both markers below.
+      - name: Generate nightly html index
+        env:
+          VERSION: ${{ needs.version.outputs.long }}
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        working-directory: ./stage
+        run: |
+          set -euo pipefail
+          # Substitute placeholders in the nightly index header template.
+          sed -e "s|%%VERSION%%|$VERSION|g" \
+              -e "s|%%COMMIT%%|$COMMIT|g" \
+              -e "s|%%COMMIT_SHORT%%|${COMMIT:0:7}|g" \
+              -e "s|%%BUILD_DATE%%|$(date -u +'%Y-%m-%d %H:%M UTC')|g" \
+              -e "s|%%RUN_ID%%|$RUN_ID|g" \
+              -e "s|%%RUN_URL%%|$RUN_URL|g" \
+              "$GITHUB_WORKSPACE/.github/nightly/hintro.html" > "$RUNNER_TEMP/hintro.html"
+          # Render the html index using tree, with custom header and footer templates.
+          tree -H "." -h --noreport -I "index.html" --charset utf-8 \
+            --hintro "$RUNNER_TEMP/hintro.html" \
+            --houtro "$GITHUB_WORKSPACE/.github/nightly/houtro.html" \
+            > index.html
+
+      # Mirror the staged directory to Cloudflare R2. --delete at the bucket root
+      # clears stale nightly binaries, and is in scope for the whole bucket because
+      # this bucket holds nothing but the nightly build.
+      - name: Publish nightly to Cloudflare R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          # R2 is single-region; the S3 API still requires a region to be set.
+          AWS_DEFAULT_REGION: auto
+          # Cloudflare's documented aws-cli settings for R2. Left at the AWS
+          # default, CLI >= 2.23 attaches CRC32 request checksums that R2 can
+          # reject, so both of these must stay at when_required.
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          set -euo pipefail
+          aws --version
+          # Cache for 1 hour in browser, 1 day on CDN.
+          aws s3 sync ./stage "s3://${r2_bucket}/" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --no-progress \
+            --delete \
+            --exclude 'index.json' \
+            --exclude 'index.html' \
+            --metadata "commit=${{ github.sha }},run=${{ github.run_id }}" \
+            --cache-control 'public, max-age=3600, s-maxage=86400'
+          # The indices point at whatever the current nightly is - index.json for
+          # clients, index.html for browsers - so they are excluded from the sync
+          # above and uploaded here with a 5 minute cache instead.
+          for index in index.json index.html; do
+            aws s3 cp "./stage/$index" "s3://${r2_bucket}/$index" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --no-progress \
+              --metadata "commit=${{ github.sha }},run=${{ github.run_id }}" \
+              --cache-control 'public, max-age=300'
+          done
