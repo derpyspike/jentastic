@@ -307,6 +307,11 @@ template <typename T> int16_t LR11x0Interface<T>::programAltModemFSK()
                   m.rxBwKHz, m.preambleBits, radioLibErr, err);
         return err;
     }
+    // beginGFSK() internally calls modSetup() -> findChip() -> reset(), which hardware-resets
+    // the LR11x0 chip (wiping DIO RF switch config, image calibration, and switching to LDO).
+    // Force image calibration for the active frequency before setFrequency() (whose 4 MHz
+    // delta check against cached this->freqMHz would otherwise skip calibration after reset).
+    (void)lora.calibrateImageRejection(getFreq() - 4.0f, getFreq() + 4.0f);
     err = lora.setFrequency(getFreq());
     if (err != RADIOLIB_ERR_NONE) {
         LOG_ERROR("LR11x0 setFrequency(%.3f) %s%d", getFreq(), radioLibErr, err);
@@ -328,6 +333,18 @@ template <typename T> int16_t LR11x0Interface<T>::programAltModemFSK()
         LOG_ERROR("LR11x0 GFSK setWhitening %s%d", radioLibErr, err);
         return err;
     }
+
+    // Restore DCDC regulator and DIO RF switch table wiped by beginGFSK()'s hardware reset
+    err = lora.setRegulatorDCDC();
+    if (err != RADIOLIB_ERR_NONE) {
+        LOG_WARN("LR11x0 GFSK setRegulatorDCDC %s%d", radioLibErr, err);
+    }
+#ifdef LR11X0_DIO_AS_RF_SWITCH
+    lora.setRfSwitchTable(rfswitch_dio_pins, rfswitch_table);
+#elif defined(ARCH_PORTDUINO)
+    if (portduino_config.has_rfswitch_table)
+        lora.setRfSwitchTable(rfswitch_dio_pins, rfswitch_table);
+#endif
 
     // Power + RX gain — same tail as the LoRa path.
     if (config.lora.region == meshtastic_Config_LoRaConfig_RegionCode_LORA_24) {
@@ -359,6 +376,16 @@ template <typename T> int16_t LR11x0Interface<T>::programModemParams()
 
     // configure publicly accessible settings
     int16_t err = lora.setSpreadingFactor(sf);
+    // Nexus SETFSK: Returning to LoRa from FSK modem triggers RADIOLIB_ERR_WRONG_MODEM
+    // because hardware packet type is still GFSK. Re-init chip cleanly to restore LoRa
+    // packet mode without triggering a spurious critical error.
+    if (err == RADIOLIB_ERR_WRONG_MODEM) {
+        LOG_INFO("LR11x0 wrong modem (returning to LoRa), re-initializing");
+        if (!reinitChip()) {
+            return RADIOLIB_ERR_CHIP_NOT_FOUND;
+        }
+        err = lora.setSpreadingFactor(sf);
+    }
     if (err != RADIOLIB_ERR_NONE) {
         LOG_ERROR("LR11x0 setSpreadingFactor(%u) %s%d", sf, radioLibErr, err);
         return err;
@@ -553,7 +580,9 @@ template <typename T> void LR11x0Interface<T>::startReceive()
     int16_t err = trySetStandby();
 
     if (err == RADIOLIB_ERR_NONE) {
-        lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent.  Not sure why this is needed.
+        if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
+            lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent.  Not sure why this is needed.
+        }
 
         // We use a 16 bit preamble so this should save some power by letting radio sit in standby mostly.
         err =
@@ -563,7 +592,9 @@ template <typename T> void LR11x0Interface<T>::startReceive()
     if (err != RADIOLIB_ERR_NONE) {
         LOG_ERROR("StartReceive error: %d", err);
         if (maybeRecoverChipStateLoss()) {
-            lora.setPreambleLength(preambleLength);
+            if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
+                lora.setPreambleLength(preambleLength);
+            }
             err = lora.startReceive(RADIOLIB_LR11X0_RX_TIMEOUT_INF, MESHTASTIC_RADIOLIB_IRQ_RX_FLAGS,
                                     RADIOLIB_IRQ_RX_DEFAULT_MASK, 0);
         }
@@ -595,15 +626,24 @@ template <typename T> bool LR11x0Interface<T>::isChannelActive()
                                        .timeout = 0,
                                        .irqFlags = RADIOLIB_IRQ_CAD_DEFAULT_FLAGS,
                                        .irqMask = RADIOLIB_IRQ_CAD_DEFAULT_MASK}};
+    // Nexus SETFSK: GFSK has no LoRa CAD — RSSI energy sniff instead (Jenny ruling
+    // 2026-10-14): an active FSK carrier sits well above -100 dBm.
+    // MUST sample instantaneous RSSI while still in continuous RX mode: entering standby
+    // drops getRSSI to the standby floor and makes channel activity detection blind.
+    if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
+        float rssi = lora.getRSSI(false, true); // instantaneous, not last-packet status
+        LOG_TRACE("LR11x0 alt-modem channel sniff RSSI=%.1f dBm", rssi);
+        if (rssi > -100.0f)
+            return true;
+        int16_t result = trySetStandby();
+        if (result != RADIOLIB_ERR_NONE) {
+            maybeRecoverChipStateLoss();
+        }
+        return false;
+    }
+
     int16_t result = trySetStandby();
     if (result == RADIOLIB_ERR_NONE) {
-        // Nexus SETFSK: GFSK has no LoRa CAD — RSSI energy sniff instead (Jenny ruling
-        // 2026-10-14): an active FSK carrier sits well above -100 dBm.
-        if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
-            float rssi = lora.getRSSI(false, true); // instantaneous, not last-packet status
-            LOG_TRACE("LR11x0 alt-modem channel sniff RSSI=%.1f dBm", rssi);
-            return rssi > -100.0f;
-        }
         result = lora.scanChannel(cfg);
         if (result == RADIOLIB_LORA_DETECTED)
             return true;

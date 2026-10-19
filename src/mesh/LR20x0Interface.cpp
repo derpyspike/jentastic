@@ -320,6 +320,26 @@ template <typename T> int16_t LR20x0Interface<T>::programAltModemFSK()
         LOG_ERROR("LR2021 GFSK setDataShaping %s%d", radioLibErr, err);
         return err;
     }
+
+    // beginGFSK() internally calls modSetup() -> findChip() -> reset(), which hardware-resets
+    // the LR2021 chip and wipes DIO RF switch config, custom PA table, RX boosted gain, and
+    // DCDC regulator setup configured by fullBegin(). Re-apply them here.
+    applyCustomLfPaTable(getFreq());
+#ifdef LR2021_DIO_AS_RF_SWITCH
+    lora.setRfSwitchTable(lr20x0_rfswitch_dio_pins, lr20x0_rfswitch_table);
+#elif ARCH_PORTDUINO
+    if (portduino_config.has_rfswitch_table)
+        lora.setRfSwitchTable(lr20x0_rfswitch_dio_pins, lr20x0_rfswitch_table);
+#endif
+    (void)lora.setRxBoostedGainMode(config.lora.sx126x_rx_boosted_gain ? LR2021_RX_GAIN_BOOST_LEVEL : 0);
+#if RADIOLIB_GODMODE
+    {
+        uint8_t rampTimes[4] = {15, 15, 15, 15};
+        (void)lora.setRegMode(RADIOLIB_LR2021_REG_MODE_SIMO_NORMAL, rampTimes);
+    }
+#endif
+    applyDcdcWorkaround();
+
     LOG_INFO("LR2021 GFSK armed: BR=%.1fk dev=%.1fk bw=%.1fk pre=%u freq=%.3f", m.brKbps,
              m.freqDevKHz, m.rxBwKHz, m.preambleBits, getFreq());
     return RADIOLIB_ERR_NONE;
@@ -341,6 +361,25 @@ template <typename T> int16_t LR20x0Interface<T>::programAltModemFLRC()
                   power, m.preambleBits, radioLibErr, err);
         return err;
     }
+
+    // beginFLRC() internally calls modSetup() -> findChip() -> reset(), wiping DIO RF switch
+    // config, custom PA table, RX boosted gain, and DCDC regulator setup. Re-apply them here.
+    applyCustomLfPaTable(getFreq());
+#ifdef LR2021_DIO_AS_RF_SWITCH
+    lora.setRfSwitchTable(lr20x0_rfswitch_dio_pins, lr20x0_rfswitch_table);
+#elif ARCH_PORTDUINO
+    if (portduino_config.has_rfswitch_table)
+        lora.setRfSwitchTable(lr20x0_rfswitch_dio_pins, lr20x0_rfswitch_table);
+#endif
+    (void)lora.setRxBoostedGainMode(config.lora.sx126x_rx_boosted_gain ? LR2021_RX_GAIN_BOOST_LEVEL : 0);
+#if RADIOLIB_GODMODE
+    {
+        uint8_t rampTimes[4] = {15, 15, 15, 15};
+        (void)lora.setRegMode(RADIOLIB_LR2021_REG_MODE_SIMO_NORMAL, rampTimes);
+    }
+#endif
+    applyDcdcWorkaround();
+
     LOG_INFO("LR2021 FLRC armed: BR=%.1fk cr=%u bt=%u pre=%u freq=%.3f", m.brKbps, cr, shaping,
              m.preambleBits, getFreq());
     return RADIOLIB_ERR_NONE;
@@ -407,6 +446,16 @@ template <typename T> bool LR20x0Interface<T>::reconfigure()
         }
 
         err = lora.setSpreadingFactor(sf);
+        // Nexus SETFSK/SETFLRC: Returning to LoRa from FSK/FLRC modem triggers RADIOLIB_ERR_WRONG_MODEM
+        // because hardware packet type is still GFSK/FLRC. fullBegin() re-initializes the chip cleanly.
+        if (err == RADIOLIB_ERR_WRONG_MODEM) {
+            LOG_INFO("LR2021 wrong modem (returning to LoRa), full begin");
+            (void)trySetStandby();
+            if (!fullBegin(freq))
+                return false;
+            startReceive();
+            return reconfigureSuccess;
+        }
         if (err != RADIOLIB_ERR_NONE) {
             LOG_ERROR("LR20x0 setSpreadingFactor(%u) %s%d", sf, radioLibErr, err);
             RECORD_CRITICALERROR(meshtastic_CriticalErrorCode_INVALID_RADIO_SETTING);
@@ -757,7 +806,9 @@ template <typename T> void LR20x0Interface<T>::startReceive()
     int16_t err = trySetStandby();
 
     if (err == RADIOLIB_ERR_NONE) {
-        lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent.  Not sure why this is needed.
+        if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
+            lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent.  Not sure why this is needed.
+        }
 
         // We use a 16 bit preamble so this should save some power by letting radio sit in standby mostly.
         err =
@@ -767,7 +818,9 @@ template <typename T> void LR20x0Interface<T>::startReceive()
     if (err != RADIOLIB_ERR_NONE) {
         LOG_ERROR("StartReceive error: %d", err);
         if (maybeRecoverChipStateLoss()) {
-            lora.setPreambleLength(preambleLength);
+            if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
+                lora.setPreambleLength(preambleLength);
+            }
             err = lora.startReceive(RADIOLIB_LR2021_RX_TIMEOUT_INF, MESHTASTIC_RADIOLIB_IRQ_RX_FLAGS,
                                     RADIOLIB_IRQ_RX_DEFAULT_MASK, 0);
         }
@@ -799,14 +852,23 @@ template <typename T> bool LR20x0Interface<T>::isChannelActive()
                                        .timeout = 0,
                                        .irqFlags = RADIOLIB_IRQ_CAD_DEFAULT_FLAGS,
                                        .irqMask = RADIOLIB_IRQ_CAD_DEFAULT_MASK}};
+    // Nexus SETFSK/SETFLRC: no LoRa CAD in GFSK/FLRC — RSSI energy sniff (2026-10-14).
+    // MUST sample instantaneous RSSI while still in continuous RX mode: entering standby
+    // drops getRSSI to the standby floor and makes channel activity detection blind.
+    if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
+        float rssi = lora.getRSSI(false, true); // instantaneous, not last-packet status
+        LOG_TRACE("LR2021 alt-modem channel sniff RSSI=%.1f dBm", rssi);
+        if (rssi > -100.0f)
+            return true;
+        int16_t result = trySetStandby();
+        if (result != RADIOLIB_ERR_NONE) {
+            maybeRecoverChipStateLoss();
+        }
+        return false;
+    }
+
     int16_t result = trySetStandby();
     if (result == RADIOLIB_ERR_NONE) {
-        // Nexus SETFSK/SETFLRC: no LoRa CAD in GFSK/FLRC — RSSI energy sniff (2026-10-14).
-        if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
-            float rssi = lora.getRSSI(false, true); // instantaneous, not last-packet status
-            LOG_TRACE("LR2021 alt-modem channel sniff RSSI=%.1f dBm", rssi);
-            return rssi > -100.0f;
-        }
         result = lora.scanChannel(cfg);
         if (result == RADIOLIB_LORA_DETECTED)
             return true;

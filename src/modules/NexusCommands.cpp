@@ -5137,12 +5137,30 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 }
             } else {
                 // SETFSK <br_kbps> [freqDev_kHz] [rxBw_kHz] [preamble_bits]
-                // Defaults match the research-doc example: SETFSK 50 25 39 16
+                // Per Carson's rule (Semtech SX1261-2 §6.2.1 / LR1110 §8.2.1), DSB receiver filter
+                // bandwidth must satisfy rxBw >= br + 2*freqDev (e.g. 50 kbps + 2*25 kHz = 100 kHz -> 117.3 kHz step).
                 const char *p = sub;
                 float br = atof(p); while (*p && *p != ' ') p++; while (*p == ' ') p++;
-                float dev = (*p) ? atof(p) : 25.0f; while (*p && *p != ' ') p++; while (*p == ' ') p++;
-                float rbw = (*p) ? atof(p) : 39.0f; while (*p && *p != ' ') p++; while (*p == ' ') p++;
+                float dev = (*p) ? atof(p) : ((br >= 3.0f && br <= 300.0f) ? (br * 0.5f) : 25.0f);
+                if (dev > 200.0f) dev = 200.0f;
+                while (*p && *p != ' ') p++; while (*p == ' ') p++;
+                float rbw = (*p) ? atof(p) : 0.0f;
+                while (*p && *p != ' ') p++; while (*p == ' ') p++;
                 int pre = (*p) ? atoi(p) : 16;
+                float carsonMinBw = br + 2.0f * dev;
+                if (rbw < carsonMinBw) {
+                    static const float kSteps[] = {
+                        4.8f, 5.8f, 7.3f, 9.7f, 11.7f, 14.6f, 19.5f, 23.4f, 29.3f, 39.0f,
+                        46.9f, 58.6f, 78.2f, 93.8f, 117.3f, 156.2f, 187.2f, 234.3f, 312.0f, 373.6f, 467.0f
+                    };
+                    rbw = 467.0f;
+                    for (size_t i = 0; i < sizeof(kSteps) / sizeof(kSteps[0]); ++i) {
+                        if (kSteps[i] >= carsonMinBw) {
+                            rbw = kSteps[i];
+                            break;
+                        }
+                    }
+                }
                 bool brOk = (br >= 0.6f && br <= 300.0f);   // SX126x beginFSK range
                 bool devOk = (dev >= 1.5f && dev <= 200.0f); // SX126x/GFSK deviation limit
                 bool rbwOk = (rbw >= 4.8f && rbw <= 500.0f); // SX126x GFSK RX filter

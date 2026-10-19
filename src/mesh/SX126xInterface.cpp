@@ -282,13 +282,31 @@ template <typename T> int16_t SX126xInterface<T>::programAltModemFSK()
         return err;
     }
 
-    // Power / current limit / RX gain — same tail as the LoRa path (operator's
-    // tx_power and regional limit were already computed by applyModemConfig()).
+    // Power / current limit / RF switch / RX gain — same tail as reinitChip() since
+    // beginFSK() hardware-resets the chip and unconditionally calls setDio2AsRfSwitch(true).
+#ifdef SX126X_PA_RAMP_US
+    lora.setPaRampTime(SX126X_PA_RAMP_US);
+#endif
     err = lora.setCurrentLimit(currentLimit);
     if (err != RADIOLIB_ERR_NONE) {
         LOG_ERROR("SX126X setCurrentLimit %s%d", radioLibErr, err);
         return err;
     }
+    {
+#ifdef SX126X_DIO2_AS_RF_SWITCH
+        bool dio2AsRfSwitch = true;
+#elif defined(ARCH_PORTDUINO)
+        bool dio2AsRfSwitch = portduino_config.dio2_as_rf_switch;
+#else
+        bool dio2AsRfSwitch = false;
+#endif
+        (void)lora.setDio2AsRfSwitch(dio2AsRfSwitch);
+    }
+#if ARCH_PORTDUINO
+    lora.setRfSwitchPins(portduino_config.lora_rxen_pin.pin, portduino_config.lora_txen_pin.pin);
+#else
+    lora.setRfSwitchPins(SX126X_RXEN, SX126X_TXEN);
+#endif
     limitPower(SX126X_MAX_POWER);
     if (power < -9)
         power = -9;
@@ -304,6 +322,8 @@ template <typename T> int16_t SX126xInterface<T>::programAltModemFSK()
     err = lora.setRxBoostedGainMode(config.lora.sx126x_rx_boosted_gain);
     if (err != RADIOLIB_ERR_NONE)
         LOG_WARN("SX126X setRxBoostedGainMode %s%d", radioLibErr, err);
+
+    (void)module.SPIsetRegValue(0x8B5, 0x01, 0, 0);
 
     LOG_INFO("SX126X GFSK armed: BR=%.1fk dev=%.1fk bw=%.1fk pre=%u freq=%.3f", m.brKbps, m.freqDevKHz,
              m.rxBwKHz, m.preambleBits, getFreq());
@@ -323,6 +343,16 @@ template <typename T> int16_t SX126xInterface<T>::programModemParams()
 
     // configure publicly accessible settings
     int16_t err = lora.setSpreadingFactor(sf);
+    // Nexus SETFSK: Returning to LoRa from FSK modem triggers RADIOLIB_ERR_WRONG_MODEM
+    // because hardware packet type is still GFSK. Re-init chip cleanly to restore LoRa
+    // packet mode without triggering a spurious critical error.
+    if (err == RADIOLIB_ERR_WRONG_MODEM) {
+        LOG_INFO("SX126x wrong modem (returning to LoRa), re-initializing");
+        if (!reinitChip()) {
+            return RADIOLIB_ERR_CHIP_NOT_FOUND;
+        }
+        err = lora.setSpreadingFactor(sf);
+    }
     if (err != RADIOLIB_ERR_NONE) {
         LOG_ERROR("SX126X setSpreadingFactor(%u) %s%d", sf, radioLibErr, err);
         return err;
@@ -629,20 +659,27 @@ template <typename T> bool SX126xInterface<T>::isChannelActive()
                                        .timeout = 0,
                                        .irqFlags = RADIOLIB_IRQ_CAD_DEFAULT_FLAGS,
                                        .irqMask = RADIOLIB_IRQ_CAD_DEFAULT_MASK}};
+    // Nexus SETFSK: GFSK has no LoRa CAD — RSSI energy sniff instead (preamble-sniff
+    // approximation, Jenny ruling 2026-10-14): an active FSK carrier sits well above
+    // -100 dBm on the current channel.
+    // MUST sample instantaneous RSSI while still in continuous RX mode: entering standby
+    // shuts down the receiver/ADC, dropping getRSSI(false) to the standby noise floor (~-128 dBm)
+    // and rendering channel activity detection completely blind.
+    if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode == 1) {
+        float rssi = lora.getRSSI(false);
+        LOG_TRACE("SX126X FSK channel sniff RSSI=%.1f dBm", rssi);
+        if (rssi > -100.0f)
+            return true;
+        setTransmitEnable(false);
+        int16_t result = trySetStandby();
+        if (result != RADIOLIB_ERR_NONE)
+            LOG_ERROR("SX126X trySetStandby %s%d", radioLibErr, result);
+        return false;
+    }
+
     setTransmitEnable(false);
     int16_t result = trySetStandby();
     if (result == RADIOLIB_ERR_NONE) {
-        // Nexus SETFSK: GFSK has no LoRa CAD — RSSI energy sniff instead (preamble-sniff
-        // approximation, Jenny ruling 2026-10-14): an active FSK carrier sits well above
-        // -100 dBm on the current channel.
-        if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode == 1) {
-            // getRSSI() no-arg is LAST-PACKET RSSI on this driver: a fresh packet status
-            // reads 0 (or stale), which makes the sniff report busy forever. Use the
-            // instantaneous reading (valid: alt mode holds continuous RX).
-            float rssi = lora.getRSSI(false);
-            LOG_TRACE("SX126X FSK channel sniff RSSI=%.1f dBm", rssi);
-            return rssi > -100.0f;
-        }
         result = lora.scanChannel(cfg);
         if (result == RADIOLIB_LORA_DETECTED)
             return true;

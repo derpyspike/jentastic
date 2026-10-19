@@ -324,8 +324,8 @@ Again: The 2.8 already does this automatically, but if you wanna override it man
 | `LORA` / `LR` | `LORA` | Modem summary: SF, BW, CR, preset number/state, frequency, power, MQTT-ignore and rebroadcast mode. | `JT LORA:`<br>`SF:<sf> BW:<bw> CR:<cr>`<br>`Preset:<n> (ACTIVE\|OFF)`<br>`Freq:<freq>MHz`<br>`Power:<pwr>dBm`<br>`IgnoreMQTT:<0/1>`<br>`Rebroadcast:<mode>` |
 | `LORA-STATUS` / `LRS` | `LORA-STATUS` | Real-time hardware status: frequency, bandwidth, SF, CR, preamble, slot/CW timing, syncword, chip power, air rate. **With `SETFSK`/`SETFLRC` active it reports the modulation actually on air instead**: a `Mode:` line plus BR/dev/RxBw (FSK) or CR/BT (FLRC), preamble in bits, speed = BR; SF/BW/CR/Slot/CW lines are omitted (they'd show the parked LoRa config). | `JT LORA Status:`<br>`Freq: <freq>MHz`<br>`BW:<bw>kHz SF:<sf> CR:<cr>`<br>`Pre:<n> (<us>ms)`<br>`Slot:<ms> CW:<lo>-<hi>`<br>`SW:0x<HEX>`<br>`ChipPwr:<dBm>dBm`<br>`Speed:<bps> b/s` |
 | `SETLORA` | `SETLORA <sf> <bw> <cr> <freq>` | Reconfigure modem parameters directly in RAM (applies after deferred timer). Example: `SETLORA 7 62 5 869.618`. | `JT: LoRa accepted. SF:<sf> BW:<bw> CR:<cr> Freq:<freq>MHz. Applying LIVE in 5s.` |
-| `SETFSK` | `SETFSK <br_kbps> [freqDev_kHz] [rxBw_kHz] [preamble_bits]` · bare = status · `SETFSK OFF\|RESET\|DEFAULT` | Switch the radio from LoRa to **FSK/GFSK** modulation (whole fleet: SX126x, LR11x0, SX128x, LR2021 — not SX127x/RF95). Params & theory: see **SETFSK/SETFLRC reference** below. RAM-only; deferred apply like `SETLORA`. Example: `SETFSK 50 25 39 16`. | `JT: FSK accepted. BR:<br>k DEV:<dev>k BW:<bw>k PRE:<pre>. Applying LIVE in 5s.`<br>`JT: Invalid FSK params (BR:0.6-300k, DEV:1.5-200k, BW:4.8-500k, PRE:4-1024)`<br>`JT: SETFSK not supported on this radio` |
-| `SETFLRC` | `SETFLRC <br_kbps> <cr> [bt] [preamble_bits]` · bare = status · `SETFLRC OFF\|RESET\|DEFAULT` | Switch the radio to **FLRC** modulation — SX128x (2.4 GHz) and LR2021 (X1, sub-GHz) only; `cr` is required. Params & theory: see **SETFSK/SETFLRC reference** below. Example: `SETFLRC 600 3`. | `JT: FLRC accepted. BR:<br>k CR:<cr> BT:<bt> PRE:<pre>. Applying LIVE in 5s.`<br>`JT: Invalid FLRC params (BR:1-2600k, CR:2\|3\|4 = 1/2\|3/4\|uncoded, BT:0\|1\|2, PRE:4-1024)`<br>`JT: SETFLRC not supported on this radio` |
+| `SETFSK` | `SETFSK <br_kbps> [freqDev_kHz] [rxBw_kHz] [preamble_bits]` · bare = status · `SETFSK OFF\|RESET\|DEFAULT` | Switch the radio from LoRa to **FSK/GFSK** modulation (whole fleet: SX126x, LR11x0, SX128x, LR2021 — not SX127x/RF95). Params & theory: see **SETFSK/SETFLRC reference** below. RAM-only; deferred apply like `SETLORA`. Example: `SETFSK 50 25 117.3 16`. | `JT: FSK accepted. BR:<br>k DEV:<dev>k BW:<bw>k PRE:<pre>. Applying LIVE in 5s.`<br>`JT: Invalid FSK params (BR:0.6-300k, DEV:1.5-200k, BW:4.8-500k, PRE:4-1024)`<br>`JT: SETFSK not supported on this radio` |
+| `SETFLRC` | `SETFLRC <br_kbps> <cr> [bt] [preamble_bits]` · bare = status · `SETFLRC OFF\|RESET\|DEFAULT` | Switch the radio to **FLRC** modulation — SX128x (2.4 GHz) and LR2021 (X1, sub-GHz & 2.4G) only; `cr` is required. Params & theory: see **SETFSK/SETFLRC reference** below. Example: `SETFLRC 650 3`. | `JT: FLRC accepted. BR:<br>k CR:<cr> BT:<bt> PRE:<pre>. Applying LIVE in 5s.`<br>`JT: Invalid FLRC params (BR:1-2600k, CR:2\|3\|4 = 1/2\|3/4\|uncoded, BT:0\|1\|2, PRE:4-1024)`<br>`JT: SETFLRC not supported on this radio` |
 | `PRESET` / `SETPRESET` | `PRESET <preset>` | Load various LoRa presets (Warning, all these are EU_868 ONLY): `SF`, `LF`/`LM`/`LS`, `MS`, `MF`, `SS`, `ST`, `LT`, `SP`/`SPM`, `P1`, `P7`, `NAP-1..5`, `NAPN-1..5`, `NARROWPROMAX`/`NARROWPREMIUM` (plus long names: `LONGFAST`, `LONGMODERATE`, `LONGSLOW`, `LONGTURBO`, `MEDFAST`, `MEDSLOW`, `SHORTPLUS`, `SHORTPROMAX`, `SHORTSLOW`, `SHORTFAST`, `SHORTTURBO`, `SFNARROW`). Example: `PRESET SF`. | `JT: Preset '<preset>' accepted. SF:<sf> BW:<bw> Freq:<freq>MHz. Applying LIVE in 5s.` |
 | `SETPREAMBLE` / `SETPRE` | `SETPREAMBLE <len>` | Set custom preamble length (6-1024 symbols). Example: `SETPREAMBLE 16`. | `JT: Preamble Length set to <len>. Applying in 5s...` |
 | | `SETPREAMBLE` | Show active preamble override. | `JT Preamble Override: <len>` |
@@ -399,29 +399,30 @@ If you know LoRa, you already know the trade you're making: LoRa is *chirp sprea
 
 | Param | Range | Default | What it actually does |
 |---|---|---|---|
-| `br_kbps` | 0.6 – 300 | *required* | Raw bit rate in kbps. Same direction as trading SF down: higher = shorter airtime and more bits per joule, but each bit carries less energy, so range and weak-signal tolerance drop fast. |
-| `freqDev_kHz` | 1.5 – 200 | 25 | How far the carrier shifts for a 1 vs a 0 (FSK deviation). Wider = easier, more drift-tolerant demodulation and a wider spectrum footprint; narrower = tighter channel but the PLL must track cleanly. **Both ends must use the same value** — a deviation mismatch is a silent no-link. A sane starting point is roughly half the bit rate (the reference profile `SETFSK 50 25 39 16`). |
-| `rxBw_kHz` | 4.8 – 500 | 39 | The receiver's IF filter. Narrow rejects neighbouring traffic and front-end noise; too narrow clips your own dev+rate signal (worse with cheap-crystal offset between boards). Widen it if two boards refuse to hear each other, narrow it if you're fighting adjacent-channel interference. |
+| `br_kbps` | 0.6 – 300 (Sub-GHz)<br>125 – 2000 (SX128x discrete) | *required* | Raw bit rate in kbps. Same direction as trading SF down: higher = shorter airtime and more bits per joule, but each bit carries less energy, so range and weak-signal tolerance drop fast. Sub-GHz radios (SX126x, LR1110, LR2021) accept continuous rates down to 0.6 kbps. SX128x (2.4 GHz) **strictly requires discrete hardware rates**: `125, 250, 400, 500, 800, 1000, 1600, 2000` kbps. |
+| `freqDev_kHz` | 1.5 – 200 (Sub-GHz)<br>62.5 – 1000 (SX128x) | `0.5 × br_kbps` (capped at 200; e.g. 25 at 50k) | How far the carrier shifts for a 1 vs a 0 (FSK deviation). Wider = easier, more drift-tolerant demodulation and a wider spectrum footprint; narrower = tighter channel but the PLL must track cleanly. **Both ends must use the same value** — a deviation mismatch is a silent no-link. Sane starting points: `SETFSK 50 25 117.3 16` for Sub-GHz, or `SETFSK 250 125` for SX128x. |
+| `rxBw_kHz` | 4.8 – 500 | Auto Carson's rule (`>= br + 2×dev`, e.g. `117.3` at 50/25) | The receiver's double-sideband (DSB) IF filter. By **Carson's rule** (Semtech SX1261-2 §6.2.1 / LR1110 §8.2.1), `rxBw` must be at least `br_kbps + 2 × freqDev_kHz` (plus crystal/TCXO offset margin); any omitted or undersized `rxBw` is automatically promoted to the smallest valid hardware filter step satisfying `rxBw >= br + 2×dev` (e.g. `100 kHz -> 117.3 kHz`) so the receiver IF filter never clips the FSK carrier tones. |
 | `preamble_bits` | 4 – 1024 | 16 | Leading alternating pattern so the receiver's AGC settles and bit clock locks before the payload. Raw **bits**, not LoRa symbols — 16 bits costs a rounding error of airtime vs 16 LoRa symbols. Lengthen on marginal links, shorten when every µs counts. |
 
 **`SETFLRC <br_kbps> <cr> [bt] [preamble_bits]`** — `cr` is mandatory; `bt` and `preamble` optional. **Family-local by physics:** 2.4 GHz FLRC pairs talk to SX128x peers only, sub-GHz FLRC pairs talk to LR2021 (X1) peers only — they cannot cross bands or chip families.
 
 | Param | Range | Default | What it actually does |
 |---|---|---|---|
-| `br_kbps` | 1 – 2600 (parser) | *required* | Raw bit rate. The parser accepts broadly, but the **chip is authoritative** (SX128x: ~0.26–1.3 Mbps; LR2021 per its driver) and rejects out-of-family rates at init — stick to your chip's documented window. |
+| `br_kbps` | SX128x: `{260, 325, 520, 650, 1000, 1300}`<br>LR2021: `{260, 325, 520, 650, 1040, 1300, 2080, 2600}` | *required* | Raw bit rate in kbps. The chip **only accepts these specific hardware combinations** (paired with matching internal bandwidths from 300 kHz to 2.6 MHz). Other rates return `RADIOLIB_ERR_INVALID_BIT_RATE` (-101). |
 | `cr` | `2`\|`3`\|`4` | *required* | Forward-error-correction ratio: `2` = 1/2 (half the transmission is redundancy — max robustness), `3` = 3/4 (balanced), `4` = 1/1 uncoded (max throughput, no safety net). Same *idea* as LoRa's CR, different code — do not mix values between peers either. |
 | `bt` | 0 – 2 | 2 | Gaussian TX pulse shaping: `0` = unshaped NRZ (cleanest eyes, widest spectral shoulders), `1` = BT 0.3 (tightest spectrum), `2` = BT 0.5 (default — good containment without much ISI). Prefer matching on both ends; a mismatch costs SNR, not the link. |
 | `preamble_bits` | 4 – 1024 | 16 | Same role as FSK's preamble. |
 
 **Which chips accept what** (bare `SETFSK`/`SETFLRC` reports your radio's capability as `caps:`):
 
-| Chip family | Typical boards | `SETFSK` | `SETFLRC` |
-|---|---|---|---|
-| SX126x (1261/1262/1268, LLCC68) | heltec-v4, station-g3, t-beam-1w, T-Deck, RAK4631, T-Echo, ProMicro DIY | ✅ GFSK | ❌ no FLRC hardware |
-| SX127x / RF95 | heltec v1/v2, older TLora | ❌ (`caps: none`) | ❌ |
-| LR11x0 (1110/1120/1121) | T1000-E, dreamcatcher | ✅ GFSK | ❌ (driver exposes none) |
-| SX128x (2.4 GHz) | betafpv 2400, ProMicro DIY E28/24G, MakePython 2.4G | ✅ GFSK | ✅ |
-| LR2021 | X1 | ✅ GFSK | ✅ sub-GHz FLRC |
+| Chip family | Typical boards | Band Support | `SETFSK` | `SETFLRC` |
+|---|---|---|---|---|
+| SX126x (1261/1262/1268, LLCC68) | heltec-v3, heltec-v4, station-g3, t-beam-1w, T-Deck, RAK4631, T-Echo, ProMicro DIY | Sub-GHz (150–960 MHz) | ✅ GFSK (0.6–300 kbps) | ❌ no FLRC hardware |
+| SX127x / RF95 | heltec v1/v2, older TLora | Sub-GHz | ❌ (`caps: none`) | ❌ |
+| LR1110 | T1000-E, dreamcatcher | Sub-GHz (+ GNSS/Wi-Fi) | ✅ GFSK (0.6–300 kbps) | ❌ (driver exposes none) |
+| LR1121 | T1000-E Plus, custom trackers | Sub-GHz, 2.4 GHz, Satellite L/S | ✅ GFSK (Sub-GHz & 2.4G) | ❌ (driver exposes none) |
+| SX128x (1280/1281) | betafpv 2400, ProMicro DIY E28/24G, MakePython 2.4G | 2.4 GHz ISM only | ✅ GFSK (`125–2000k` discrete) | ✅ FLRC (260–1300 kbps) |
+| LR2021 | X1 | Dual-band: Sub-GHz & 2.4 GHz/Satellite | ✅ GFSK (0.5k–2000 kbps) | ✅ FLRC (260–2600 kbps, Sub-GHz & 2.4G) |
 
 **How the mode behaves:**
 
@@ -433,7 +434,10 @@ If you know LoRa, you already know the trade you're making: LoRa is *chirp sprea
 
 **Interoperability rules:**
 
-- Every chip gets the same **Nexus wire profile** pinned explicitly (sync word `0x12AD`, whitening **off**, NRZ, 2-byte CCITT CRC, variable-length packets) instead of per-chip defaults — so any FSK-capable Nexus pair matches **across families** (SX126x ↔ LR1110 ↔ SX128x ↔ LR2021). The dangerous default (SX128x whitening on) is deliberately overridden.
+- Every chip gets the same **Nexus wire profile** pinned explicitly (sync word `0x12AD`, whitening **off**, NRZ, 2-byte CCITT CRC, variable-length packets) instead of per-chip defaults — so any FSK-capable Nexus pair on the same band matches **across families** (e.g. sub-GHz SX126x ↔ LR1110 ↔ sub-GHz LR2021). The dangerous default (SX128x whitening on) is deliberately overridden.
+- **Band boundaries and chip constraints still apply:**
+  - SX128x operates exclusively at **2.4 GHz** and cannot physically communicate with sub-GHz radios (SX126x, LR1110, or sub-GHz LR2021).
+  - On SX128x, GFSK modulation accepts only discrete bit rates (`125, 250, 400, 500, 800, 1000, 1600, 2000` kbps) and requires `freqDev >= 62.5 kHz` (e.g. `SETFSK 250 125`). The sub-GHz reference profile `SETFSK 50 25 117.3 16` is rejected by SX128x hardware.
 - **Both ends must use byte-identical parameters.** There is no negotiation.
 - **Stock Meshtastic nodes hear nothing** of FSK/FLRC traffic (and vice versa) — that isolation is the point: a private test channel on public spectrum. You need two Nexus nodes.
 - FLRC never crosses families (SX128x↔SX128x 2.4 GHz, LR2021↔LR2021 sub-GHz). **T1000-E has no FLRC** — for the standard T1000-E + X1 pair, GFSK is the shared link modulation.
@@ -443,10 +447,13 @@ If you know LoRa, you already know the trade you're making: LoRa is *chirp sprea
 
 ```
 SETFSK                 → status + caps of this radio
-SETFSK 50 25 39 16     → reference profile: 50 kbps, dev 25 kHz, RXBW 39 kHz, 16-bit preamble
-SETFSK 200             → 200 kbps with the 25/39/16 defaults
-SETFLRC 600 3          → 600 kbps, CR 3/4, BT 0.5, 16-bit preamble (SX128x/LR2021)
-SETFLRC 600 4 1 32     → uncoded max throughput, BT 0.3, 32-bit preamble
+SETFSK 50 25 117.3 16  → reference profile (Sub-GHz): 50 kbps, dev 25 kHz, RXBW 117.3 kHz, 16-bit preamble
+SETFSK 50              → same as above (auto dev 25 kHz, Carson RXBW 117.3 kHz, 16-bit preamble)
+SETFSK 200             → 200 kbps with auto dev 100 kHz, Carson RXBW 467 kHz, 16-bit preamble (Sub-GHz)
+SETFSK 250 125         → reference profile (SX128x 2.4 GHz): 250 kbps, dev 125 kHz
+SETFLRC 650 3          → 650 kbps, CR 3/4, BT 0.5, 16-bit preamble (SX128x / LR2021)
+SETFLRC 650 4 1 32     → uncoded max throughput, BT 0.3, 32-bit preamble
+SETFLRC 1300 2         → 1.3 Mbps, CR 1/2 (high throughput with full FEC)
 SETFSK OFF             → back to LoRa (applies in 5 s)
 ```
 

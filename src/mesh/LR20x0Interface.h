@@ -102,6 +102,16 @@ template <class T> class LR20x0Interface : public RadioLibInterface
     int16_t trySetStandby();
 
     /** Recover a chip that lost its runtime state via the same full begin() the band-hop path uses */
-    bool recoverChipStateLoss() override { return fullBegin(getFreq()); }
+    bool recoverChipStateLoss() override
+    {
+        if (!fullBegin(getFreq()))
+            return false;
+        if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
+            int16_t err = (meshtastic::nexusModule->altModem.mode == 1) ? programAltModemFSK()
+                                                                        : programAltModemFLRC();
+            return err == RADIOLIB_ERR_NONE;
+        }
+        return true;
+    }
 };
 #endif

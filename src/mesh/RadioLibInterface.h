@@ -3,6 +3,7 @@
 #include "MeshPacketQueue.h"
 #include "RadioInterface.h"
 #include "concurrency/NotifiedWorkerThread.h"
+#include "modules/NexusModule.h"
 
 #include <RadioLib.h>
 #include <sys/types.h>
@@ -436,6 +437,32 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
      */
     template <typename T> uint32_t computePacketTime(T &lora, uint32_t pl, bool received)
     {
+        // Nexus SETFSK/SETFLRC: When alternate modem is active, calculate airtime directly
+        // from the active modem driver parameters rather than applying LoRa DR math.
+        if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
+            RadioLibTime_t reported = lora.getTimeOnAir(pl);
+            if (!isRadioLibTimeError(reported)) {
+                uint32_t ms = (reported + 999) / 1000;
+                return ms > 0 ? ms : 1;
+            }
+            // Fallback when RadioLib's getTimeOnAir omits the active modem branch (e.g. SX128x::getTimeOnAir
+            // in RadioLib 7.6.0 returns RADIOLIB_ERR_WRONG_MODEM for RADIOLIB_SX128X_PACKET_TYPE_FLRC):
+            const auto &m = meshtastic::nexusModule->altModem;
+            if (m.brKbps > 0.0f) {
+                uint32_t totalBits = (uint32_t)m.preambleBits + 32 + ((pl + 3) * 8);
+                if (m.mode == 2) {
+                    uint32_t codedBits = ((pl + 3) * 8) + 6;
+                    if (m.cr == 2)
+                        codedBits *= 2;
+                    else if (m.cr == 3)
+                        codedBits = (codedBits * 4) / 3;
+                    totalBits = (uint32_t)m.preambleBits + 21 + 32 + codedBits;
+                }
+                uint32_t ms = (uint32_t)((totalBits / m.brKbps) + 0.999f);
+                return ms > 0 ? ms : 1;
+            }
+        }
+
         DataRate_t dr = getDataRate();
         PacketConfig_t pc = getPacketConfig();
 
