@@ -550,7 +550,8 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             if (pp_shouldSendLocal) {
                 size_t pp_rLen = strlen(replyMsg);
                 if (pp_rLen > NEXUS_MAX_REPLY_BODY) pp_rLen = NEXUS_MAX_REPLY_BODY;
-                sendToPhone(0xFFFFFFFF, mp.channel, replyId, replyMsg, pp_rLen);
+                uint32_t pp_to = pp_isDM ? (mp.from ? mp.from : myNodeInfo.my_node_num) : 0xFFFFFFFF;
+                sendToPhone(pp_to, mp.channel, replyId, replyMsg, pp_rLen);
                 LOG_INFO("Nexus: Local reply copy sent.");
             }
             if (!toPhoneOnly) {
@@ -8875,7 +8876,11 @@ if (strncasecmp(p, "DEDUP_INT ", 10) == 0) mc.payload_variant.traffic_management
     }
 #endif
     else {
-        snprintf(replyMsg, sizeof(replyMsg), "JT: Unknown command '%s'", cmd);
+        if (!cmd || cmd[0] == '\0') {
+            snprintf(replyMsg, sizeof(replyMsg), "JT: Ready. Send HELP for command list.");
+        } else {
+            snprintf(replyMsg, sizeof(replyMsg), "JT: Unknown command '%s'", cmd);
+        }
     }
 
     if (pagingRendering || pagingGeneration != pagingGenerationBefore) {
@@ -8960,7 +8965,8 @@ if (strncasecmp(p, "DEDUP_INT ", 10) == 0) mc.payload_variant.traffic_management
         if (shouldSendLocal) {
             size_t rLen = strlen(replyMsg);
             if (rLen > NEXUS_MAX_REPLY_BODY) rLen = NEXUS_MAX_REPLY_BODY;
-            sendToPhone(0xFFFFFFFF, mp.channel, replyId, replyMsg, rLen);
+            uint32_t to = isDM ? (mp.from ? mp.from : myNodeInfo.my_node_num) : 0xFFFFFFFF;
+            sendToPhone(to, mp.channel, replyId, replyMsg, rLen);
             LOG_INFO("Nexus: Local reply copy sent.");
         }
 
