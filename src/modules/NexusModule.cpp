@@ -2453,6 +2453,11 @@ ProcessMessage NexusModule::handleReceived(const meshtastic_MeshPacket &mp) {
                         if (isInternal)
                             return handleLocal(mp);
                         LOG_WARN("Nexus: Security Violation - /nexus-local received over RF from !%08x", mp.from);
+                        if (!securitySilentLog()) {
+                            const char *secReply = "JT SECURITY: -local prefix is for local interface only. Use -node over mesh.";
+                            uint32_t to = (mp.to == myNodeInfo.my_node_num) ? mp.from : 0xFFFFFFFF;
+                            queueMeshReply(to, mp.channel, mp.id, secReply, strlen(secReply), false, true);
+                        }
                         return ProcessMessage::STOP;
                     }
 
@@ -2573,7 +2578,18 @@ ProcessMessage NexusModule::handleLocal(const meshtastic_MeshPacket &mp) {
         while (*tail == ' ')
             ++tail;
         meshtastic_MeshPacket local = mp;
-        local.to = myNodeInfo.my_node_num;
+        if (local.from == 0)
+            local.from = nodeDB->getNodeNum();
+        if (local.to == 0)
+            local.to = NODENUM_BROADCAST;
+        if (router && service) {
+            meshtastic_QueueStatus qs = router->getQueueStatus();
+            service->sendQueueStatusToPhone(qs, ERRNO_OK, mp.id);
+        }
+        // isBroadcast stays false for local ingress: -local never arrives over RF, so the
+        // broadcast NAME/OWNER safety gate ("prevent mass-wiping a network") and the 5s
+        // broadcast rate limit must not fire on local commands. Routing/paging read mp.to
+        // directly, so nothing is lost by not passing the broadcast flag here.
         handleNexusCommand(local, tail, false, mp.id, true);
         return ProcessMessage::STOP;
     }
@@ -5123,6 +5139,7 @@ bool NexusModule::loadVault()
 }
 
 void NexusModule::startPaging(uint32_t to, uint32_t ch, uint32_t replyId, const char* title) {
+    if (to == 0) to = 0xFFFFFFFF;
     if (!pagingRendering) {
         ++pagingGeneration;
         pagingOffset = 0;
@@ -5156,11 +5173,11 @@ void NexusModule::appendPaging(const char* entry) {
 bool NexusModule::sendReply(const ReplyContext &context, const char *message, size_t length, bool reliable)
 {
     if (context.phoneOnly)
-        return sendToPhone(0xFFFFFFFF, context.channel, context.replyId, message, length);
+        return sendToPhone(context.to, context.channel, context.replyId, message, length);
     if (!sendToMeshPacket(context.to, context.channel, context.replyId, message, length, false, reliable))
         return false;
     if (context.copyToPhone)
-        sendToPhone(0xFFFFFFFF, context.channel, context.replyId, message, length);
+        sendToPhone(context.to, context.channel, context.replyId, message, length);
     return true;
 }
 
