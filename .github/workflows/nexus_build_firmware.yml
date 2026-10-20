@@ -41,21 +41,18 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          python-version: 3.x
+          python-version: "3.12"
 
       # Warm ~/.platformio per platform: avoids re-downloading toolchains on
       # every run and dodges PlatformIO registry rate limits on cold caches.
-      # Key is scoped to the pinned PIO version (6119): pre-pin runs in the
-      # 2026-10-13 06:10-09:04 window saved caches with a gutted tool-scons
-      # (6.2.0 wipe), and the old un-versioned key kept restoring them. Bump
-      # this prefix whenever the platformio== pin below changes.
+      # Scoped to pio6119-py312: ensures no poisoned cache from 6.2.0 or Python 3.14/3.15.
       - name: Cache PlatformIO packages
         uses: actions/cache@v4
         with:
           path: ~/.platformio
-          key: pio6119-${{ runner.os }}-${{ inputs.platform }}-${{ hashFiles('platformio.ini') }}
+          key: pio6119-py312-${{ runner.os }}-${{ inputs.platform }}-${{ hashFiles('platformio.ini') }}
           restore-keys: |
-            pio6119-${{ runner.os }}-${{ inputs.platform }}-
+            pio6119-py312-${{ runner.os }}-${{ inputs.platform }}-
 
       - name: Guard against gutted tool-scons cache
         # Self-heal: if tool-scons exists but its FortranCommon.py marker is
@@ -72,13 +69,43 @@ jobs:
             echo "tool-scons OK or absent (PIO installs on demand)"
           fi
 
-      - name: Install PlatformIO
+      - name: Lock PlatformIO and ESP32 penv to 6.1.19
         # PINNED: PlatformIO Core 6.2.0 (PyPI latest since 2026-09-05) wipes
         # tool-scons during ESP-IDF builds — link then dies with
         # "ModuleNotFoundError: SCons.Tool.FortranCommon" (community thread
         # 54324; reproduced locally at 484s). 6.1.19 is the last known-good
         # (matches Jenny's local builds). Do not un-pin until 6.2.1+ ships.
-        run: pip install -U platformio==6.1.19
+        #
+        # Triple lock:
+        # 1. Host environment gets platformio==6.1.19
+        # 2. Seed ~/.platformio/appstate.json so after_upgrade() never triggers
+        # 3. Pre-create ~/.platformio/penv with pioarduino==6.1.19 so penv_setup.py
+        #    does not auto-upgrade penv to 6.2.0 via `uv pip install --upgrade pioarduino>=6.1.19`
+        # 4. Touch .piokeep on tool-scons if present, plus fallback FortranCommon shim
+        run: |
+          mkdir -p "$HOME/.platformio/packages"
+          echo '{"last_version": "6.1.19", "last_check": {"platformio_upgrade": 2147483647, "prune_system": 2147483647}}' > "$HOME/.platformio/appstate.json"
+          pip install -U "platformio==6.1.19"
+          if [ ! -f "$HOME/.platformio/penv/bin/python" ] || ! "$HOME/.platformio/penv/bin/python" -c "import pioarduino; assert pioarduino.__version__ == '6.1.19'" 2>/dev/null; then
+            echo "Pre-creating ~/.platformio/penv pinned to 6.1.19..."
+            rm -rf "$HOME/.platformio/penv"
+            python -m venv "$HOME/.platformio/penv"
+            "$HOME/.platformio/penv/bin/pip" install --upgrade "uv>=0.1.0"
+            "$HOME/.platformio/penv/bin/pip" install "pioarduino==6.1.19" "platformio==6.1.19"
+          fi
+          if [ -d "$HOME/.platformio/packages/tool-scons" ]; then
+            touch "$HOME/.platformio/packages/tool-scons/.piokeep"
+          fi
+          for scons_tool_dir in $(find "$HOME/.platformio/packages" -maxdepth 3 -type d -name "Tool" 2>/dev/null); do
+            if [ -f "$scons_tool_dir/linkCommon/__init__.py" ] && [ ! -f "$scons_tool_dir/FortranCommon.py" ]; then
+              echo "Adding FortranCommon fallback shim to $scons_tool_dir"
+              printf '%s\n' \
+                '"""Fallback shim for SCons FortranCommon to prevent link crashes"""' \
+                'def isfortran(env, source): return False' \
+                'def add_all_to_env(env): pass' \
+                'def add_fortran_to_env(env): pass' > "$scons_tool_dir/FortranCommon.py"
+            fi
+          done
 
       - name: Build ${{ inputs.platform }}
         id: build
