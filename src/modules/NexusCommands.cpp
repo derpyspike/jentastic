@@ -4952,63 +4952,285 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             }
         }
     }
-    else if (strncasecmp(cmd, "PRESET ", 7) == 0 || strncasecmp(cmd, "SETPRESET ", 10) == 0) {
-        const char *p = (strncasecmp(cmd, "PRESET ", 7) == 0) ? cmd + 7 : cmd + 10;
+    else if (strncasecmp(cmd, "PRESET ", 7) == 0 || strcasecmp(cmd, "PRESET") == 0 ||
+             strncasecmp(cmd, "SETPRESET ", 10) == 0 || strcasecmp(cmd, "SETPRESET") == 0) {
+        const char *p = (strncasecmp(cmd, "PRESET", 6) == 0) ? cmd + 6 : cmd + 9;
         while (*p == ' ') p++;
 
-        struct LoRaParams { uint8_t sf; uint16_t bw; uint8_t cr; float freq; };
-        LoRaParams target = {0, 0, 0, 0.0f};
-        bool found = true;
-
-        // 1. Official Meshtastic Aliases (Aligned with Docs)
-        if (strcasecmp(p, "LF") == 0 || strcasecmp(p, "LONGFAST") == 0) { target = {11, 250, 5, 869.525f}; }
-        else if (strcasecmp(p, "LT") == 0 || strcasecmp(p, "LONGTURBO") == 0) { target = {11, 500, 8, 869.525f}; }
-        else if (strcasecmp(p, "LM") == 0 || strcasecmp(p, "LONGMODERATE") == 0) { target = {11, 125, 8, 869.525f}; }
-        else if (strcasecmp(p, "LS") == 0 || strcasecmp(p, "LONGSLOW") == 0) { target = {12, 125, 8, 869.525f}; }
-        else if (strcasecmp(p, "MF") == 0 || strcasecmp(p, "MEDFAST") == 0) { target = {9, 250, 5, 869.525f}; }
-        else if (strcasecmp(p, "MS") == 0 || strcasecmp(p, "MEDSLOW") == 0) { target = {10, 250, 5, 869.525f}; }
-        else if (strcasecmp(p, "SS") == 0 || strcasecmp(p, "SHORTSLOW") == 0) { target = {8, 250, 5, 869.525f}; }
-        else if (strcasecmp(p, "SF") == 0 || strcasecmp(p, "SHORTFAST") == 0) { target = {7, 250, 5, 869.525f}; }
-        else if (strcasecmp(p, "ST") == 0 || strcasecmp(p, "SHORTTURBO") == 0) { target = {7, 500, 5, 869.525f}; }
-
-        // 2. Nexus Tactical
-        else if (strcasecmp(p, "P1") == 0 || strcasecmp(p, "SFNARROW") == 0) { target = {7, 62, 5, 869.618f}; }
-        else if (strcasecmp(p, "P7") == 0 || strcasecmp(p, "NARROWPLUS") == 0) { target = {6, 62, 5, 869.618f}; }
-        else if (strcasecmp(p, "NARROWPROMAX") == 0 || strcasecmp(p, "NARROWPREMIUM") == 0) { target = {5, 62, 5, 869.618f}; }
-        else if (strcasecmp(p, "SP") == 0 || strcasecmp(p, "SHORTPLUS") == 0) { target = {6, 250, 5, 869.525f}; }
-        else if (strcasecmp(p, "SPM") == 0 || strcasecmp(p, "SHORTPROMAX") == 0) { target = {5, 250, 5, 869.525f}; }
-
-        // 3. NAP Series (BW 125)
-        else if (strcasecmp(p, "NAP-1") == 0) { target = {7, 125, 5, 865.700f}; }
-        else if (strcasecmp(p, "NAP-2") == 0) { target = {7, 125, 5, 866.300f}; }
-        else if (strcasecmp(p, "NAP-3") == 0) { target = {7, 125, 5, 866.900f}; }
-        else if (strcasecmp(p, "NAP-4") == 0) { target = {7, 125, 5, 867.500f}; }
-        else if (strcasecmp(p, "NAP-5") == 0) { target = {7, 125, 5, 871.000f}; }
-
-        // 4. NAPN Series (BW 62)
-        else if (strcasecmp(p, "NAPN-1") == 0) { target = {7, 62, 5, 865.700f}; }
-        else if (strcasecmp(p, "NAPN-2") == 0) { target = {7, 62, 5, 866.300f}; }
-        else if (strcasecmp(p, "NAPN-3") == 0) { target = {7, 62, 5, 866.900f}; }
-        else if (strcasecmp(p, "NAPN-4") == 0) { target = {7, 62, 5, 867.500f}; }
-        else if (strcasecmp(p, "NAPN-5") == 0) { target = {7, 62, 5, 871.000f}; }
-        else { found = false; }
-
-        if (found) {
-            memset(&pendingConfig, 0, sizeof(pendingConfig));
-            pendingConfig.which_payload_variant = meshtastic_Config_lora_tag;
-            pendingConfig.payload_variant.lora = config.lora;
-            pendingConfig.payload_variant.lora.use_preset = false;
-            pendingConfig.payload_variant.lora.spread_factor = target.sf;
-            pendingConfig.payload_variant.lora.bandwidth = target.bw;
-            pendingConfig.payload_variant.lora.coding_rate = target.cr;
-            pendingConfig.payload_variant.lora.override_frequency = target.freq;
-
-            snprintf(replyMsg, sizeof(replyMsg), "JT: Preset '%s' accepted. SF:%u BW:%u Freq:%.3fMHz. Applying LIVE in 5s.",
-                     p, target.sf, target.bw, target.freq);
-            pendingLoRaConfig = true;
-            pendingLoRaApplyAt = Time::getMillis() + 5000;
+        if (*p == '\0') {
+            snprintf(replyMsg, sizeof(replyMsg), "JT: Usage: PRESET <name>. See HELP PRESET for list.");
         } else {
-            snprintf(replyMsg, sizeof(replyMsg), "JT: Unknown Preset '%s'", p);
+            struct LoRaParams {
+                uint8_t sf;
+                uint16_t bw;
+                uint8_t cr;
+                float freq;
+                meshtastic_Config_LoRaConfig_RegionCode region;
+            };
+            LoRaParams target = {0, 0, 0, 0.0f, meshtastic_Config_LoRaConfig_RegionCode_UNSET};
+            bool found = true;
+            bool isCurrent24 = (config.lora.region == meshtastic_Config_LoRaConfig_RegionCode_LORA_24);
+
+            // 1. Madrid24 & 2.4 GHz Presets (LORA_24)
+            if (strcasecmp(p, "MADRID24") == 0 || strcasecmp(p, "MADRID-24") == 0 || strcasecmp(p, "MADRID_24") == 0) {
+                target = {9, 400, 5, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24};
+            }
+            else if (strcasecmp(p, "LF24") == 0 || strcasecmp(p, "LONGFAST24") == 0 || strcasecmp(p, "LONGFAST_24") == 0) {
+                target = {11, 800, 5, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24};
+            }
+            else if (strcasecmp(p, "MS24") == 0 || strcasecmp(p, "MEDSLOW24") == 0 || strcasecmp(p, "MEDSLOW_24") == 0) {
+                target = {10, 800, 5, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24};
+            }
+            else if (strcasecmp(p, "MF24") == 0 || strcasecmp(p, "MEDFAST24") == 0 || strcasecmp(p, "MEDFAST_24") == 0) {
+                target = {9, 800, 5, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24};
+            }
+            else if (strcasecmp(p, "SS24") == 0 || strcasecmp(p, "SHORTSLOW24") == 0 || strcasecmp(p, "SHORTSLOW_24") == 0) {
+                target = {8, 800, 5, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24};
+            }
+            else if (strcasecmp(p, "SF24") == 0 || strcasecmp(p, "SHORTFAST24") == 0 || strcasecmp(p, "SHORTFAST_24") == 0) {
+                target = {7, 800, 5, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24};
+            }
+            else if (strcasecmp(p, "LM24") == 0 || strcasecmp(p, "LONGMODERATE24") == 0 || strcasecmp(p, "LONGMODERATE_24") == 0) {
+                target = {11, 400, 8, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24};
+            }
+            else if (strcasecmp(p, "LS24") == 0 || strcasecmp(p, "LONGSLOW24") == 0 || strcasecmp(p, "LONGSLOW_24") == 0) {
+                target = {12, 400, 8, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24};
+            }
+            else if (strcasecmp(p, "ST24") == 0 || strcasecmp(p, "SHORTTURBO24") == 0 || strcasecmp(p, "SHORTTURBO_24") == 0) {
+                target = {7, 1600, 5, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24};
+            }
+            else if (strcasecmp(p, "LT24") == 0 || strcasecmp(p, "LONGTURBO24") == 0 || strcasecmp(p, "LONGTURBO_24") == 0) {
+                target = {11, 1600, 8, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24};
+            }
+
+            // 2. Explicit EU_868 variants
+            else if (strcasecmp(p, "LF868") == 0 || strcasecmp(p, "LONGFAST868") == 0 || strcasecmp(p, "LONGFAST_868") == 0) {
+                target = {11, 250, 5, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "MS868") == 0 || strcasecmp(p, "MEDSLOW868") == 0 || strcasecmp(p, "MEDSLOW_868") == 0) {
+                target = {10, 250, 5, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "MF868") == 0 || strcasecmp(p, "MEDFAST868") == 0 || strcasecmp(p, "MEDFAST_868") == 0) {
+                target = {9, 250, 5, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "SS868") == 0 || strcasecmp(p, "SHORTSLOW868") == 0 || strcasecmp(p, "SHORTSLOW_868") == 0) {
+                target = {8, 250, 5, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "SF868") == 0 || strcasecmp(p, "SHORTFAST868") == 0 || strcasecmp(p, "SHORTFAST_868") == 0) {
+                target = {7, 250, 5, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "LM868") == 0 || strcasecmp(p, "LONGMODERATE868") == 0 || strcasecmp(p, "LONGMODERATE_868") == 0) {
+                target = {11, 125, 8, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "LS868") == 0 || strcasecmp(p, "LONGSLOW868") == 0 || strcasecmp(p, "LONGSLOW_868") == 0) {
+                target = {12, 125, 8, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "ST868") == 0 || strcasecmp(p, "SHORTTURBO868") == 0 || strcasecmp(p, "SHORTTURBO_868") == 0) {
+                target = {7, 500, 5, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "LT868") == 0 || strcasecmp(p, "LONGTURBO868") == 0 || strcasecmp(p, "LONGTURBO_868") == 0) {
+                target = {11, 500, 8, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+
+            // 3. Standard Aliases (Context-aware: LORA_24 when currently on 2.4G, otherwise EU_868)
+            else if (strcasecmp(p, "LF") == 0 || strcasecmp(p, "LONGFAST") == 0) {
+                target = isCurrent24 ? LoRaParams{11, 800, 5, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24}
+                                     : LoRaParams{11, 250, 5, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "LT") == 0 || strcasecmp(p, "LONGTURBO") == 0) {
+                target = isCurrent24 ? LoRaParams{11, 1600, 8, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24}
+                                     : LoRaParams{11, 500, 8, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "LM") == 0 || strcasecmp(p, "LONGMODERATE") == 0) {
+                target = isCurrent24 ? LoRaParams{11, 400, 8, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24}
+                                     : LoRaParams{11, 125, 8, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "LS") == 0 || strcasecmp(p, "LONGSLOW") == 0) {
+                target = isCurrent24 ? LoRaParams{12, 400, 8, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24}
+                                     : LoRaParams{12, 125, 8, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "MF") == 0 || strcasecmp(p, "MEDFAST") == 0) {
+                target = isCurrent24 ? LoRaParams{9, 800, 5, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24}
+                                     : LoRaParams{9, 250, 5, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "MS") == 0 || strcasecmp(p, "MEDSLOW") == 0) {
+                target = isCurrent24 ? LoRaParams{10, 800, 5, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24}
+                                     : LoRaParams{10, 250, 5, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "SS") == 0 || strcasecmp(p, "SHORTSLOW") == 0) {
+                target = isCurrent24 ? LoRaParams{8, 800, 5, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24}
+                                     : LoRaParams{8, 250, 5, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "SF") == 0 || strcasecmp(p, "SHORTFAST") == 0) {
+                target = isCurrent24 ? LoRaParams{7, 800, 5, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24}
+                                     : LoRaParams{7, 250, 5, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "ST") == 0 || strcasecmp(p, "SHORTTURBO") == 0) {
+                target = isCurrent24 ? LoRaParams{7, 1600, 5, 2482.0000f, meshtastic_Config_LoRaConfig_RegionCode_LORA_24}
+                                     : LoRaParams{7, 500, 5, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+
+            // 4. Upstream Narrow Presets (EU_N_868, BW 62.5 kHz, CR 4/6, Freq 869.4417 MHz)
+            else if (strcasecmp(p, "NF") == 0 || strcasecmp(p, "NARROWFAST") == 0 || strcasecmp(p, "NARF") == 0 ||
+                     strcasecmp(p, "NARROW_FAST") == 0 || strcasecmp(p, "NARROW-FAST") == 0) {
+                target = {7, 62, 6, 869.4417f, meshtastic_Config_LoRaConfig_RegionCode_EU_N_868};
+            }
+            else if (strcasecmp(p, "NS") == 0 || strcasecmp(p, "NARROWSLOW") == 0 || strcasecmp(p, "NARS") == 0 ||
+                     strcasecmp(p, "NARROW_SLOW") == 0 || strcasecmp(p, "NARROW-SLOW") == 0) {
+                target = {8, 62, 6, 869.4417f, meshtastic_Config_LoRaConfig_RegionCode_EU_N_868};
+            }
+
+            // 5. Upstream Lite Presets (EU_866, BW 125 kHz, CR 4/5)
+            else if (strcasecmp(p, "LITEFAST") == 0 || strcasecmp(p, "LITEF") == 0 ||
+                     strcasecmp(p, "LITE_FAST") == 0 || strcasecmp(p, "LITE-FAST") == 0) {
+                target = {9, 125, 5, 866.3000f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "LITESLOW") == 0 || strcasecmp(p, "LITES") == 0 ||
+                     strcasecmp(p, "LITE_SLOW") == 0 || strcasecmp(p, "LITE-SLOW") == 0) {
+                target = {10, 125, 5, 865.7000f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+
+            // 6. Nexus Tactical Presets (EU_868)
+            else if (strcasecmp(p, "P1") == 0 || strcasecmp(p, "SFNARROW") == 0) {
+                target = {7, 62, 5, 869.6180f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "P7") == 0 || strcasecmp(p, "NARROWPLUS") == 0) {
+                target = {6, 62, 5, 869.6180f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "NARROWPROMAX") == 0 || strcasecmp(p, "NARROWPREMIUM") == 0) {
+                target = {5, 62, 5, 869.6180f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "SP") == 0 || strcasecmp(p, "SHORTPLUS") == 0) {
+                target = {6, 250, 5, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "SPM") == 0 || strcasecmp(p, "SHORTPROMAX") == 0) {
+                target = {5, 250, 5, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+
+            // 7. NAP Series (EU_866, BW 125 kHz, SF7, CR 4/5)
+            else if (strcasecmp(p, "NAP-1") == 0 || strcasecmp(p, "NAP1") == 0) {
+                target = {7, 125, 5, 865.7000f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "NAP-2") == 0 || strcasecmp(p, "NAP2") == 0) {
+                target = {7, 125, 5, 866.3000f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "NAP-3") == 0 || strcasecmp(p, "NAP3") == 0) {
+                target = {7, 125, 5, 866.9000f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "NAP-4") == 0 || strcasecmp(p, "NAP4") == 0) {
+                target = {7, 125, 5, 867.5000f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "NAP-5") == 0 || strcasecmp(p, "NAP5") == 0) {
+                target = {7, 125, 5, 871.0000f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+
+            // 8. NAPN Series (EU_866, BW 62 kHz, SF7, CR 4/5)
+            else if (strcasecmp(p, "NAPN-1") == 0 || strcasecmp(p, "NAPN1") == 0) {
+                target = {7, 62, 5, 865.7000f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "NAPN-2") == 0 || strcasecmp(p, "NAPN2") == 0) {
+                target = {7, 62, 5, 866.3000f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "NAPN-3") == 0 || strcasecmp(p, "NAPN3") == 0) {
+                target = {7, 62, 5, 866.9000f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "NAPN-4") == 0 || strcasecmp(p, "NAPN4") == 0) {
+                target = {7, 62, 5, 867.5000f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "NAPN-5") == 0 || strcasecmp(p, "NAPN5") == 0) {
+                target = {7, 62, 5, 871.0000f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+
+            // 9. Mini Series (EU_866, BW 31 kHz, SF6, CR 4/5) - Left/Right guardbands around NAP channels
+            else if (strcasecmp(p, "MINI-1") == 0 || strcasecmp(p, "MINI1") == 0 ||
+                     strcasecmp(p, "MICRO-1") == 0 || strcasecmp(p, "MICRO1") == 0) {
+                target = {6, 31, 5, 865.6188f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "MINI-2") == 0 || strcasecmp(p, "MINI2") == 0 ||
+                     strcasecmp(p, "MICRO-2") == 0 || strcasecmp(p, "MICRO2") == 0) {
+                target = {6, 31, 5, 865.7812f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "MINI-3") == 0 || strcasecmp(p, "MINI3") == 0 ||
+                     strcasecmp(p, "MICRO-3") == 0 || strcasecmp(p, "MICRO3") == 0) {
+                target = {6, 31, 5, 866.2188f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "MINI-4") == 0 || strcasecmp(p, "MINI4") == 0 ||
+                     strcasecmp(p, "MICRO-4") == 0 || strcasecmp(p, "MICRO4") == 0) {
+                target = {6, 31, 5, 866.3812f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "MINI-5") == 0 || strcasecmp(p, "MINI5") == 0 ||
+                     strcasecmp(p, "MICRO-5") == 0 || strcasecmp(p, "MICRO5") == 0) {
+                target = {6, 31, 5, 866.8188f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "MINI-6") == 0 || strcasecmp(p, "MINI6") == 0 ||
+                     strcasecmp(p, "MICRO-6") == 0 || strcasecmp(p, "MICRO6") == 0) {
+                target = {6, 31, 5, 866.9812f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "MINI-7") == 0 || strcasecmp(p, "MINI7") == 0 ||
+                     strcasecmp(p, "MICRO-7") == 0 || strcasecmp(p, "MICRO7") == 0) {
+                target = {6, 31, 5, 867.4188f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else if (strcasecmp(p, "MINI-8") == 0 || strcasecmp(p, "MINI8") == 0 ||
+                     strcasecmp(p, "MICRO-8") == 0 || strcasecmp(p, "MICRO8") == 0) {
+                target = {6, 31, 5, 867.5812f, meshtastic_Config_LoRaConfig_RegionCode_EU_866};
+            }
+            else {
+                found = false;
+            }
+
+            if (!found) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT: Unknown Preset '%s'", p);
+            } else {
+                // Magnemite tweak at apply (R4, Jenny 2026-10-20): band capability comes
+                // from radioType, NOT the currently-configured region. Region is only a
+                // proxy and is wrong exactly where the guard matters: a fresh SX1280
+                // (2.4GHz-only) at UNSET would be refused Madrid24 — its only band — while
+                // an SX1262 stuck on LORA_24 would be refused the sub-GHz preset that would
+                // recover it. SIM_RADIO/NO_RADIO (portduino / undetected) pass both ways.
+                const bool cap24 = (radioType == SX1280_RADIO || radioType == LR1121_RADIO ||
+                                    radioType == LR2021_RADIO || radioType == SIM_RADIO ||
+                                    radioType == NO_RADIO);
+                const bool capSub = (radioType == RF95_RADIO || radioType == SX1262_RADIO ||
+                                     radioType == SX1268_RADIO || radioType == LLCC68_RADIO ||
+                                     radioType == LR1110_RADIO || radioType == LR1120_RADIO ||
+                                     radioType == LR1121_RADIO || radioType == LR2021_RADIO ||
+                                     radioType == STM32WLx_RADIO || radioType == SIM_RADIO ||
+                                     radioType == NO_RADIO);
+                const bool isTarget24 = (target.region == meshtastic_Config_LoRaConfig_RegionCode_LORA_24);
+                // Mini-1..8 are BW code 31 (31.25 kHz). The LR11x0 low-band register set has
+                // no 31.25 case (62.5/125/250/500 only), so RadioLib would reject the apply
+                // with INVALID_BANDWIDTH — block at the command layer instead (Jenny 2026-10-20).
+                const bool isMiniUnsupported = (target.bw == 31) &&
+                    (radioType == LR1110_RADIO || radioType == LR1120_RADIO || radioType == LR1121_RADIO);
+
+                if (isTarget24 && !cap24) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT: Cannot set 2.4GHz preset on this single-band radio.");
+                } else if (!isTarget24 && !capSub) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT: Cannot set Sub-GHz preset on this single-band radio.");
+                } else if (isMiniUnsupported) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT: Mini presets (BW 31.25 kHz) are not supported on this radio.");
+                } else {
+                    memset(&pendingConfig, 0, sizeof(pendingConfig));
+                    pendingConfig.which_payload_variant = meshtastic_Config_lora_tag;
+                    pendingConfig.payload_variant.lora = config.lora;
+                    pendingConfig.payload_variant.lora.region = target.region;
+                    pendingConfig.payload_variant.lora.use_preset = false;
+                    pendingConfig.payload_variant.lora.spread_factor = target.sf;
+                    pendingConfig.payload_variant.lora.bandwidth = target.bw;
+                    pendingConfig.payload_variant.lora.coding_rate = target.cr;
+                    pendingConfig.payload_variant.lora.override_frequency = target.freq;
+
+                    const char *rStr = (target.region == meshtastic_Config_LoRaConfig_RegionCode_LORA_24) ? "LORA_24" :
+                                       (target.region == meshtastic_Config_LoRaConfig_RegionCode_EU_868) ? "EU_868" :
+                                       (target.region == meshtastic_Config_LoRaConfig_RegionCode_EU_866) ? "EU_866" :
+                                       (target.region == meshtastic_Config_LoRaConfig_RegionCode_EU_N_868) ? "EU_N_868" : "LoRa";
+
+                    snprintf(replyMsg, sizeof(replyMsg), "JT: Preset '%s' accepted (%s). SF:%u BW:%u CR:%u Freq:%.4fMHz. Applying LIVE in 5s.",
+                             p, rStr, target.sf, target.bw, target.cr, target.freq);
+                    pendingLoRaConfig = true;
+                    pendingLoRaApplyAt = Time::getMillis() + 5000;
+                }
+            }
         }
     }
     else if (strncasecmp(cmd, "SETLORA ", 8) == 0) {
@@ -7512,7 +7734,9 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             snprintf(replyMsg, sizeof(replyMsg), "JT: Paging SKEY help...");
         } else if (strcasecmp(sub, "LORA") == 0 || strcasecmp(sub, "PRESET") == 0 || strcasecmp(sub, "SETLORA") == 0) {
             startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "Help LORA");
-            appendPaging("PRESET: SF, LF, MS, MF, SS, ST, LT, SPM, P1, P7, NAP-1..5, NAPN-1..5\n");
+            appendPaging("PRESET <name>: EU_868 (LF, MS, MF, SS, SF, LM, LS, ST, LT, P1, P7, SP, SPM, NARROWPROMAX)\n");
+            appendPaging("EU_N_868 (NarrowFast/NF, NarrowSlow/NS) | EU_866 (LiteFast, LiteSlow, NAP-1..5, NAPN-1..5, Mini-1..8)\n");
+            appendPaging("LORA_24 (Madrid24, LF24, MS24, MF24, SS24, SF24, LM24, LS24, ST24, LT24)\n");
             appendPaging("SETLORA: [SF] [BW] [CR] [Freq]");
             snprintf(replyMsg, sizeof(replyMsg), "JT: Paging LORA help...");
         } else if (strcasecmp(sub, "TM") == 0) {

@@ -326,7 +326,7 @@ Again: The 2.8 already does this automatically, but if you wanna override it man
 | `SETLORA` | `SETLORA <sf> <bw> <cr> <freq>` | Reconfigure modem parameters directly in RAM (applies after deferred timer). Example: `SETLORA 7 62 5 869.618`. | `JT: LoRa accepted. SF:<sf> BW:<bw> CR:<cr> Freq:<freq>MHz. Applying LIVE in 5s.` |
 | `SETFSK` | `SETFSK <br_kbps> [freqDev_kHz] [rxBw_kHz] [preamble_bits]` · bare = status · `SETFSK OFF\|RESET\|DEFAULT` | Switch the radio from LoRa to **FSK/GFSK** modulation (whole fleet: SX126x, LR11x0, SX128x, LR2021 — not SX127x/RF95). Params & theory: see **SETFSK/SETFLRC reference** below. RAM-only; deferred apply like `SETLORA`. Example: `SETFSK 50 25 117.3 16`. | `JT: FSK accepted. BR:<br>k DEV:<dev>k BW:<bw>k PRE:<pre>. Applying LIVE in 5s.`<br>`JT: Invalid FSK params (BR:0.6-300k, DEV:1.5-200k, BW:4.8-500k, PRE:4-1024)`<br>`JT: SETFSK not supported on this radio` |
 | `SETFLRC` | `SETFLRC <br_kbps> <cr> [bt] [preamble_bits]` · bare = status · `SETFLRC OFF\|RESET\|DEFAULT` | Switch the radio to **FLRC** modulation — SX128x (2.4 GHz) and LR2021 (X1, sub-GHz & 2.4G) only; `cr` is required. Params & theory: see **SETFSK/SETFLRC reference** below. Example: `SETFLRC 650 3`. | `JT: FLRC accepted. BR:<br>k CR:<cr> BT:<bt> PRE:<pre>. Applying LIVE in 5s.`<br>`JT: Invalid FLRC params (BR:1-2600k, CR:2\|3\|4 = 1/2\|3/4\|uncoded, BT:0\|1\|2, PRE:4-1024)`<br>`JT: SETFLRC not supported on this radio` |
-| `PRESET` / `SETPRESET` | `PRESET <preset>` | Load various LoRa presets (Warning, all these are EU_868 ONLY): `SF`, `LF`/`LM`/`LS`, `MS`, `MF`, `SS`, `ST`, `LT`, `SP`/`SPM`, `P1`, `P7`, `NAP-1..5`, `NAPN-1..5`, `NARROWPROMAX`/`NARROWPREMIUM` (plus long names: `LONGFAST`, `LONGMODERATE`, `LONGSLOW`, `LONGTURBO`, `MEDFAST`, `MEDSLOW`, `SHORTPLUS`, `SHORTPROMAX`, `SHORTSLOW`, `SHORTFAST`, `SHORTTURBO`, `SFNARROW`). Example: `PRESET SF`. | `JT: Preset '<preset>' accepted. SF:<sf> BW:<bw> Freq:<freq>MHz. Applying LIVE in 5s.` |
+| `PRESET` / `SETPRESET` | `PRESET <preset>` | Load standard, tactical, narrow, lite, mini, or 2.4 GHz LoRa presets. Automatically sets the proper region (`EU_868`, `EU_N_868`, `EU_866`, or `LORA_24`) with bidirectional hardware band protection (single-band radios cannot jump between Sub-GHz and 2.4 GHz; dual-band **LR1121** and **LR2021** can freely switch). Example: `PRESET Madrid24` or `PRESET Mini-1`. | `JT: Preset '<preset>' accepted (<region>). SF:<sf> BW:<bw> CR:<cr> Freq:<freq>MHz. Applying LIVE in 5s.`<br>`JT: Cannot set Sub-GHz preset on LORA_24 (single-band radio).`<br>`JT: Cannot set 2.4GHz preset on Sub-GHz region (single-band radio).` |
 | `SETPREAMBLE` / `SETPRE` | `SETPREAMBLE <len>` | Set custom preamble length (6-1024 symbols). Example: `SETPREAMBLE 16`. | `JT: Preamble Length set to <len>. Applying in 5s...` |
 | | `SETPREAMBLE` | Show active preamble override. | `JT Preamble Override: <len>` |
 | `SETSYNCWORD` / `SETSW` | `SETSYNCWORD <hex\|dec\|RESET>`| Set custom radio sync word (0x00-0xFF; `DEFAULT`/`DEF` are aliases of `RESET`, default 0x2B). Bare form queries. Example: `SETSW 0x12`. | `JT: Sync Word set to 0x<HEX>. Applying in 5s...`<br>`JT: Sync Word reset to default 0x2B. Applying in 5s...`<br>Query: `JT Sync Word: 0x<HEX> (Meshtastic default\|override)` |
@@ -347,34 +347,59 @@ Again: The 2.8 already does this automatically, but if you wanna override it man
 | | `G3 PA <ON\|OFF>` | Set G3 frontend PA state (RAM-only until SAVE). | `JT G3: PA=<ON\|OFF> (GPIO9 OUTPUT HIGH / INPUT Hi-Z). RAM-only — run /nexus SAVE to persist.` |
 | | `G3 REINIT` | Re-probe both jumper pads and re-apply front-end state. | `JT G3 REINIT`<br>`  PA  = <state>`<br>`  LNA = <state>` |
 
-**PRESET settings reference** — every value the handler accepts (EU 868 only):
+**PRESET settings reference** — presets accepted across Sub-GHz (`EU_868`, `EU_N_868`, `EU_866`) and 2.4 GHz (`LORA_24`):
 **Beware that the legality of each varies per country. Make sure to always verify and follow your local regulations.**
-| Group | Preset | Long name / alias | SF | BW (kHz) | CR | Frequency (MHz) |
-|-------|--------|-------------------|----|----------|----|-----------------|
-| Official | `LF` | `LONGFAST` | 11 | 250 | 4/5 | 869.525 |
-| Official | `LT` | `LONGTURBO` | 11 | 500 | 4/8 | 869.525 |
-| Official | `LM` | `LONGMODERATE` | 11 | 125 | 4/8 | 869.525 |
-| Official | `LS` | `LONGSLOW` | 12 | 125 | 4/8 | 869.525 |
-| Official | `MF` | `MEDFAST` | 9 | 250 | 4/5 | 869.525 |
-| Official | `MS` | `MEDSLOW` | 10 | 250 | 4/5 | 869.525 |
-| Official | `SS` | `SHORTSLOW` | 8 | 250 | 4/5 | 869.525 |
-| Official | `SF` | `SHORTFAST` | 7 | 250 | 4/5 | 869.525 |
-| Official | `ST` | `SHORTTURBO` | 7 | 500 | 4/5 | 869.525 |
-| Spain | `SP` | `SHORTPLUS` | 6 | 250 | 4/5 | 869.525 |
-| Spain | `SPM` | `SHORTPROMAX` | 5 | 250 | 4/5 | 869.525 |
-| **Spain's Recommended Preset** | `P1` | `SFNARROW` | 7 | 62 | 4/5 | 869.618 |
-| **Spain's Recommended Secondary Mesh Preset.** | `P7` | `NARROWPLUS` | 6 | 62 | 4/5 | 869.618 |
-| Spain | `NARROWPROMAX` | — | 5 | 62 | 4/5 | 869.618 |
-| NAP (BW 125) | `NAP-1` | — | 7 | 125 | 4/5 | 865.700 |
-| NAP (BW 125) | `NAP-2` | — | 7 | 125 | 4/5 | 866.300 |
-| NAP (BW 125) | `NAP-3` | — | 7 | 125 | 4/5 | 866.900 |
-| NAP (BW 125) | `NAP-4` | — | 7 | 125 | 4/5 | 867.500 |
-| NAPN (BW 62) | `NAPN-1` | — | 7 | 62 | 4/5 | 865.700 |
-| NAPN (BW 62) | `NAPN-2` | — | 7 | 62 | 4/5 | 866.300 |
-| NAPN (BW 62) | `NAPN-3` | — | 7 | 62 | 4/5 | 866.900 |
-| NAPN (BW 62) | `NAPN-4` | — | 7 | 62 | 4/5 | 867.500 |
 
-*`PRESET` writes a custom modem config (`use_preset = false`): `spread_factor`, `bandwidth`, `coding_rate` and `override_frequency`, applied LIVE 5 s after the reply. CR shown as `4/x` (raw `coding_rate` values are `5` or `8`).*
+| Group | Preset | Long name / alias | SF | BW (kHz) | CR | Frequency (MHz) | Region Set |
+|---|---|---|---|---|---|---|---|
+| **EU_868 Standard** | `LF` / `LF868` | `LONGFAST` | 11 | 250 | 4/5 | 869.5250 | `EU_868` |
+| EU_868 Standard | `MS` / `MS868` | `MEDSLOW` | 10 | 250 | 4/5 | 869.5250 | `EU_868` |
+| EU_868 Standard | `MF` / `MF868` | `MEDFAST` | 9 | 250 | 4/5 | 869.5250 | `EU_868` |
+| EU_868 Standard | `SS` / `SS868` | `SHORTSLOW` | 8 | 250 | 4/5 | 869.5250 | `EU_868` |
+| EU_868 Standard | `SF` / `SF868` | `SHORTFAST` | 7 | 250 | 4/5 | 869.5250 | `EU_868` |
+| EU_868 Standard | `LM` / `LM868` | `LONGMODERATE` | 11 | 125 | 4/8 | 869.5250 | `EU_868` |
+| EU_868 Standard | `LS` / `LS868` | `LONGSLOW` | 12 | 125 | 4/8 | 869.5250 | `EU_868` |
+| EU_868 Standard | `ST` / `ST868` | `SHORTTURBO` | 7 | 500 | 4/5 | 869.5250 | `EU_868` |
+| EU_868 Standard | `LT` / `LT868` | `LONGTURBO` | 11 | 500 | 4/8 | 869.5250 | `EU_868` |
+| **Spain / Tactical** | `P1` | `SFNARROW` | 7 | 62 | 4/5 | 869.6180 | `EU_868` |
+| Spain / Tactical | `P7` | `NARROWPLUS` | 6 | 62 | 4/5 | 869.6180 | `EU_868` |
+| Spain / Tactical | `NARROWPROMAX` | `NARROWPREMIUM` | 5 | 62 | 4/5 | 869.6180 | `EU_868` |
+| Spain / Tactical | `SP` | `SHORTPLUS` | 6 | 250 | 4/5 | 869.5250 | `EU_868` |
+| Spain / Tactical | `SPM` | `SHORTPROMAX` | 5 | 250 | 4/5 | 869.5250 | `EU_868` |
+| **Upstream Narrow** | `NF` | `NARROWFAST` / `NARF` | 7 | 62 | 4/6 | 869.4417 | `EU_N_868` |
+| Upstream Narrow | `NS` | `NARROWSLOW` / `NARS` | 8 | 62 | 4/6 | 869.4417 | `EU_N_868` |
+| **Upstream Lite** | `LITEFAST` | `LITEF` | 9 | 125 | 4/5 | 866.3000 | `EU_866` |
+| Upstream Lite | `LITESLOW` | `LITES` | 10 | 125 | 4/5 | 865.7000 | `EU_866` |
+| **NAP (BW 125)** | `NAP-1` / `NAP1` | — | 7 | 125 | 4/5 | 865.7000 | `EU_866` |
+| NAP (BW 125) | `NAP-2` / `NAP2` | — | 7 | 125 | 4/5 | 866.3000 | `EU_866` |
+| NAP (BW 125) | `NAP-3` / `NAP3` | — | 7 | 125 | 4/5 | 866.9000 | `EU_866` |
+| NAP (BW 125) | `NAP-4` / `NAP4` | — | 7 | 125 | 4/5 | 867.5000 | `EU_866` |
+| NAP (BW 125) | `NAP-5` / `NAP5` | — | 7 | 125 | 4/5 | 871.0000 | `EU_866` |
+| **NAPN (BW 62)** | `NAPN-1` / `NAPN1` | — | 7 | 62 | 4/5 | 865.7000 | `EU_866` |
+| NAPN (BW 62) | `NAPN-2` / `NAPN2` | — | 7 | 62 | 4/5 | 866.3000 | `EU_866` |
+| NAPN (BW 62) | `NAPN-3` / `NAPN3` | — | 7 | 62 | 4/5 | 866.9000 | `EU_866` |
+| NAPN (BW 62) | `NAPN-4` / `NAPN4` | — | 7 | 62 | 4/5 | 867.5000 | `EU_866` |
+| NAPN (BW 62) | `NAPN-5` / `NAPN5` | — | 7 | 62 | 4/5 | 871.0000 | `EU_866` |
+| **Mini Series** | `MINI-1` / `MINI1` | Left of NAP1 (span: 865.6031 - 865.6344) | 6 | 31 | 4/5 | 865.6188 | `EU_866` |
+| Mini Series | `MINI-2` / `MINI2` | Right of NAP1 (span: 865.7656 - 865.7969) | 6 | 31 | 4/5 | 865.7812 | `EU_866` |
+| Mini Series | `MINI-3` / `MINI3` | Left of NAP2 (span: 866.2031 - 866.2344) | 6 | 31 | 4/5 | 866.2188 | `EU_866` |
+| Mini Series | `MINI-4` / `MINI4` | Right of NAP2 (span: 866.3656 - 866.3969) | 6 | 31 | 4/5 | 866.3812 | `EU_866` |
+| Mini Series | `MINI-5` / `MINI5` | Left of NAP3 (span: 866.8031 - 866.8344) | 6 | 31 | 4/5 | 866.8188 | `EU_866` |
+| Mini Series | `MINI-6` / `MINI6` | Right of NAP3 (span: 866.9656 - 866.9969) | 6 | 31 | 4/5 | 866.9812 | `EU_866` |
+| Mini Series | `MINI-7` / `MINI7` | Left of NAP4 (span: 867.4031 - 867.4344) | 6 | 31 | 4/5 | 867.4188 | `EU_866` |
+| Mini Series | `MINI-8` / `MINI8` | Right of NAP4 (span: 867.5656 - 867.5969) | 6 | 31 | 4/5 | 867.5812 | `EU_866` |
+| **Madrid24 (2.4 GHz)** | `MADRID24` | `MADRID_24` / `MADRID-24` | 9 | 400 | 4/5 | 2482.0000 | `LORA_24` |
+| **LORA_24 Standard** | `LF` / `LF24` | `LONGFAST24` (or `LF` when on 2.4G) | 11 | 800 | 4/5 | 2482.0000 | `LORA_24` |
+| LORA_24 Standard | `MS` / `MS24` | `MEDSLOW24` (or `MS` when on 2.4G) | 10 | 800 | 4/5 | 2482.0000 | `LORA_24` |
+| LORA_24 Standard | `MF` / `MF24` | `MEDFAST24` (or `MF` when on 2.4G) | 9 | 800 | 4/5 | 2482.0000 | `LORA_24` |
+| LORA_24 Standard | `SS` / `SS24` | `SHORTSLOW24` (or `SS` when on 2.4G) | 8 | 800 | 4/5 | 2482.0000 | `LORA_24` |
+| LORA_24 Standard | `SF` / `SF24` | `SHORTFAST24` (or `SF` when on 2.4G) | 7 | 800 | 4/5 | 2482.0000 | `LORA_24` |
+| LORA_24 Standard | `LM` / `LM24` | `LONGMODERATE24` (or `LM` on 2.4G) | 11 | 400 | 4/8 | 2482.0000 | `LORA_24` |
+| LORA_24 Standard | `LS` / `LS24` | `LONGSLOW24` (or `LS` on 2.4G) | 12 | 400 | 4/8 | 2482.0000 | `LORA_24` |
+| LORA_24 Standard | `ST` / `ST24` | `SHORTTURBO24` (or `ST` on 2.4G) | 7 | 1600 | 4/5 | 2482.0000 | `LORA_24` |
+| LORA_24 Standard | `LT` / `LT24` | `LONGTURBO24` (or `LT` on 2.4G) | 11 | 1600 | 4/8 | 2482.0000 | `LORA_24` |
+
+*`PRESET` writes a custom modem config (`use_preset = false`): `spread_factor`, `bandwidth`, `coding_rate`, `override_frequency`, and target `region`, applied LIVE 5 s after the reply. Single-band radios are guarded against setting out-of-band presets (Sub-GHz vs 2.4 GHz); dual-band chips (**LR1121** and **LR2021**) can switch bands freely.*
 
 **SETFSK / SETFLRC reference — switching away from LoRa (FSK / GFSK / FLRC):**
 **Status: experimental.** Both commands are compile-verified across all target chips but not yet bench-proven on air — test with a known pair before relying on a link.
