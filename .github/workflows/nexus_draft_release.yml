@@ -61,7 +61,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
-          python-version: 3.x
+          python-version: "3.12"
           cache: pip
       # Pinned to match nexus_build_firmware: pio 6.2.0 has the tool-scons
       # wipe bug (FortranCommon link failure) — see that file's comment.
