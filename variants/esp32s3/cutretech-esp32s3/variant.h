@@ -1,14 +1,14 @@
 #define HAS_SCREEN 0
 #define HAS_GPS 0
 
-#define UART_TX 43
-#define UART_RX 44
+// UART0 NOT routed to the header (Jenny 2026-10-20): no GPS on this board,
+// serial is USB CDC — D6/D7 are I2C-only.
 
-#define I2C_SDA 47
-#define I2C_SCL 48
+#define I2C_SDA 43 // D6 (GPIO43)
+#define I2C_SCL 44 // D7 (GPIO44)
 
 #define LED_POWER 21
-#define LED_STATE_ON 1
+#define LED_STATE_ON 0 // Active LOW on Seeed XIAO ESP32-S3
 
 #define BATTERY_PIN 1
 #define ADC_MULTIPLIER 2.0 // Adjust in configuration if needed, in my case ~2.025
