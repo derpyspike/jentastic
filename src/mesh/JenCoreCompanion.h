@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Jennifer Sanchez
+//
+// Licensed under the GNU Affero General Public License v3.
+// See LICENSE-AGPL for the full license text.
+//
+
 #pragma once
 
 #include "configuration.h"
