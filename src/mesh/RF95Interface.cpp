@@ -281,6 +281,36 @@ int16_t RF95Interface::programModemParams()
     return RADIOLIB_ERR_NONE;
 }
 
+int16_t RF95Interface::setOutputPowerLive(int8_t powerDb)
+{
+    limitPower(RF95_MAX_POWER);
+    if (powerDb < -4)
+        powerDb = -4;
+    if (powerDb > RF95_MAX_POWER)
+        powerDb = RF95_MAX_POWER;
+#ifdef USE_RF95_RFO
+    int16_t err = lora->setOutputPower(powerDb, true);
+#else
+    int16_t err = lora->setOutputPower(powerDb);
+#endif
+    if (err == RADIOLIB_ERR_NONE) {
+        power = powerDb;
+    }
+    return err;
+}
+
+int16_t RF95Interface::setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr)
+{
+    int16_t err = lora->setSpreadingFactor(targetSf);
+    if (err != RADIOLIB_ERR_NONE)
+        return err;
+    sf = targetSf;
+    if (targetPwr != 0x7F) {
+        return setOutputPowerLive(targetPwr);
+    }
+    return RADIOLIB_ERR_NONE;
+}
+
 bool RF95Interface::reconfigure()
 {
     RadioLibInterface::reconfigure();

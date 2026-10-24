@@ -80,6 +80,15 @@ template <class T> class LR20x0Interface : public RadioLibInterface
 
     virtual void setStandby() override;
 
+    virtual int16_t setOutputPowerLive(int8_t powerDb) override;
+    virtual int16_t setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr = 0x7F) override;
+    virtual uint8_t getLastRxSF() override;
+
+    uint8_t getLastRxDetector() const { return lastRxDetector; }
+
+  protected:
+    uint8_t lastRxDetector = 0;
+
     /**
      * Apply the Semtech DCDC sensitivity workaround (opt-in, godmode-only). Must be called after the LoRa
      * modulation parameters have been set - i.e. after lora.begin() in init(), or after the

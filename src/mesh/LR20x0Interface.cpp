@@ -7,6 +7,9 @@
 #include "error.h"
 #include "mesh/NodeDB.h"
 #include "modules/NexusModule.h" // Nexus SETFSK/SETFLRC: altModem state (Phase 2: LR2021/X1)
+#if MESHTASTIC_ENABLE_RNODE
+#include "mesh/RNodeEngine.h"
+#endif
 
 #if defined(LR2021_DCDC_WORKAROUND) && RADIOLIB_GODMODE
 // The DCDC sensitivity workaround pokes RadioLib-internal DCDC registers that are NOT exposed via the
@@ -749,32 +752,78 @@ template <typename T> void LR20x0Interface<T>::setStandby()
     assert(err == RADIOLIB_ERR_NONE);
 }
 
+template <typename T> int16_t LR20x0Interface<T>::setOutputPowerLive(int8_t powerDb)
+{
+    int8_t maxPwr = (config.lora.region == meshtastic_Config_LoRaConfig_RegionCode_LORA_24) ? LR2021_MAX_POWER_HF : LR2021_MAX_POWER;
+    if (powerDb < -9)
+        powerDb = -9;
+    if (powerDb > maxPwr)
+        powerDb = maxPwr;
+    int16_t err = lora.setOutputPower(powerDb);
+    if (err == RADIOLIB_ERR_NONE) {
+        power = powerDb;
+    }
+    return err;
+}
+
+template <typename T> int16_t LR20x0Interface<T>::setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr)
+{
+    int16_t err = lora.setSpreadingFactor(targetSf);
+    if (err != RADIOLIB_ERR_NONE)
+        return err;
+    sf = targetSf;
+    applyDcdcWorkaround();
+    if (targetPwr != 0x7F) {
+        return setOutputPowerLive(targetPwr);
+    }
+    return RADIOLIB_ERR_NONE;
+}
+
+template <typename T> uint8_t LR20x0Interface<T>::getLastRxSF()
+{
+#if (defined(USE_LR2021) || defined(ARCH_PORTDUINO)) && RADIOLIB_EXCLUDE_LR2021 != 1
+    if (lastRxDetector > 0) {
+        auto *lr2021 = static_cast<LR2021Interface *>(this);
+        if (lr2021 && (lastRxDetector - 1) < lr2021->sideDetectorsCount()) {
+            return lr2021->sideDetectors()[lastRxDetector - 1];
+        }
+    }
+#endif
+    return sf;
+}
+
 /**
  * Add SNR data to received messages
  */
 template <typename T> void LR20x0Interface<T>::addReceiveMetadata(meshtastic_MeshPacket *mp)
 {
-    // LOG_DEBUG("PacketStatus %x", lora.getPacketStatus());
-    // Nexus SETFSK/SETFLRC: no chirp SNR in GFSK/FLRC — RSSI-based pseudo-SNR (2026-10-14).
-    if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
-        mp->rx_snr = meshtastic::NexusModule::altPseudoSnr(lora.getRSSI());
-    } else {
-        mp->rx_snr = lora.getSNR();
-    }
-    mp->rx_rssi = lround(lora.getRSSI());
-    mp->has_rx_rssi = true; // rx_rssi has explicit presence - a genuine reading must be marked present to survive encoding
+    // Single-SPI read of LoRa packet status: gets CR, CRC, SNR, RSSI, and multi-SF detector index!
+    uint8_t rxCR = 0;
+    bool hasCRC = true;
+    float snr = 0.0f;
+    float rssi = 0.0f;
+    uint8_t detector = 0;
 
-    // Nexus port (Nexus-28005, 2026-09-11): re-populate rx_coding_rate. The LoRa
-    // header byte carries the sender's CR (1-7); SX126xInterface.cpp:413-424 already
-    // does this via getLoRaRxHeaderInfo(), so LR2021 (which inherits from this base)
-    // should too. Verified RadioLib LR2021.h:832 exposes the same call. Failures
-    // fall back to 0 (raw 0 = reserved / unknown); nexusCRDisplay() maps it to 0.
-    {
-        uint8_t rxCR = 0;
-        bool hasCRC = true;
-        if (lora.getLoRaRxHeaderInfo(&rxCR, &hasCRC) == RADIOLIB_ERR_NONE) {
-            mp->rx_coding_rate = rxCR;
+    int16_t statErr = lora.getLoRaPacketStatus(&rxCR, &hasCRC, nullptr, &snr, &rssi, nullptr, &detector);
+    if (statErr == RADIOLIB_ERR_NONE) {
+        if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
+            mp->rx_snr = meshtastic::NexusModule::altPseudoSnr(lora.getRSSI());
+        } else {
+            mp->rx_snr = snr;
         }
+        mp->rx_rssi = lround(rssi);
+        mp->has_rx_rssi = true;
+        mp->rx_coding_rate = rxCR;
+        lastRxDetector = detector;
+    } else {
+        if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
+            mp->rx_snr = meshtastic::NexusModule::altPseudoSnr(lora.getRSSI());
+        } else {
+            mp->rx_snr = lora.getSNR();
+        }
+        mp->rx_rssi = lround(lora.getRSSI());
+        mp->has_rx_rssi = true;
+        lastRxDetector = 0;
     }
 
     // TODO (Nexus-28005): re-populate rx_frequency_error once RadioLib exposes
@@ -791,6 +840,14 @@ template <typename T> void LR20x0Interface<T>::addReceiveMetadata(meshtastic_Mes
  */
 template <typename T> void LR20x0Interface<T>::configHardwareForSend()
 {
+#if MESHTASTIC_ENABLE_RNODE
+    if (getRawSendingType() == RAW_SEND_RNODE) {
+        lora.setSyncWord(0x12);
+        if (rnodeEngine.getSf() != this->sf) {
+            lora.setSpreadingFactor(rnodeEngine.getSf());
+        }
+    }
+#endif
     RadioLibInterface::configHardwareForSend();
 }
 

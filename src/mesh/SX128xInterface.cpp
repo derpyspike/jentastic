@@ -285,6 +285,32 @@ template <typename T> int16_t SX128xInterface<T>::programModemParams()
     return RADIOLIB_ERR_NONE;
 }
 
+template <typename T> int16_t SX128xInterface<T>::setOutputPowerLive(int8_t powerDb)
+{
+    limitPower(SX128X_MAX_POWER);
+    if (powerDb < -18)
+        powerDb = -18;
+    if (powerDb > SX128X_MAX_POWER)
+        powerDb = SX128X_MAX_POWER;
+    int16_t err = lora.setOutputPower(powerDb);
+    if (err == RADIOLIB_ERR_NONE) {
+        power = powerDb;
+    }
+    return err;
+}
+
+template <typename T> int16_t SX128xInterface<T>::setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr)
+{
+    int16_t err = lora.setSpreadingFactor(targetSf);
+    if (err != RADIOLIB_ERR_NONE)
+        return err;
+    sf = targetSf;
+    if (targetPwr != 0x7F) {
+        return setOutputPowerLive(targetPwr);
+    }
+    return RADIOLIB_ERR_NONE;
+}
+
 template <typename T> bool SX128xInterface<T>::reconfigure()
 {
     RadioLibInterface::reconfigure();

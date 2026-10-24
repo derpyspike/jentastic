@@ -30,6 +30,19 @@ static BLECharacteristic logRadio = BLECharacteristic(BLEUuid(LOGRADIO_UUID_16))
 static BLEDis bledis;             // DIS (Device Information Service) helper class instance
 static BLEBas blebas;             // BAS (Battery Service) helper class instance
 static int lastBatteryLevel = -1; // last value written to BAS, to skip redundant writes/notifies
+
+#if MESHTASTIC_ENABLE_RNODE_BLE
+#include "mesh/RNodeEngine.h"
+#include <services/BLEUart.h>
+static BLEUart rnodeBleUart;
+static void rnode_nrf52_ble_write(const uint8_t *data, size_t len)
+{
+    if (rnodeBleUart.notifyEnabled()) {
+        rnodeBleUart.write(data, len);
+        rnodeBleUart.flushTXD();
+    }
+}
+#endif
 #ifndef BLE_DFU_SECURE
 namespace
 {
@@ -129,6 +142,9 @@ void onConnect(uint16_t conn_handle)
     // Notify UI (or any other interested firmware components)
     meshtastic::BluetoothStatus newStatus(meshtastic::BluetoothStatus::ConnectionState::CONNECTED);
     bluetoothStatus->updateStatus(&newStatus);
+#if MESHTASTIC_ENABLE_RNODE_BLE
+    rnodeEngine.setBleConnected(true);
+#endif
 }
 /**
  * Callback invoked when a connection is dropped
@@ -148,6 +164,9 @@ void onDisconnect(uint16_t conn_handle, uint8_t reason)
     // Notify UI (or any other interested firmware components)
     meshtastic::BluetoothStatus newStatus(meshtastic::BluetoothStatus::ConnectionState::DISCONNECTED);
     bluetoothStatus->updateStatus(&newStatus);
+#if MESHTASTIC_ENABLE_RNODE_BLE
+    rnodeEngine.setBleConnected(false);
+#endif
 
 #if HAS_SCREEN
     // If a pairing prompt is active, make sure we dismiss it on disconnect/cancel/failure paths.
@@ -224,6 +243,11 @@ void startAdv(void)
     // Include Name
     // Bluefruit.Advertising.addName();
     Bluefruit.Advertising.addService(meshBleService);
+#if MESHTASTIC_ENABLE_RNODE_BLE
+    if (rnodeEngine.isBleEnabled()) {
+        Bluefruit.ScanResponse.addService(rnodeBleUart);
+    }
+#endif
     /* Start Advertising
      * - Enable auto advertising if disconnected
      * - Interval:  fast mode = 20 ms, slow mode = 417,5 ms
@@ -320,6 +344,23 @@ void setupMeshService(void)
     logRadio.setCccdWriteCallback(onCccd);
     logRadio.write32(0);
     logRadio.begin();
+
+#if MESHTASTIC_ENABLE_RNODE_BLE
+    if (rnodeEngine.isBleEnabled()) {
+        rnodeBleUart.begin();
+        rnodeBleUart.setRxCallback([](uint16_t conn_hdl) {
+            (void)conn_hdl;
+            while (rnodeBleUart.available()) {
+                uint8_t buf[64];
+                int n = rnodeBleUart.read(buf, sizeof(buf));
+                if (n > 0) {
+                    rnodeEngine.feedBytes(buf, n, RNODE_CLIENT_BLE);
+                }
+            }
+        });
+        rnodeEngine.registerBleWriteCallback(rnode_nrf52_ble_write);
+    }
+#endif
 }
 static uint32_t configuredPasskey;
 void NRF52Bluetooth::shutdown()

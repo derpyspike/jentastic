@@ -102,6 +102,18 @@ class Channels
     // Returns true if this channel's effective key matches USERPREFS_CHANNEL_0_PSK.
     bool isEventChannel(ChannelIndex chIndex);
 
+    /** True if the channel name starts with "MC:" and carries a 16- or 32-byte PSK. */
+    bool isJenCoreChannel(ChannelIndex chIndex);
+
+    /**
+     * Copy the effective 16- or 32-byte JenCore key into key; returns its byte length (0 if not an MC channel).
+     * A 32-byte key whose second half is all zeroes is normalised to 16 bytes.
+     */
+    size_t getJenCoreKey(ChannelIndex chIndex, uint8_t key[32]);
+
+    /** Seed default MC channels (MC:Public, MC:#test, MC:#bot) once on fresh install or update. */
+    bool seedJenCoreChannelsOnce();
+
     // Returns true if we can be reached via a channel with the default settings given a region and modem preset
     bool hasDefaultChannel();
 

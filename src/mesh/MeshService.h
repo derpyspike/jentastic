@@ -235,6 +235,14 @@ class MeshService
     int handleFromRadio(const meshtastic_MeshPacket *p);
 
   private:
+#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+    /// Encode p as a JenCore GRP_TXT and queue it on the radio. False if it could not be queued.
+    bool sendJenCoreGroupText(const meshtastic_MeshPacket *p);
+
+    /// Encode p as a JenCore TXT_MSG for the contact behind p->to and queue it on the radio. The real ACK, or its
+    /// timeout, reaches the client later. False if it could not be queued.
+    bool sendJenCoreDirectText(const meshtastic_MeshPacket *p);
+#endif
 #if HAS_GPS
     /// Called when our gps position has changed - updates nodedb and sends Location message out into the mesh
     /// returns 0 to allow further processing

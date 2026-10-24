@@ -1,5 +1,24 @@
 #include "RadioLibInterface.h"
+#include "ContentionStats.h"
 #include "modules/NexusModule.h"
+#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#include "FSCommon.h"
+#include "HardwareRNG.h"
+#include "JenCoreRepeater.h"
+#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+#include "JenCoreCompanion.h"
+#endif
+#include "NodeDB.h"
+#include "Router.h"
+#include "SafeFile.h"
+#include "gps/RTC.h"
+#endif
+#if MESHTASTIC_ENABLE_RNODE
+#include "RNodeEngine.h"
+#if MESHTASTIC_ENABLE_RNODE_TCP && HAS_WIFI
+#include "RNodeTcpServer.h"
+#endif
+#endif
 #include "MeshTypes.h"
 #include "NodeDB.h"
 #include "PowerMon.h"
@@ -97,7 +116,7 @@ bool RadioLibInterface::canSendImmediately()
     // We wait _if_ we are partially though receiving a packet (rather than just merely waiting for one).
     // To do otherwise would be doubly bad because not only would we drop the packet that was on the way in,
     // we almost certainly guarantee no one outside will like the packet we are sending.
-    bool busyTx = sendingPacket != NULL;
+    bool busyTx = isSending();
     bool busyRx = isReceiving && isActivelyReceiving();
 
     if (busyTx || busyRx) {
@@ -240,7 +259,7 @@ Initially implemented to protect T-Echo's capacitive touch button from spurious 
 */
 bool RadioLibInterface::isSending()
 {
-    return sendingPacket != NULL;
+    return sendingPacket != NULL || isRawSending();
 }
 
 /** Attempt to cancel a previously sent packet.  Returns true if a packet was found we could cancel */
@@ -266,7 +285,7 @@ bool RadioLibInterface::findInTxQueue(NodeNum from, PacketId id)
 void RadioLibInterface::updateNoiseFloor()
 {
     // Only sample from idle receive mode. TX/RX-critical paths must return to radio work quickly.
-    if (!isReceiving || sendingPacket != NULL || isActivelyReceiving() || isIRQPending()) {
+    if (!isReceiving || isSending() || isActivelyReceiving() || isIRQPending()) {
         return;
     }
 
@@ -414,6 +433,11 @@ void RadioLibInterface::onNotify(uint32_t notification)
         (void)RadioTxHooks::beforeTransmit(this, txQueue.getFront());
         startReceive();
         setTransmitDelay();
+#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+        // A JenCore frame never follows a transmission straight away: hold it back a few random slots.
+        jencoreRepeater.afterTransmit(slotTimeMsec);
+        wakeJenCoreRelay();
+#endif
         break;
     case ISR_RX:
         // PREAMBLE_DETECTED/HEADER_VALID/SYNC are routed to the edge-triggered DIO1
@@ -471,6 +495,9 @@ void RadioLibInterface::onNotify(uint32_t notification)
                     setTransmitDelay(); // the radio config moved, so re-run the delay and scan on it
                 } else {
                     if (isChannelActive()) { // check if there is currently a LoRa packet on the channel
+#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+                        meshtasticCadBusy++;
+#endif
                         if (!RadioTxHooks::holdsRadio(txp)) {
                             startReceive(); // try receiving this packet, afterwards we'll be trying to transmit again
                         }
@@ -587,12 +614,495 @@ bool RadioLibInterface::removePendingTXPacket(NodeNum from, PacketId id, uint32_
     return false;
 }
 
+bool RadioLibInterface::sendRawFrame(const uint8_t *bytes, size_t len)
+{
+    // Must not collide with the normal packet TX path or an in-flight raw frame. Listen-before-talk
+    // is the caller's job (see maybeSendJenCoreFrame), which leaves the radio in standby.
+    if (len == 0 || len > sizeof(rawTxBuf) || isSending()) {
+        LOG_WARN("sendRawFrame rejected (len=%u sending=%d)", (unsigned)len, isSending());
+        return false;
+    }
+    if (disabled || !config.lora.tx_enabled) {
+        LOG_WARN("sendRawFrame - tx disabled");
+        return false;
+    }
+
+    memcpy(rawTxBuf, bytes, len);
+    rawTxLen = len;
+
+    // Drive the radio into TX. startTransmit() arms the TX-done IRQ which
+    // handleTransmitInterrupt() will route to completeRawSend(). rawSending is set before
+    // configHardwareForSend() so drivers can pick the JenCore sync word for this frame.
+    rawSending = true;
+    enableInterrupt(isrTxLevel0);
+    configHardwareForSend();
+    int res = iface->startTransmit(rawTxBuf, rawTxLen);
+    if (res != RADIOLIB_ERR_NONE) {
+        LOG_ERROR("sendRawFrame startTransmit failed, error=%d", res);
+        rawSending = false;
+        rawTxLen = 0;
+        startReceive();
+        return false;
+    }
+    lastTxStart = millis();
+    return true;
+}
+
+bool RadioLibInterface::jencoreTxAllowed()
+{
+    if (disabled || !config.lora.tx_enabled)
+        return false;
+    // Same duty-cycle guard as Router::send: a foreign-protocol frame must not push us over the regional limit.
+    const float effectiveDutyCycle = getEffectiveDutyCycle();
+    return config.lora.override_duty_cycle || effectiveDutyCycle >= 100 || airTime->utilizationTXPercent() <= effectiveDutyCycle;
+}
+
+bool RadioLibInterface::queueJenCoreFrame(const uint8_t *bytes, size_t len)
+{
+#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+    if (!bytes || len == 0 || len > JenCoreRepeater::MAX_FRAME_LEN)
+        return false;
+
+    if (!jencoreTxAllowed()) {
+        LOG_WARN("JenCore TX refused: tx disabled or duty cycle exceeded");
+        return false;
+    }
+
+    // Our own text outranks every queued flood (it evicts the worst one when the queue is full) but never evicts
+    // another frame of ours (advert, discover reply) or routed traffic.
+    if (!jencoreRepeater.queueOwnFrame(bytes, len)) {
+        LOG_WARN("JenCore TX refused: the relay queue holds only own and routed frames");
+        return false;
+    }
+
+    jencoreCompanion.noteTransmitted(bytes, len);
+    jencoreCompanion.txSent++;
+    wakeJenCoreRelay();
+    return true;
+#else
+    (void)bytes;
+    (void)len;
+    return false;
+#endif
+}
+
+void RadioLibInterface::completeRawSend()
+{
+    rawSending = false;
+    uint32_t xmitMsec = getPacketTime(rawTxLen, false);
+    airTime->logAirtime(TX_LOG, xmitMsec);
+#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+    jencoreRepeater.txAirtimeMs += xmitMsec;
+#endif
+#if MESHTASTIC_ENABLE_RNODE
+    if (rawSendingType == RAW_SEND_RNODE) {
+        rnodeEngine.txPackets++;
+        rnodeEngine.txBytes += rawTxLen;
+    }
+#endif
+    rawSendingType = RAW_SEND_NONE;
+    // txGood feeds the Meshtastic num_packets_tx telemetry: JenCore frames are counted by jencoreRepeater/Companion.
+    rawTxLen = 0;
+}
+
+#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+static constexpr size_t JENCORE_SEED_LEN = 32;
+static constexpr uint32_t JENCORE_IDENTITY_LOAD_MS = 5 * 1000; // identity ready early: discovery needs it
+static constexpr uint32_t JENCORE_ADVERT_FIRST_MS = 60 * 1000; // first zero-hop ADVERT a minute after boot
+// A zero-hop advert every 2 minutes for direct neighbours (JenCore simple_repeater default); a flood advert for the whole
+// mesh a few minutes after boot, so the node shows up across repeaters without waiting, then every 12 hours. A flood is
+// re-sent by every node, so it must stay rare.
+static constexpr uint32_t JENCORE_LOCAL_ADVERT_INTERVAL_MS = 2 * 60 * 1000;
+static constexpr uint32_t JENCORE_FLOOD_ADVERT_FIRST_MS = 3 * 60 * 1000;
+static constexpr uint32_t JENCORE_FLOOD_ADVERT_INTERVAL_MS = 12UL * 60 * 60 * 1000;
+static constexpr uint32_t JENCORE_ADVERT_RETRY_MS = 60 * 1000;           // no identity / no valid time
+static constexpr uint32_t JENCORE_ADVERT_NUDGE_MS = 1000;                // radio busy: ask again
+static constexpr uint32_t JENCORE_SERVICE_MS = 5 * 1000;                 // longest wait between housekeeping steps
+static constexpr uint32_t JENCORE_CONTACTS_SAVE_MIN_MS = 10 * 60 * 1000; // flash wear: at most one save per 10 minutes
+static constexpr uint32_t JENCORE_TX_POLL_MS = 100;                      // a raw frame is on air: look again for a lost TX-done
+
+/** Runs RadioLibInterface::jencoreAdvertTick() on its own schedule. */
+class JenCoreAdvertThread : public concurrency::OSThread
+{
+  public:
+    explicit JenCoreAdvertThread(RadioLibInterface *radio) : OSThread("JenCoreAdvert", JENCORE_IDENTITY_LOAD_MS), radio(radio)
+    {
+    }
+
+  protected:
+    int32_t runOnce() override { return radio->jencoreServiceTick(); }
+
+  private:
+    RadioLibInterface *radio;
+};
+
+/**
+ * The repeater's JenCore identity seed, kept in flash so the node keeps the same JenCore key across reboots.
+ * Created from the hardware RNG on first use; never created from a weak source.
+ */
+static bool loadOrCreateJenCoreSeed(uint8_t seed[JENCORE_SEED_LEN], bool forceNew)
+{
+#ifdef FSCom
+    static const char *path = "/prefs/meshcore_identity.bin";
+    if (!forceNew) {
+        concurrency::LockGuard g(spiLock);
+        auto f = FSCom.open(path, FILE_O_READ);
+        if (f) {
+            bool ok = f.size() == JENCORE_SEED_LEN && f.read(seed, JENCORE_SEED_LEN) == JENCORE_SEED_LEN;
+            f.close();
+            if (ok)
+                return true;
+            LOG_WARN("JenCore identity: %s is corrupt, creating a new key", path);
+        }
+    }
+#endif
+    if (!HardwareRNG::fill(seed, JENCORE_SEED_LEN, true)) {
+        LOG_ERROR("JenCore identity: no hardware entropy, not creating a key");
+        return false;
+    }
+#ifdef FSCom
+    // SafeFile: atomic replace under spiLock. A bare FILE_O_WRITE appends on nRF52 LittleFS.
+    SafeFile out(path, true);
+    out.write(seed, JENCORE_SEED_LEN);
+    if (!out.close())
+        LOG_ERROR("JenCore identity: could not save %s, the key will change on reboot", path);
+#endif
+    LOG_INFO("JenCore identity created");
+    return true;
+}
+
+#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+static const char *jencoreContactsPath = "/prefs/meshcore_contacts.bin";
+
+static void loadJenCoreContacts()
+{
+#ifdef FSCom
+    uint8_t image[JenCoreCompanion::SAVED_IMAGE_MAX];
+    size_t n = 0;
+    {
+        concurrency::LockGuard g(spiLock);
+        auto f = FSCom.open(jencoreContactsPath, FILE_O_READ);
+        if (!f)
+            return;
+        n = f.size() <= sizeof(image) ? f.read(image, f.size()) : 0;
+        f.close();
+    }
+    const size_t loaded = jencoreCompanion.importContacts(image, n);
+    LOG_INFO("JenCore contacts: %u restored from flash", (unsigned)loaded);
+#endif
+}
+
+static void saveJenCoreContacts()
+{
+#ifdef FSCom
+    uint8_t image[JenCoreCompanion::SAVED_IMAGE_MAX];
+    const size_t n = jencoreCompanion.exportContacts(image, sizeof(image));
+    if (n == 0)
+        return;
+    SafeFile out(jencoreContactsPath, true); // atomic replace
+    out.write(image, n);
+    if (!out.close())
+        LOG_WARN("JenCore contacts: could not save %s", jencoreContactsPath);
+#endif
+}
+#endif
+
+size_t RadioLibInterface::formatContentionStats(char *buf, size_t len)
+{
+    ContentionStats s;
+    s.mtRxGood = rxGood;
+    s.mtRxBad = rxBad;
+    s.mtTxGood = txGood;
+    s.mtCadBusy = meshtasticCadBusy;
+    s.mtTxAirtimeMs = meshtasticTxAirtimeMs;
+    s.mtRxAirtimeMs = meshtasticRxAirtimeMs;
+    s.mcSeen = jencoreRepeater.rxSeen;
+    s.mcDup = jencoreRepeater.rxDup;
+    s.mcRelayed = jencoreRepeater.txRelayed;
+    s.mcDropped = jencoreRepeater.txDropped;
+    s.mcDeferChannel = jencoreRepeater.deferChannel;
+    s.mcDeferRadio = jencoreRepeater.deferRadio;
+    s.mcTxAirtimeMs = jencoreRepeater.txAirtimeMs;
+    s.mcRxAirtimeMs = jencoreRepeater.rxAirtimeMs;
+    s.channelUtilPercent = airTime->channelUtilizationPercent();
+    s.txUtilPercent = airTime->utilizationTXPercent();
+    return ::formatContentionStats(buf, len, s);
+}
+
+uint32_t RadioLibInterface::jencoreServiceTick()
+{
+    uint32_t next = jencoreAdvertTick();
+#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+    if (jencoreRepeater.hasIdentity() && !jencoreCompanion.hasIdentity()) {
+        jencoreCompanion.setIdentity(jencoreRepeater.getIdentitySeed(), jencoreRepeater.getIdentityPub());
+    }
+    if (jencoreCompanion.hasIdentity() && !jencoreContactsLoaded) {
+        jencoreContactsLoaded = true;
+        loadJenCoreContacts();
+        jencoreContactsFingerprint = jencoreCompanion.contactsFingerprint();
+        lastJenCoreContactsSaveMs = millis();
+    }
+
+    jencoreCompanion.service();
+
+    if (jencoreContactsLoaded && Throttle::hasElapsed(lastJenCoreContactsSaveMs, JENCORE_CONTACTS_SAVE_MIN_MS)) {
+        const uint32_t fingerprint = jencoreCompanion.contactsFingerprint();
+        if (fingerprint != jencoreContactsFingerprint) {
+            saveJenCoreContacts();
+            jencoreContactsFingerprint = fingerprint;
+            lastJenCoreContactsSaveMs = millis();
+        }
+    }
+#endif
+    return next < JENCORE_SERVICE_MS ? next : JENCORE_SERVICE_MS;
+}
+
+uint32_t RadioLibInterface::jencoreAdvertTick()
+{
+    if (!jencoreRepeater.hasIdentity()) {
+        uint8_t seed[JENCORE_SEED_LEN];
+        if (!loadOrCreateJenCoreSeed(seed, false))
+            return JENCORE_ADVERT_RETRY_MS;
+        // A key JenCore rejects (public key starting 0x00/0xFF, ~1 in 128) is replaced by a fresh one.
+        for (int attempt = 0; !jencoreRepeater.setIdentitySeed(seed); attempt++) {
+            if (attempt >= 8 || !loadOrCreateJenCoreSeed(seed, true))
+                return JENCORE_ADVERT_RETRY_MS;
+        }
+        const uint8_t *pub = jencoreRepeater.getIdentityPub();
+        LOG_INFO("JenCore identity ready, pub=%02x%02x%02x%02x...", pub[0], pub[1], pub[2], pub[3]);
+    }
+
+    // One of our frames is queued but not on air yet: nudge the relay thread until it goes. A nudge that finds
+    // the relay already scheduled changes nothing, so the next tick can repeat it.
+    if (jencoreRepeater.hasPendingOwnFrame()) {
+        wakeJenCoreRelay();
+        return JENCORE_ADVERT_NUDGE_MS;
+    }
+
+    const bool floodDue = Throttle::deadlinePassed(nextJenCoreFloodAdvertMs);
+    const bool localDue = Throttle::deadlinePassed(nextJenCoreLocalAdvertMs);
+    if (!floodDue && !localDue) {
+        const uint32_t now = millis();
+        const uint32_t toFlood = nextJenCoreFloodAdvertMs - now, toLocal = nextJenCoreLocalAdvertMs - now;
+        return toFlood < toLocal ? toFlood : toLocal;
+    }
+
+    // JenCore clients order adverts by timestamp, so it must be a real time - but any source will do.
+    const uint32_t now = getValidTime(RTCQualityDevice);
+    if (now == 0) {
+        LOG_INFO("JenCore ADVERT postponed: no valid time yet");
+        return JENCORE_ADVERT_RETRY_MS;
+    }
+
+    // A flood also reaches the direct neighbours, so it stands in for the local advert that is due with it.
+    // JenCore clients ignore an advert without a name (BaseChatMesh::onAdvertRecv).
+    char fallbackName[20];
+    const char *name = owner.long_name;
+    if (name[0] == 0) {
+        snprintf(fallbackName, sizeof(fallbackName), "Meshtastic-%04x", (unsigned)(nodeDB->getNodeNum() & 0xFFFF));
+        name = fallbackName;
+    }
+    uint8_t raw[JenCoreRepeater::MAX_FRAME_LEN];
+    // The Meshtastic role decides how JenCore sees us: a router is a repeater, anything else a companion to message.
+    jencoreRepeater.setNodeType(JenCoreRepeater::nodeTypeForRole(config.device.role));
+    size_t len = jencoreRepeater.buildAdvert(raw, sizeof(raw), name, now, floodDue);
+    if (len == 0 || !jencoreRepeater.queueOwnFrame(raw, len)) {
+        LOG_WARN("JenCore ADVERT could not be built or queued");
+        return JENCORE_ADVERT_RETRY_MS;
+    }
+    LOG_INFO("JenCore %s ADVERT queued (%u bytes, name=%s, ts=%u)", floodDue ? "flood" : "zero-hop", (unsigned)len, name,
+             (unsigned)now);
+    const uint32_t queuedAt = millis();
+    if (floodDue)
+        nextJenCoreFloodAdvertMs = queuedAt + JENCORE_FLOOD_ADVERT_INTERVAL_MS;
+    nextJenCoreLocalAdvertMs = queuedAt + JENCORE_LOCAL_ADVERT_INTERVAL_MS;
+    wakeJenCoreRelay();
+    return JENCORE_ADVERT_NUDGE_MS;
+}
+
+bool RadioLibInterface::isMeshtasticOnOurChannels(size_t length)
+{
+    // Meshtastic first: a frame that parses as JenCore may still be a Meshtastic packet between two
+    // other nodes. Only the trial decrypt can tell, so it runs on these ambiguous frames alone.
+    if (length <= sizeof(PacketHeader))
+        return false;
+    const PacketHeader &h = radioBuffer.header;
+    return decodesOnOurChannels(h.from, h.id, h.channel, radioBuffer.payload, length - sizeof(PacketHeader));
+}
+
+JenCoreRelayThread::JenCoreRelayThread(RadioLibInterface *radio) : OSThread("JenCoreRelay"), radio(radio)
+{
+    disable();
+}
+
+void JenCoreRelayThread::wakeIn(uint32_t ms)
+{
+    enabled = true;
+    setIntervalFromNow(ms);
+}
+
+int32_t JenCoreRelayThread::runOnce()
+{
+    return radio->jencoreRelayTick();
+}
+
+void RadioLibInterface::wakeJenCoreRelay()
+{
+    if (!jencoreRelayThread)
+        return;
+#if MESHTASTIC_ENABLE_RNODE
+    if (rnodeTxCount > 0) {
+        jencoreRelayThread->wakeIn(1);
+        return;
+    }
+#endif
+    if (!jencoreRepeater.hasPendingFrame())
+        return;
+    const uint32_t dueIn = jencoreRepeater.relayDueInMs();
+    // A frame that is already due is being retried on its own backoff: pulling that forward would defeat it.
+    if (dueIn == 0 && jencoreRelayThread->isArmed())
+        return;
+    jencoreRelayThread->wakeIn(dueIn + 1);
+}
+
+uint32_t RadioLibInterface::jencoreRelayTick()
+{
+    maybeSendJenCoreFrame();
+#if MESHTASTIC_ENABLE_RNODE
+    maybeSendRNodeFrame();
+#endif
+
+    if (!jencoreRepeater.hasPendingFrame()
+#if MESHTASTIC_ENABLE_RNODE
+        && rnodeTxCount == 0
+#endif
+    )
+        return jencoreRelayThread->disable();
+    // On air now: the TX-done event wakes us again; this only covers a TX-done that never comes.
+    if (isSending())
+        return JENCORE_TX_POLL_MS;
+    // Due but deferred (radio or channel busy): come back after a random backoff. Otherwise at its deadline.
+    return jencoreRepeater.isRelayDue() ? jencoreRepeater.busyBackoffMs(slotTimeMsec) : jencoreRepeater.relayDueInMs() + 1;
+}
+
+void RadioLibInterface::maybeSendJenCoreFrame()
+{
+    if (isSending() || !jencoreRepeater.hasPendingFrame() || !jencoreRepeater.isRelayDue()) {
+        return;
+    }
+    // A deferred frame is retried on a backoff; log the reason at most once a second.
+    static uint32_t lastDeferLogMs = 0;
+    const bool logDefer = !Throttle::isWithinTimespanMs(lastDeferLogMs, 1000);
+    // MeshBeacon moves the radio to another preset for its packet: a JenCore frame sent now would go out on it.
+    if (txQueue.getFront() && RadioTxHooks::holdsRadio(txQueue.getFront())) {
+        if (logDefer) {
+            LOG_DEBUG("JenCore TX deferred: radio held for a beacon");
+            lastDeferLogMs = millis();
+        }
+        return;
+    }
+    // A permanent refusal would otherwise retry the same frame forever.
+    if (!jencoreTxAllowed()) {
+        jencoreRepeater.clearPendingFrame();
+        jencoreRepeater.txDropped++;
+        return;
+    }
+    uint8_t frame[JenCoreRepeater::MAX_FRAME_LEN];
+    size_t len = jencoreRepeater.takePendingFrame(frame, sizeof(frame)); // checks an ADVERT's signature, radio listening
+    if (len == 0) {
+        return;
+    }
+    // Same listen-before-talk as the Meshtastic TX path. A busy radio or channel leaves the frame
+    // queued (takePendingFrame copies, not clears) for the next jencoreRelayTick().
+    const bool own = jencoreRepeater.pendingIsOwn();
+    if (!isReceiving || !canSendImmediately()) {
+        jencoreRepeater.deferRadio++;
+        if (logDefer) {
+            LOG_DEBUG("JenCore TX deferred: radio busy");
+            lastDeferLogMs = millis();
+        }
+        return;
+    }
+    if (isChannelActive()) {
+        jencoreRepeater.deferChannel++;
+        if (logDefer) {
+            LOG_DEBUG("JenCore TX deferred: channel busy");
+            lastDeferLogMs = millis();
+        }
+        startReceive();
+        return;
+    }
+    // The scan can dispatch a pending radio event (setStandby) that starts a Meshtastic TX: leave that one alone.
+    if (isSending())
+        return;
+    rawSendingType = RAW_SEND_JENCORE;
+    if (!sendRawFrame(frame, len)) {
+        rawSendingType = RAW_SEND_NONE;
+        startReceive(); // the channel scan left the radio in standby
+        return;
+    }
+    LOG_INFO("JenCore TX %s: len=%u header=0x%02x path_len=0x%02x", own ? "own" : "relay", (unsigned)len, frame[0], frame[1]);
+    if (!own)
+        jencoreRepeater.markRelayed();
+    jencoreRepeater.clearPendingFrame();
+}
+
+#if MESHTASTIC_ENABLE_RNODE
+bool RadioLibInterface::queueRNodeFrame(const uint8_t *bytes, size_t len)
+{
+    if (!bytes || len == 0 || len > MAX_LORA_PAYLOAD_LEN)
+        return false;
+    if (disabled || !config.lora.tx_enabled)
+        return false;
+    if (rnodeTxCount >= RNODE_TX_QUEUE_SIZE)
+        return false;
+
+    memcpy(rnodeTxQueue[rnodeTxHead].buf, bytes, len);
+    rnodeTxQueue[rnodeTxHead].len = len;
+    rnodeTxHead = (rnodeTxHead + 1) % RNODE_TX_QUEUE_SIZE;
+    rnodeTxCount++;
+
+    wakeJenCoreRelay();
+    return true;
+}
+
+void RadioLibInterface::maybeSendRNodeFrame()
+{
+    if (rnodeTxCount == 0 || isSending() || !isReceiving || !canSendImmediately())
+        return;
+    if (isChannelActive()) {
+        startReceive();
+        return;
+    }
+
+    RNodeTxEntry &entry = rnodeTxQueue[rnodeTxTail];
+    rawSendingType = RAW_SEND_RNODE;
+    if (sendRawFrame(entry.buf, entry.len)) {
+        LOG_INFO("RNode TX: len=%u", (unsigned)entry.len);
+        rnodeTxTail = (rnodeTxTail + 1) % RNODE_TX_QUEUE_SIZE;
+        rnodeTxCount--;
+    } else {
+        rawSendingType = RAW_SEND_NONE;
+        startReceive();
+    }
+}
+#endif
+#else
+void RadioLibInterface::maybeSendJenCoreFrame() {}
+size_t RadioLibInterface::formatContentionStats(char *, size_t)
+{
+    return 0;
+}
+#endif
+
 void RadioLibInterface::handleTransmitInterrupt()
 {
     // This can be null if we forced the device to enter standby mode.  In that case
     // ignore the transmit interrupt
     if (sendingPacket)
         completeSending();
+    else if (isRawSending())
+        completeRawSend();
     powerMon->clearState(meshtastic_PowerMon_State_Lora_TXOn); // But our transmitter is definitely off now
 }
 
@@ -672,6 +1182,38 @@ void RadioLibInterface::handleReceiveInterrupt()
         airTime->logAirtime(RX_ALL_LOG, rxMsec);
 
     } else {
+#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+        // Experimental JenCore interop: a JenCore frame has no Meshtastic PacketHeader, so it
+        // must be intercepted before the PacketHeader interpretation below. When enabled, such
+        // frames are logged and (optionally) flood-relayed, and never enter the Meshtastic router.
+        JenCoreRepeater::FrameInfo mcInfo;
+        if (jencoreRepeater.looksLikeJenCoreFrame((const uint8_t *)&radioBuffer, length, nodeDB->getNodeNum(), &mcInfo) &&
+            !isMeshtasticOnOurChannels(length)) {
+            LOG_INFO("JenCore frame: len=%u route=%u type=0x%02x path=%u/%u payload=%u snr=%g rssi=%d", (unsigned)length,
+                     mcInfo.route_type, mcInfo.payload_type, mcInfo.path_hash_count, mcInfo.path_hash_size, mcInfo.payload_len,
+                     iface->getSNR(), (int)lround(iface->getRSSI()));
+#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+            jencoreCompanion.handleFrame((const uint8_t *)&radioBuffer, length, iface->getSNR(),
+                                          (int32_t)lround(iface->getRSSI()));
+#endif
+            jencoreRepeater.handleReceivedFrame((const uint8_t *)&radioBuffer, length, iface->getSNR(),
+                                                 getPacketTime(length, false));
+            wakeJenCoreRelay(); // when the adaptive relay delay elapses
+            airTime->logAirtime(RX_LOG, rxMsec);
+            jencoreRepeater.rxAirtimeMs += rxMsec;
+            return; // do not deliver to the Meshtastic router
+        }
+        meshtasticRxAirtimeMs += rxMsec;
+#endif
+#if MESHTASTIC_ENABLE_RNODE
+        if (rnodeEngine.getMode() != RNODE_MODE_OFF) {
+            if (rnodeEngine.handleReceivedRadioPacket((const uint8_t *)&radioBuffer, length, iface->getSNR(),
+                                                      (int32_t)lround(iface->getRSSI()))) {
+                airTime->logAirtime(RX_LOG, rxMsec);
+                return; // Handled by Reticulum RNode engine, do not deliver to Meshtastic router
+            }
+        }
+#endif
         // Skip the 4 headers that are at the beginning of the rxBuf
         int32_t payloadLen = length - sizeof(PacketHeader);
 
@@ -740,6 +1282,21 @@ void RadioLibInterface::startReceive()
     rxOffline = false;
     chipRecoveryFailures = 0;
     powerMon->setState(meshtastic_PowerMon_State_Lora_RXOn);
+#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+    if (!jencoreAdvertThread) {
+        // The zero-hop advert for direct neighbours goes out shortly after boot, the first flood a few minutes later.
+        nextJenCoreFloodAdvertMs = millis() + JENCORE_FLOOD_ADVERT_FIRST_MS;
+        nextJenCoreLocalAdvertMs = millis() + JENCORE_ADVERT_FIRST_MS;
+        jencoreAdvertThread = new JenCoreAdvertThread(this);
+        jencoreRelayThread = new JenCoreRelayThread(this);
+    }
+#endif
+#if MESHTASTIC_ENABLE_RNODE_TCP && HAS_WIFI
+    if (!rnodeTcpServer) {
+        rnodeTcpServer = new RNodeTcpServer();
+        rnodeTcpServer->init();
+    }
+#endif
 }
 
 void RadioLibInterface::pollMissedIrqs()
@@ -748,7 +1305,7 @@ void RadioLibInterface::pollMissedIrqs()
     if (isReceiving) {
         checkRxDoneIrqFlag();
     }
-    if (sendingPacket) {
+    if (isSending()) { // raw (JenCore) frames too, or a missed TX_DONE latches rawSending forever
         checkTxDoneIrqFlag();
     }
 }

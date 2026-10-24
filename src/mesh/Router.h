@@ -313,6 +313,12 @@ extern Router *router;
 // FIXME, move this someplace better
 PacketId generatePacketId();
 
+/**
+ * Try decrypting the payload against our active channels with this from/id/channelHash.
+ * Returns true if the payload decrypts and decodes to a known Meshtastic PortNum.
+ */
+bool decodesOnOurChannels(NodeNum from, PacketId id, ChannelHash channelHash, const uint8_t *encrypted, size_t len);
+
 #define BITFIELD_WANT_RESPONSE_SHIFT 1
 #define BITFIELD_OK_TO_MQTT_SHIFT 0
 #define BITFIELD_WANT_RESPONSE_MASK (1 << BITFIELD_WANT_RESPONSE_SHIFT)

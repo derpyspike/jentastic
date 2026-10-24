@@ -4,6 +4,9 @@
 #include "error.h"
 #include "mesh/NodeDB.h"
 #include "modules/NexusModule.h" // Nexus SETFSK: altModem state + pseudo-SNR helper
+#if MESHTASTIC_ENABLE_RNODE
+#include "mesh/RNodeEngine.h"
+#endif
 #ifdef ARCH_PORTDUINO
 #include "PortduinoGlue.h"
 #endif
@@ -419,6 +422,36 @@ template <typename T> int16_t SX126xInterface<T>::programModemParams()
     return RADIOLIB_ERR_NONE;
 }
 
+template <typename T> int16_t SX126xInterface<T>::setOutputPowerLive(int8_t powerDb)
+{
+    limitPower(SX126X_MAX_POWER);
+    if (powerDb < -9)
+        powerDb = -9;
+    if (powerDb > SX126X_MAX_POWER)
+        powerDb = SX126X_MAX_POWER;
+#ifdef SX126X_NO_POWER_OPTIMIZATION_TABLE
+    int16_t err = lora.setOutputPower(powerDb, false);
+#else
+    int16_t err = lora.setOutputPower(powerDb);
+#endif
+    if (err == RADIOLIB_ERR_NONE) {
+        power = powerDb;
+    }
+    return err;
+}
+
+template <typename T> int16_t SX126xInterface<T>::setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr)
+{
+    int16_t err = lora.setSpreadingFactor(targetSf);
+    if (err != RADIOLIB_ERR_NONE)
+        return err;
+    sf = targetSf;
+    if (targetPwr != 0x7F) {
+        return setOutputPowerLive(targetPwr);
+    }
+    return RADIOLIB_ERR_NONE;
+}
+
 template <typename T> bool SX126xInterface<T>::reconfigure()
 {
     RadioLibInterface::reconfigure();
@@ -580,9 +613,46 @@ template <typename T> void SX126xInterface<T>::addReceiveMetadata(meshtastic_Mes
  */
 template <typename T> void SX126xInterface<T>::configHardwareForSend()
 {
+#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
+    // Use the packet's own sync word: JenCore frames go out with 0x12, Meshtastic with our normal sync word (0x2B or override).
+    int err = lora.setSyncWord(isRawSending() ? jencoreSyncWord : syncWord);
+    if (err != RADIOLIB_ERR_NONE)
+        LOG_ERROR("SX126X setSyncWord %s%d", radioLibErr, err);
+#endif
+#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+    // JenCore listens for a longer preamble at low SF (RadioLibWrapper::preambleLengthForSF: 32 at SF<=8, else 16).
+    // Ours is restored in startReceive().
+    const uint16_t jencorePreamble = sf <= 8 ? 32 : 16;
+    if (isRawSending() && jencorePreamble != preambleLength) {
+        if (lora.setPreambleLength(jencorePreamble) == RADIOLIB_ERR_NONE)
+            jencorePreambleSet = true;
+    }
+#endif
+#if MESHTASTIC_ENABLE_RNODE
+    if (getRawSendingType() == RAW_SEND_RNODE) {
+        lora.setSyncWord(0x12);
+        if (rnodeEngine.getSf() != this->sf) {
+            lora.setSpreadingFactor(rnodeEngine.getSf());
+        }
+    }
+#endif
     setTransmitEnable(true);
     RadioLibInterface::configHardwareForSend();
 }
+
+#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
+template <typename T> void SX126xInterface<T>::setSyncWordRegister(uint16_t registerValue)
+{
+    // RadioLib packs (syncWord, controlBits) nibble-wise into the register: MSB = sw.hi|cb.hi, LSB = sw.lo|cb.lo
+    const uint8_t msb = registerValue >> 8;
+    const uint8_t lsb = registerValue & 0xFF;
+    const uint8_t sw = (msb & 0xF0) | (lsb >> 4);
+    const uint8_t controlBits = ((msb & 0x0F) << 4) | (lsb & 0x0F);
+    int err = lora.setSyncWord(sw, controlBits);
+    if (err != RADIOLIB_ERR_NONE)
+        LOG_ERROR("SX126X setSyncWord 0x%04x %s%d", registerValue, radioLibErr, err);
+}
+#endif
 
 // For power draw measurements, helpful to force radio to stay sleeping
 // #define SLEEP_ONLY
@@ -594,6 +664,26 @@ template <typename T> void SX126xInterface<T>::startReceive()
 #else
 
     setTransmitEnable(false);
+
+#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
+    if (this->hybridSyncEnabled) {
+        setSyncWordRegister(MESHTASTIC_JENCORE_RX_SYNCWORD);
+    } else {
+        lora.setSyncWord(this->syncWord);
+    }
+#endif
+#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+    // Back to our preamble after a JenCore frame: the RX duty cycle below is sized from it, and Meshtastic TX uses it.
+    if (jencorePreambleSet) {
+        lora.setPreambleLength(preambleLength);
+        jencorePreambleSet = false;
+    }
+#endif
+#if MESHTASTIC_ENABLE_RNODE
+    if (rnodeEngine.getSf() != this->sf) {
+        lora.setSpreadingFactor(this->sf);
+    }
+#endif
 
 #ifdef ARCH_PORTDUINO_WASM
     const char *rxMethod = "startReceive";

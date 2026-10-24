@@ -71,6 +71,9 @@ class RF95Interface : public RadioLibInterface
 
     virtual void setStandby() override;
 
+    virtual int16_t setOutputPowerLive(int8_t powerDb) override;
+    virtual int16_t setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr = 0x7F) override;
+
     /**
      *  We override to turn on transmitter power as needed.
      */

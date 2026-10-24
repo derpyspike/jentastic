@@ -364,6 +364,28 @@ print("Using flags:")
 for flag in flags:
     print(flag)
 
+# JenCore / RNode master gates: show their effective state in every build log
+# (Jenny 2026-10-24). The real -D flags come from a variant's build_flags,
+# PLATFORMIO_BUILD_FLAGS, or ./build-nexus.sh --jencore/--rnode; fall back to
+# the configuration.h #ifndef defaults (both OFF since 2026-10-24) when no
+# environment defines them. Print-only - compile flags come from those sources,
+# not from this block.
+def _nexus_gate_state(name: str) -> str:
+    for src in (projenv, env):
+        for f in src.get("BUILD_FLAGS", []) or []:
+            m = re.search(rf"-D\s*{name}=(\S+)", str(f))
+            if m:
+                return m.group(1)
+        for d in src.get("CPPDEFINES", []) or []:
+            if isinstance(d, (list, tuple)) and len(d) == 2 and d[0] == name:
+                return str(d[1]).strip('"')
+            if isinstance(d, str) and d.startswith(name + "="):
+                return d.split("=", 1)[1]
+    return "0"
+
+print("-DNEXUS_ENABLE_JENCORE=" + _nexus_gate_state("NEXUS_ENABLE_JENCORE"))
+print("-DNEXUS_ENABLE_RNODE=" + _nexus_gate_state("NEXUS_ENABLE_RNODE"))
+
 projenv.Append(
     CCFLAGS=flags,
 )

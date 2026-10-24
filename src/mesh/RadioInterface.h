@@ -177,6 +177,45 @@ class RadioInterface
      */
     virtual ErrorCode send(meshtastic_MeshPacket *p) = 0;
 
+    /**
+     * Transmit a raw LoRa frame without any Meshtastic PacketHeader framing. Used by the
+     * experimental JenCore relay to re-broadcast foreign-protocol frames byte-for-byte.
+     * Implementations must own the buffer until TX completes (copy it). Returns false if the
+     * radio is not idle or the frame could not be queued.
+     */
+    virtual bool sendRawFrame(const uint8_t *bytes, size_t len) { return false; }
+
+    /**
+     * Queue a raw JenCore frame for transmission through the radio's listen-before-talk path.
+     * Unlike sendRawFrame(), this may defer until the channel is idle. Used by the JenCore
+     * companion for GRP_TXT. The frame is copied; returns false if it could not be queued.
+     */
+    virtual bool queueJenCoreFrame(const uint8_t *bytes, size_t len)
+    {
+        (void)bytes;
+        (void)len;
+        return false;
+    }
+
+    /**
+     * Queue a raw Reticulum RNode frame for transmission through the radio's listen-before-talk path.
+     * The frame is copied; returns false if it could not be queued.
+     */
+    virtual bool queueRNodeFrame(const uint8_t *bytes, size_t len)
+    {
+        (void)bytes;
+        (void)len;
+        return false;
+    }
+
+    /** Contention measurements of both protocols as one short text line; returns its length, 0 if this radio keeps none. */
+    virtual size_t formatContentionStats(char *buf, size_t len)
+    {
+        (void)buf;
+        (void)len;
+        return 0;
+    }
+
     /** Return TX queue status */
     [[nodiscard]] virtual meshtastic_QueueStatus getQueueStatus()
     {
@@ -267,6 +306,26 @@ class RadioInterface
     [[nodiscard]] uint32_t getPreambleTimeMsec() { return preambleTimeMsec; }
     [[nodiscard]] uint32_t getSlotTimeMsec() { return slotTimeMsec; }
     [[nodiscard]] int8_t getPower() { return power; }
+
+    /**
+     * Nexus (2.8.105): Live per-packet TX power control. Changes output power
+     * without touching channel PLL frequency or receiver state.
+     * Returns RADIOLIB_ERR_NONE (0) on success.
+     */
+    virtual int16_t setOutputPowerLive(int8_t powerDb) { return -1; }
+
+    /**
+     * Nexus (2.8.105): Fast-path Spreading Factor and TX power switch on the current carrier.
+     * Used when presets share the same frequency, BW, and CR (e.g. SFNarrow SF7 <-> NarrowPlus SF6).
+     * Returns RADIOLIB_ERR_NONE (0) on success.
+     */
+    virtual int16_t setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr = 0x7F) { return -1; }
+
+    /**
+     * Nexus (2.8.105): Returns the Spreading Factor of the last received packet.
+     * On multi-SF hardware (LR2021), reports the actual detector SF that received the packet.
+     */
+    [[nodiscard]] virtual uint8_t getLastRxSF() { return sf; }
 
     /**
      * Nexus-28002 (2026-08-21): restored runtime TCXO/XTAL detection from Nexus-269.

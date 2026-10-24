@@ -86,6 +86,9 @@ template <class T> class SX126xInterface : public RadioLibInterface
 
     virtual void setStandby() override;
 
+    virtual int16_t setOutputPowerLive(int8_t powerDb) override;
+    virtual int16_t setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr = 0x7F) override;
+
     uint32_t getPacketTime(uint32_t pl, bool received) override { return computePacketTime(lora, pl, received); }
 
   private:
@@ -112,5 +115,14 @@ template <class T> class SX126xInterface : public RadioLibInterface
 
     /** Recover a chip that lost its runtime state: hardware-reset via begin() and reprogram */
     bool recoverChipStateLoss() override { return reinitChip() && programModemParams() == RADIOLIB_ERR_NONE; }
+
+#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
+    /** Write a raw 16-bit value into the LoRa sync word register (e.g. 0x24B4 for Meshtastic's 0x2B). */
+    void setSyncWordRegister(uint16_t registerValue);
+#endif
+#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+    /** The chip holds JenCore's preamble length for a raw frame; startReceive() puts ours back. */
+    bool jencorePreambleSet = false;
+#endif
 };
 #endif

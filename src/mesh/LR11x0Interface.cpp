@@ -441,6 +441,32 @@ template <typename T> int16_t LR11x0Interface<T>::programModemParams()
     return RADIOLIB_ERR_NONE;
 }
 
+template <typename T> int16_t LR11x0Interface<T>::setOutputPowerLive(int8_t powerDb)
+{
+    int8_t maxPwr = (config.lora.region == meshtastic_Config_LoRaConfig_RegionCode_LORA_24) ? LR1120_MAX_POWER : LR1110_MAX_POWER;
+    if (powerDb < -9)
+        powerDb = -9;
+    if (powerDb > maxPwr)
+        powerDb = maxPwr;
+    int16_t err = lora.setOutputPower(powerDb);
+    if (err == RADIOLIB_ERR_NONE) {
+        power = powerDb;
+    }
+    return err;
+}
+
+template <typename T> int16_t LR11x0Interface<T>::setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr)
+{
+    int16_t err = lora.setSpreadingFactor(targetSf);
+    if (err != RADIOLIB_ERR_NONE)
+        return err;
+    sf = targetSf;
+    if (targetPwr != 0x7F) {
+        return setOutputPowerLive(targetPwr);
+    }
+    return RADIOLIB_ERR_NONE;
+}
+
 template <typename T> bool LR11x0Interface<T>::reinitChip()
 {
     // Clamp here, not just in programModemParams(): applyModemConfig() resets `power` to the raw

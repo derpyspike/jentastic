@@ -111,6 +111,123 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define MESHTASTIC_ENABLE_FRAME_INJECTION 0
 #endif
 
+// ===== JenCore master gate (Jenny 2026-10-23) =====
+// NEXUS_ENABLE_JENCORE compiles the whole JenCore bridge subsystem
+// (sniffer, relay, companion, hybrid sync) in (=1) or out (=0).
+// DEFAULT OFF since 2026-10-24: enable per variant (-DNEXUS_ENABLE_JENCORE=1
+// in its build_flags), at build time (PLATFORMIO_BUILD_FLAGS), or via
+// ./build-nexus.sh --jencore. The master wins over any per-feature -D.
+#ifndef NEXUS_ENABLE_JENCORE
+#define NEXUS_ENABLE_JENCORE 0
+#endif
+
+#if !NEXUS_ENABLE_JENCORE
+#undef MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#define MESHTASTIC_ENABLE_JENCORE_SNIFFER 0
+#undef MESHTASTIC_ENABLE_JENCORE_RELAY
+#define MESHTASTIC_ENABLE_JENCORE_RELAY 0
+#undef MESHTASTIC_ENABLE_JENCORE_COMPANION
+#define MESHTASTIC_ENABLE_JENCORE_COMPANION 0
+#undef MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
+#define MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC 0
+#endif
+
+// Experimental: sniff LoRa frames from the JenCore protocol (meshcore-dev/JenCore) on the same
+// frequency/SF, without passing them into the Meshtastic routing pipeline. On by default; -D...=0 opts out.
+#ifndef MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#define MESHTASTIC_ENABLE_JENCORE_SNIFFER 1
+#endif
+
+// Experimental: also re-broadcast JenCore flood frames (transparent relay, no decryption) so a
+// Meshtastic router node can extend a JenCore mesh sharing the same frequency and spreading factor.
+// Implies the sniffer. On by default; -D...=0 opts out.
+#ifndef MESHTASTIC_ENABLE_JENCORE_RELAY
+#define MESHTASTIC_ENABLE_JENCORE_RELAY 1
+#endif
+
+#if MESHTASTIC_ENABLE_JENCORE_RELAY && !MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#error "MESHTASTIC_ENABLE_JENCORE_RELAY requires MESHTASTIC_ENABLE_JENCORE_SNIFFER"
+#endif
+
+// Experimental: expose JenCore group text channels to the Meshtastic client. Channels named
+// "MC:<name>" are seeded as secondaries on a fresh install; text sent on one is encrypted as a
+// JenCore GRP_TXT flood, and GRP_TXT frames we can decrypt are delivered to the phone as if sent
+// by a "JenCore" node. Requires the sniffer (it shares the JenCore repeater's raw TX path).
+#ifndef MESHTASTIC_ENABLE_JENCORE_COMPANION
+#define MESHTASTIC_ENABLE_JENCORE_COMPANION 1
+#endif
+
+#if MESHTASTIC_ENABLE_JENCORE_COMPANION && !MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#error "MESHTASTIC_ENABLE_JENCORE_COMPANION requires MESHTASTIC_ENABLE_JENCORE_SNIFFER"
+#endif
+
+// Experimental, SX126x only: receive with a hybrid sync word so one radio hears both Meshtastic (0x2B,
+// register 0x24B4) and JenCore (0x12, register 0x1424) frames, and transmit each protocol with its own
+// sync word. Unverified on air: measure reception of both networks before relying on it. On by default; -D...=0 opts out.
+#ifndef MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
+#define MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC 1
+#endif
+
+// Raw SX126x sync word register value used in RX when the hybrid sync word is enabled.
+// 0x14B4 (JenCore's first sync nibble, Meshtastic's second) received both networks on a ThinkNode M1
+// (SX1262) against SX1262 senders; the mirror candidate 0x2424 received Meshtastic only.
+#ifndef MESHTASTIC_JENCORE_RX_SYNCWORD
+#define MESHTASTIC_JENCORE_RX_SYNCWORD 0x14B4
+#endif
+
+// Debug only: log every preamble/header detection and every received frame's leading bytes, so a
+// JenCore frame is visible even when it fails the sniffer's header check. Never enable in a release.
+#ifndef MESHTASTIC_JENCORE_RX_DEBUG
+#define MESHTASTIC_JENCORE_RX_DEBUG 0
+#endif
+
+#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC && !MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#error "MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC requires MESHTASTIC_ENABLE_JENCORE_SNIFFER"
+#endif
+
+// ===== Reticulum RNode master gate (Jenny & Jirachi 2026-10-23) =====
+// NEXUS_ENABLE_RNODE compiles the entire Reticulum RNode subsystem
+// (engine, KISS framing, TCP server on 7633, NUS BLE persona) in (=1) or
+// out (=0). DEFAULT OFF since 2026-10-24: enable per variant
+// (-DNEXUS_ENABLE_RNODE=1 in its build_flags), at build time
+// (PLATFORMIO_BUILD_FLAGS), or via ./build-nexus.sh --rnode.
+#ifndef NEXUS_ENABLE_RNODE
+#define NEXUS_ENABLE_RNODE 0
+#endif
+
+#if !NEXUS_ENABLE_RNODE
+#undef MESHTASTIC_ENABLE_RNODE
+#define MESHTASTIC_ENABLE_RNODE 0
+#undef MESHTASTIC_ENABLE_RNODE_TCP
+#define MESHTASTIC_ENABLE_RNODE_TCP 0
+#undef MESHTASTIC_ENABLE_RNODE_BLE
+#define MESHTASTIC_ENABLE_RNODE_BLE 0
+#else
+#ifndef MESHTASTIC_ENABLE_RNODE
+#define MESHTASTIC_ENABLE_RNODE 1
+#endif
+#ifndef MESHTASTIC_ENABLE_RNODE_TCP
+#if HAS_WIFI
+#define MESHTASTIC_ENABLE_RNODE_TCP 1
+#else
+#define MESHTASTIC_ENABLE_RNODE_TCP 0
+#endif
+#endif
+#ifndef MESHTASTIC_ENABLE_RNODE_BLE
+#if HAS_BLUETOOTH || HAS_BLE
+#define MESHTASTIC_ENABLE_RNODE_BLE 1
+#else
+#define MESHTASTIC_ENABLE_RNODE_BLE 0
+#endif
+#endif
+#endif
+
+// Default RNode TCP KISS server port
+#ifndef RNODE_DEFAULT_TCP_PORT
+#define RNODE_DEFAULT_TCP_PORT 7633
+#endif
+
+
 /// Convert a preprocessor name into a quoted string
 #define xstr(s) ystr(s)
 #define ystr(s) #s
