@@ -79,6 +79,9 @@ template <class T> class SX128xInterface : public RadioLibInterface
 
     virtual void setStandby() override;
 
+    virtual int16_t setOutputPowerLive(int8_t powerDb) override;
+    virtual int16_t setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr = 0x7F) override;
+
     uint32_t getPacketTime(uint32_t pl, bool received) override { return computePacketTime(lora, pl, received); }
 
     bool readRxHeaderInfo(uint8_t &cr, bool &hasCRC) override

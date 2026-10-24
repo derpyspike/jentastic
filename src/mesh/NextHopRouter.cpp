@@ -291,6 +291,11 @@ bool NextHopRouter::perhapsRebroadcast(const meshtastic_MeshPacket *p)
                     meshtastic_MeshPacket *tosend = packetPool.allocCopy(*p); // keep a copy because we will be sending it
                     if (!tosend)
                         return true;
+#if HAS_NEXUS
+                    if (meshtastic::nexusModule) {
+                        meshtastic::nexusModule->onRebroadcastPacket(p, tosend);
+                    }
+#endif
                     LOG_INFO("Rebroadcast msg from %x", p->relay_node);
 
                     // If exhausting hops, force hop_limit = 0 regardless of other logic

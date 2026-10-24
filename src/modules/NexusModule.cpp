@@ -8,6 +8,7 @@
 //
 
 #include "modules/NexusModule.h"
+#include "modules/NexusTxHook.h"
 
 /*
  * Nexus module implementation.
@@ -21,9 +22,11 @@
 #include "Channels.h"
 #include "MeshService.h"
 #include "NodeDB.h"
+#include "Power.h"
 #include "PowerFSM.h"
 #include "RTC.h"
 #include "SPILock.h"
+#include "sleep.h"
 #include "input/InputBroker.h"
 #include "meshUtils.h"
 #include <FSCommon.h>
@@ -61,6 +64,12 @@
 
 #if !MESHTASTIC_EXCLUDE_MQTT
 #include "mqtt/MQTT.h"
+#endif
+
+#if defined(ARCH_ESP32)
+RTC_DATA_ATTR static bool rtc_nexus_hibernating = false;
+#else
+static bool rtc_nexus_hibernating = false;
 #endif
 
 #if !MESHTASTIC_EXCLUDE_GPS
@@ -360,6 +369,10 @@ NexusModule::NexusModule()
 
 void NexusModule::setup() {
     MeshModule::setup();
+    is_hibernating = rtc_nexus_hibernating;
+    if (!nexusTxHook) {
+        nexusTxHook = new NexusTxHook();
+    }
 
 #ifdef STATION_G3
     // Nexus-28005 (2026-09-15): /nexus G3 boot-detect + vault apply.
@@ -3120,12 +3133,262 @@ int32_t NexusModule::runOnce() {
         setIntervalFromNow(100);
     }
 
+    // 9. Voltage Threshold Automation Engine (v68)
+    if (now - last_volt_check_ms >= 15000) {
+        last_volt_check_ms = now;
+        runVoltageAutomations();
+    }
+
     if (noise_sampling_active || freqscan_active)
         return 50;
     if (netscan_active || clientscan_active || pendingReply.active || pendingLoRaConfig || macro_running_cmd[0] || paging_ptr ||
         pagingWindow.hasMore())
         return 100;
     return 1000; // Default idle sleep
+}
+
+void NexusModule::setHibernating(bool hib)
+{
+    is_hibernating = hib;
+#if defined(ARCH_ESP32)
+    rtc_nexus_hibernating = hib;
+#endif
+}
+
+uint16_t NexusModule::getVoltageReadingMv(uint8_t channel)
+{
+    if (channel == 0) {
+        uint16_t v = powerStatus ? powerStatus->getBatteryVoltageMv() : 0;
+#if HAS_TELEMETRY && !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR && __has_include(<INA3221.h>)
+        if (v == 0 && ina3221Sensor.hasSensor()) {
+            int16_t raw = ina3221Sensor.getRawBusVoltage(0);
+            if (raw > 0) v = (uint16_t)(raw * 8);
+        }
+#endif
+        return v;
+    }
+#if HAS_TELEMETRY && !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR && __has_include(<INA3221.h>)
+    if (ina3221Sensor.hasSensor() && channel <= 2) {
+        int16_t raw = ina3221Sensor.getRawBusVoltage(channel);
+        if (raw > 0) return (uint16_t)(raw * 8);
+    }
+#endif
+    return 0;
+}
+
+void NexusModule::runVoltageAutomations()
+{
+    bool any_active = false;
+    for (int i = 0; i < 4; i++) {
+        if (volt_rules[i].action != NEXUS_VOLT_ACT_NONE && volt_rules[i].mv > 0) {
+            any_active = true;
+            break;
+        }
+    }
+    if (!any_active && !is_hibernating) return;
+
+    for (int i = 0; i < 4; i++) {
+        NexusVoltRule &rule = volt_rules[i];
+        if (rule.action == NEXUS_VOLT_ACT_NONE || rule.mv == 0) continue;
+
+        uint16_t cur_mv = getVoltageReadingMv(rule.channel);
+        if (cur_mv == 0) continue;
+
+        bool match = false;
+        if (rule.direction == NEXUS_VOLT_DIR_HIGH) {
+            match = (cur_mv >= rule.mv);
+        } else {
+            match = (cur_mv <= rule.mv);
+        }
+
+        if (match) {
+            if (volt_debounce_count[i] < 3) {
+                volt_debounce_count[i]++;
+            }
+            if (volt_debounce_count[i] >= 3 && !volt_triggered[i]) {
+                volt_triggered[i] = true;
+                LOG_INFO("Nexus: Volt slot %d triggered (%u mV, dir %u, act %u, ch %u)",
+                         i + 1, (unsigned)cur_mv, (unsigned)rule.direction, (unsigned)rule.action, (unsigned)rule.channel);
+
+                if (rule.action == NEXUS_VOLT_ACT_CMD) {
+                    if (rule.command[0] != '\0') {
+                        meshtastic_MeshPacket dummy = meshtastic_MeshPacket_init_default;
+                        dummy.from = myNodeInfo.my_node_num;
+                        dummy.to = myNodeInfo.my_node_num;
+                        handleNexusCommand(dummy, rule.command, false, 0, true);
+                    }
+                } else if (rule.action == NEXUS_VOLT_ACT_HIBERNATE) {
+                    setHibernating(true);
+                    if (rule.command[0] != '\0') {
+                        meshtastic_MeshPacket dummy = meshtastic_MeshPacket_init_default;
+                        dummy.from = myNodeInfo.my_node_num;
+                        dummy.to = myNodeInfo.my_node_num;
+                        handleNexusCommand(dummy, rule.command, false, 0, true);
+                    }
+                    LOG_INFO("Nexus: Entering voltage-induced hibernation (sniff interval 60s)...");
+                    // Magnemite tweak at apply (Jenny 2026-10-21): skipSaveNodeDb=true —
+                    // saveToDisk() has no dirty-check, so the default would write every
+                    // NodeDB segment on each ~75s hibernate cycle: flash wear inside the
+                    // anti-flash-wear feature. Nothing new was heard since pre-hibernation.
+                    doDeepSleep(60000, true, true);
+                } else if (rule.action == NEXUS_VOLT_ACT_WAKE) {
+                    setHibernating(false);
+                    if (rule.command[0] != '\0') {
+                        meshtastic_MeshPacket dummy = meshtastic_MeshPacket_init_default;
+                        dummy.from = myNodeInfo.my_node_num;
+                        dummy.to = myNodeInfo.my_node_num;
+                        handleNexusCommand(dummy, rule.command, false, 0, true);
+                    }
+                    LOG_INFO("Nexus: Woke from hibernation by voltage rule!");
+                }
+            }
+        } else {
+            volt_debounce_count[i] = 0;
+            // 50mV hysteresis to re-arm
+            if (rule.direction == NEXUS_VOLT_DIR_HIGH) {
+                if (cur_mv + 50 <= rule.mv) {
+                    volt_triggered[i] = false;
+                }
+            } else {
+                if (cur_mv >= rule.mv + 50) {
+                    volt_triggered[i] = false;
+                }
+            }
+        }
+    }
+
+    if (is_hibernating) {
+        bool has_wake_rule = false;
+        for (int i = 0; i < 4; i++) {
+            if (volt_rules[i].action == NEXUS_VOLT_ACT_WAKE && volt_rules[i].mv > 0) {
+                has_wake_rule = true;
+                break;
+            }
+        }
+        if (!has_wake_rule) {
+            uint16_t hib_mv = 0;
+            for (int i = 0; i < 4; i++) {
+                if (volt_rules[i].action == NEXUS_VOLT_ACT_HIBERNATE && volt_rules[i].mv > hib_mv) {
+                    hib_mv = volt_rules[i].mv;
+                }
+            }
+            uint16_t cur = getVoltageReadingMv(0);
+            if (cur >= hib_mv + 100) {
+                setHibernating(false);
+                LOG_INFO("Nexus: Auto-woke from hibernation (cur %u mV >= %u mV)", (unsigned)cur, (unsigned)(hib_mv + 100));
+                return;
+            }
+        }
+        LOG_INFO("Nexus: Hibernating sniff complete, returning to deep sleep (60s)...");
+        // Magnemite tweak at apply (Jenny 2026-10-21): skipSaveNodeDb=true (see HIB trigger above).
+        doDeepSleep(60000, true, true);
+    }
+}
+
+void NexusModule::onRebroadcastPacket(const meshtastic_MeshPacket *rxp, meshtastic_MeshPacket *txp)
+{
+    if (!rxp || !txp || !isSplitEnabled())
+        return;
+
+    RadioInterface *rif = router ? router->getInterface() : nullptr;
+    if (!rif)
+        return;
+
+    if (splitConfig.mode == NEXUS_SPLIT_ROOF_MSF) {
+        // Mode 1: LR2021 Multi-SF Bridge
+        uint8_t rxSF = rif->getLastRxSF();
+        if (rxSF == splitConfig.alt_sf) {
+            // Arrived on Side Detector (Outside Mesh e.g. SF7) -> Downlink into house on Primary SF (e.g. SF6)
+            NexusTxHook::setOverride(txp->id, rif->getSF(), splitConfig.alt_tx_power);
+            LOG_DEBUG("Nexus SPLIT (ROOF_MSF): downlink 0x%08x to indoor tier (SF%u @ %d dBm)",
+                      txp->id, rif->getSF(), splitConfig.alt_tx_power);
+
+            // If MESH_RELAY flag is set, also queue a copy on the outside mesh (SF7 @ normal power)
+            if ((splitConfig.flags & NEXUS_SPLIT_FLAG_MESH_RELAY) != 0 && router) {
+                if (meshtastic_MeshPacket *meshCopy = packetPool.allocCopy(*txp)) {
+                    meshCopy->id = generatePacketId();
+                    // F3 fix (Jenny 2026-10-23): tag the copy for the mesh side tier — without
+                    // this the relay-to-mesh transmitted untagged on the baseline (indoor) SF,
+                    // so outdoor nodes never heard it. Same mechanism the uplink branch uses.
+                    NexusTxHook::setOverride(meshCopy->id, splitConfig.alt_sf, 0x7F);
+                    router->send(meshCopy);
+                }
+            }
+        } else if (rxSF == rif->getSF()) {
+            // Arrived on Main Detector (Inside Node e.g. SF6) -> Uplink out to outside mesh on Side SF (e.g. SF7)
+            bool isInside = true;
+            if ((splitConfig.flags & NEXUS_SPLIT_FLAG_USE_ZH_MASK) != 0) {
+                isInside = isZeroHopNode(rxp->relay_node) || (rxp->hop_start == rxp->hop_limit);
+            }
+            if (isInside) {
+                NexusTxHook::setOverride(txp->id, splitConfig.alt_sf, 0x7F);
+                LOG_DEBUG("Nexus SPLIT (ROOF_MSF): uplink 0x%08x to mesh tier (SF%u @ full power)",
+                          txp->id, splitConfig.alt_sf);
+
+                // If INDOOR_ECHO flag is set, also echo on SF6 so other indoor nodes hear it
+                if ((splitConfig.flags & NEXUS_SPLIT_FLAG_INDOOR_ECHO) != 0 && router) {
+                    if (meshtastic_MeshPacket *echoCopy = packetPool.allocCopy(*txp)) {
+                        echoCopy->id = generatePacketId();
+                        NexusTxHook::setOverride(echoCopy->id, rif->getSF(), splitConfig.alt_tx_power);
+                        router->send(echoCopy);
+                    }
+                }
+            }
+        }
+    } else if (splitConfig.mode == NEXUS_SPLIT_ROOF_SPLIT) {
+        // Mode 2: Single-Radio Rooftop Split
+        bool isInside = false;
+        if ((splitConfig.flags & NEXUS_SPLIT_FLAG_USE_ZH_MASK) != 0) {
+            isInside = isZeroHopNode(rxp->relay_node) || (nodeDB && nodeDB->isFromOrToFavoritedNode(*rxp));
+        }
+
+        if (isInside) {
+            // Uplink from marked indoor node: repeat outward on Primary Preset at full power
+            LOG_DEBUG("Nexus SPLIT (ROOF_SPLIT): uplink 0x%08x from indoor node -> mesh", txp->id);
+            if ((splitConfig.flags & NEXUS_SPLIT_FLAG_INDOOR_ECHO) != 0 && router) {
+                if (meshtastic_MeshPacket *echoCopy = packetPool.allocCopy(*txp)) {
+                    echoCopy->id = generatePacketId();
+                    bool isFast = (splitConfig.alt_freq == rif->getFreq() && splitConfig.alt_bw == bwKHzToCode(rif->getBW()) && splitConfig.alt_cr == rif->getCR());
+                    if (isFast) {
+                        NexusTxHook::setOverride(echoCopy->id, splitConfig.alt_sf, splitConfig.alt_tx_power);
+                    } else {
+                        NexusTxHook::setOverrideFull(echoCopy->id, splitConfig.alt_sf, splitConfig.alt_bw, splitConfig.alt_cr, splitConfig.alt_freq, splitConfig.alt_tx_power);
+                    }
+                    router->send(echoCopy);
+                }
+            }
+        } else {
+            // Outside mesh packet -> Downlink to indoor nodes on Alt Preset at indoor power
+            bool isFast = (splitConfig.alt_freq == rif->getFreq() && splitConfig.alt_bw == bwKHzToCode(rif->getBW()) && splitConfig.alt_cr == rif->getCR());
+            if (isFast) {
+                NexusTxHook::setOverride(txp->id, splitConfig.alt_sf, splitConfig.alt_tx_power);
+            } else {
+                NexusTxHook::setOverrideFull(txp->id, splitConfig.alt_sf, splitConfig.alt_bw, splitConfig.alt_cr, splitConfig.alt_freq, splitConfig.alt_tx_power);
+            }
+            LOG_DEBUG("Nexus SPLIT (ROOF_SPLIT): downlink 0x%08x to indoor tier (@ %d dBm)", txp->id, splitConfig.alt_tx_power);
+        }
+    }
+}
+
+void NexusModule::onClientSendPacket(meshtastic_MeshPacket *p)
+{
+    if (!p || !isSplitEnabled())
+        return;
+
+    RadioInterface *rif = router ? router->getInterface() : nullptr;
+    if (!rif)
+        return;
+
+    if (splitConfig.mode == NEXUS_SPLIT_CLIENT_SPLIT) {
+        // Mode 3: Asymmetric Indoor Client -> switch all outgoing transmissions to Uplink Preset at alt_tx_power
+        bool isFast = (splitConfig.alt_freq == rif->getFreq() && splitConfig.alt_bw == bwKHzToCode(rif->getBW()) && splitConfig.alt_cr == rif->getCR());
+        if (isFast) {
+            NexusTxHook::setOverride(p->id, splitConfig.alt_sf, splitConfig.alt_tx_power);
+        } else {
+            NexusTxHook::setOverrideFull(p->id, splitConfig.alt_sf, splitConfig.alt_bw, splitConfig.alt_cr, splitConfig.alt_freq, splitConfig.alt_tx_power);
+        }
+        LOG_DEBUG("Nexus SPLIT (CLIENT_SPLIT): outgoing packet 0x%08x tagged for uplink (@ %d dBm)", p->id, splitConfig.alt_tx_power);
+    }
 }
 
 int8_t NexusModule::getChipPower(int8_t power) {
@@ -4730,7 +4993,9 @@ bool NexusModule::saveVault()
     }
     memset(v, 0, sizeof(NexusVault));
     memcpy(v->magic, "JenT", 4);
-    v->version = 67; // v67: nexusVariantBits (generic variant-bitmask pool — station-g3 PA/LNA today, future variants tomorrow)
+    v->version = 69; // v69: split_config (dual-preset split-tier and APC)
+    // - v68 was: volt_rules (4-voltage threshold power automation)
+    // - v67 was: nexusVariantBits (generic variant-bitmask pool — station-g3 PA/LNA)
     // - v66 was: features_mask + secondary_keys[4] (4 slots)
     v->drop_mask = getNexusDropHex();
     v->ping_emoji_mode = ping_emoji_mode; // v41
@@ -4830,6 +5095,14 @@ bool NexusModule::saveVault()
     v->out_drop_mask = getNexusOutDropHex();
     v->features_mask = getNexusFeaturesHex(); // v66: feature toggles (FEATURE_* bits)
     v->nexusVariantBits = nexusVariantBits;  // v67: generic variant-bitmask pool (station-g3 PA/LNA carve-out lives here)
+
+    // Volt rules (v68)
+    for (int i = 0; i < 4; i++) {
+        v->volt_rules[i] = volt_rules[i];
+    }
+
+    // Split tier config (v69)
+    v->split_config = splitConfig;
 
     // Nexus Ignores (v21)
     v->nexus_ignore_count = nexus_ignore_count;
@@ -5015,6 +5288,24 @@ bool NexusModule::loadVault()
         setNexusOutDropHex(v->out_drop_mask);
         setNexusFeaturesHex(v->features_mask); // v66: feature toggles (FEATURE_* bits)
         nexusVariantBits = v->nexusVariantBits; // v67: variant-bitmask pool (zero-init default when loading a v66 vault — fileSize clamp leaves the trailing 8 B at zero)
+
+        // Volt rules (v68)
+        for (int i = 0; i < 4; i++) {
+            volt_rules[i] = v->volt_rules[i];
+            volt_rules[i].command[sizeof(volt_rules[i].command) - 1] = '\0';
+            if (volt_rules[i].action > NEXUS_VOLT_ACT_WAKE || volt_rules[i].direction > NEXUS_VOLT_DIR_LOW || volt_rules[i].channel > 2) {
+                volt_rules[i].action = NEXUS_VOLT_ACT_NONE;
+                volt_rules[i].mv = 0;
+            }
+            volt_debounce_count[i] = 0;
+            volt_triggered[i] = false;
+        }
+
+        // Split tier config (v69)
+        splitConfig = v->split_config;
+        if (splitConfig.mode > NEXUS_SPLIT_ROOF_MSF) {
+            splitConfig.mode = NEXUS_SPLIT_OFF;
+        }
 
         nexus_ignore_count = (v->nexus_ignore_count <= 64) ? v->nexus_ignore_count : 64;
         memcpy(nexus_ignore_list, v->nexus_ignore_list, sizeof(nexus_ignore_list));

@@ -18,6 +18,9 @@
 #include "graphics/draw/MessageRenderer.h"
 #include "main.h"
 #include "modules/NexusModule.h"
+#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+#include "JenCoreCompanion.h"
+#endif
 #include "mesh-pb-constants.h"
 #include "meshUtils.h"
 #include "modules/AdminModule.h"
@@ -84,6 +87,9 @@ void MeshService::init()
 #if HAS_GPS
     if (gps)
         gpsObserver.observe(&gps->newStatus);
+#endif
+#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+    jencoreCompanion.ensurePseudoNode();
 #endif
 }
 
@@ -397,10 +403,108 @@ ErrorCode MeshService::sendQueueStatusToPhone(const meshtastic_QueueStatus &qs, 
     return res ? ERRNO_OK : ERRNO_UNKNOWN;
 }
 
+#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+bool MeshService::sendJenCoreGroupText(const meshtastic_MeshPacket *p)
+{
+    uint8_t key[32];
+    const size_t keyLen = channels.getJenCoreKey(p->channel, key);
+
+    // JenCore timestamps are wall-clock: without a valid time peers would see 1970 or reject the message.
+    const uint32_t now = getValidTime(RTCQualityFromNet);
+    if (keyLen == 0 || now == 0) {
+        LOG_WARN("JenCore TX failed on ch=%u (keyLen=%u validTime=%d)", (unsigned)p->channel, (unsigned)keyLen, now != 0);
+        return false;
+    }
+
+    // encodeGroupText cuts the text on a UTF-8 boundary once the "sender: " prefix is accounted for.
+    char plain[sizeof(p->decoded.payload.bytes) + 1];
+    memcpy(plain, p->decoded.payload.bytes, p->decoded.payload.size);
+    plain[p->decoded.payload.size] = 0;
+    char text[sizeof(plain) + 64]; // room for the "@[name] " of a reply and the brackets of mentions
+    jencoreCompanion.prepareGroupText(plain, p->decoded.reply_id, text, sizeof(text));
+
+    const char *sender = owner.long_name[0] ? owner.long_name : (owner.short_name[0] ? owner.short_name : "Meshtastic");
+    uint8_t frame[JenCoreRepeater::MAX_FRAME_LEN];
+    bool truncated = false;
+    const size_t frameLen = JenCoreCompanion::encodeGroupText(key, keyLen, sender, jencoreCompanion.nextTxTimestamp(now), text,
+                                                               frame, sizeof(frame), &truncated);
+    RadioInterface *iface = router ? router->getInterface() : nullptr;
+    if (frameLen == 0 || !iface || !iface->queueJenCoreFrame(frame, frameLen)) {
+        LOG_WARN("JenCore TX failed on ch=%u (frameLen=%u)", (unsigned)p->channel, (unsigned)frameLen);
+        return false;
+    }
+    if (truncated)
+        LOG_WARN("JenCore text cut to fit %u bytes with the sender prefix", (unsigned)JenCoreCompanion::MAX_TEXT_LEN);
+    jencoreCompanion.trackGroupText(frame, frameLen, p->id);
+    LOG_INFO("JenCore TX ch=%u len=%u", (unsigned)p->channel, (unsigned)frameLen);
+    return true;
+}
+
+bool MeshService::sendJenCoreDirectText(const meshtastic_MeshPacket *p)
+{
+    // JenCore timestamps are wall-clock: without a valid time the peer would reject or misorder the message.
+    const uint32_t now = getValidTime(RTCQualityFromNet);
+    char text[sizeof(p->decoded.payload.bytes) + 1];
+    memcpy(text, p->decoded.payload.bytes, p->decoded.payload.size);
+    text[p->decoded.payload.size] = 0;
+
+    RadioInterface *iface = router ? router->getInterface() : nullptr;
+    if (!jencoreCompanion.sendDirectText(p->to, p->id, text, now, iface)) {
+        LOG_WARN("JenCore direct TX failed to=0x%08x (validTime=%d)", (unsigned)p->to, now != 0);
+        return false;
+    }
+    LOG_INFO("JenCore direct TX to=0x%08x id=%u", (unsigned)p->to, (unsigned)p->id);
+    return true;
+}
+#endif
+
 ErrorCode MeshService::sendToMesh(meshtastic_MeshPacket *p, RxSource src, bool ccToPhone)
 {
     uint32_t mesh_packet_id = p->id;
     nodeDB->updateFrom(*p); // update our local DB for this packet (because phone might have sent position packets etc...)
+
+#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+    // A text for a JenCore contact leaves as a TXT_MSG. Only contacts we hold a key for: any other node number is a
+    // Meshtastic node, whatever its top byte.
+    if (p->which_payload_variant == meshtastic_MeshPacket_decoded_tag &&
+        p->decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP && jencoreCompanion.hasContact(p->to)) {
+        const bool queued = sendJenCoreDirectText(p);
+        // Delivery is reported when the contact's ACK arrives (or times out); only a refusal is answered now.
+        if (!queued && routingModule)
+            routingModule->sendAckNak(meshtastic_Routing_Error_NO_INTERFACE, getFrom(p), p->id, p->channel, 0);
+        if (router) {
+            meshtastic_QueueStatus qs = router->getQueueStatus();
+            (void)sendQueueStatusToPhone(qs, queued ? ERRNO_OK : ERRNO_UNKNOWN, mesh_packet_id);
+        }
+        releaseToPool(p);
+        return queued ? ERRNO_OK : ERRNO_UNKNOWN;
+    }
+
+    if (p->which_payload_variant == meshtastic_MeshPacket_decoded_tag && channels.isJenCoreChannel(p->channel) && !isToUs(p)) {
+        const bool isGroupText = p->decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP && isBroadcast(p->to);
+        bool queued = false;
+        if (!isGroupText) {
+            // Anything but a group text would go out as Meshtastic traffic encrypted with the JenCore key.
+            LOG_WARN("Dropping port %u on JenCore channel %u: only broadcast text is bridged", (unsigned)p->decoded.portnum,
+                     (unsigned)p->channel);
+        } else {
+            queued = sendJenCoreGroupText(p);
+        }
+
+        // JenCore peers cannot ACK a channel text: it counts as delivered once a repeater is heard re-flooding it
+        // (JenCoreCompanion::settleEcho), or failed if none is. Only a refusal is answered now.
+        if (isGroupText) {
+            if (!queued && routingModule)
+                routingModule->sendAckNak(meshtastic_Routing_Error_NO_INTERFACE, getFrom(p), p->id, p->channel, 0);
+            if (router) {
+                meshtastic_QueueStatus qs = router->getQueueStatus();
+                (void)sendQueueStatusToPhone(qs, queued ? ERRNO_OK : ERRNO_UNKNOWN, mesh_packet_id);
+            }
+        }
+        releaseToPool(p);
+        return queued ? ERRNO_OK : ERRNO_UNKNOWN;
+    }
+#endif
 
     // callModules' loopback gate keeps RX_SRC_LOCAL packets from RoutingModule, the only module
     // that forwards to the phone, so deliver our own reply's copy here or the client never sees it.

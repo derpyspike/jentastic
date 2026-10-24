@@ -18,10 +18,12 @@ class LR2021Interface : public LR20x0Interface<LR2021>
     //
     // `sfs` points to an array of SF values 5..12 (one byte each, raw SF number,
     // not an enum). `num` is the count, max 3 (chip hardware limit). Pass num=0
-    // to disable all side detectors. Returns true on chip-level acceptance;
-    // false on validation failure (num>3, out-of-range SF, duplicate SF, spread>4)
-    // or chip-side reject.
-    bool configureSideDetectors(const uint8_t *sfs, uint8_t num);
+    // to disable all side detectors. `syncWords` optionally provides an independent
+    // syncword for each side detector (e.g. 0x12 for JenCore, 0x2B for Meshtastic,
+    // or 0 to inherit the main detector's syncword).
+    // Returns true on chip-level acceptance; false on validation failure
+    // (num>3, out-of-range SF, duplicate SF, spread>4) or chip-side reject.
+    bool configureSideDetectors(const uint8_t *sfs, uint8_t num, const uint8_t *syncWords = nullptr);
 
     // Storage + accessors used by /nexus LR2021_SF (NexusCommands.cpp) and
     // the apply hooks in LR20x0Interface::init(), ::reconfigure(), and
@@ -31,8 +33,9 @@ class LR2021Interface : public LR20x0Interface<LR2021>
     // before vault-load validation.
     static constexpr uint8_t MAX_SF_TABLE = 3;
     const uint8_t *sideDetectors() const { return sideSFs_; }
+    const uint8_t *sideSyncWords() const { return sideSyncWords_; }
     uint8_t sideDetectorsCount() const { return sideSFsCount_; }
-    void setSideDetectors(const uint8_t *sfs, uint8_t num);
+    void setSideDetectors(const uint8_t *sfs, uint8_t num, const uint8_t *syncWords = nullptr);
     void clearSideDetectors() { sideSFsCount_ = 0; }
 
     // Apply the stored side-detector table to the chip. Called from all
@@ -47,6 +50,7 @@ class LR2021Interface : public LR20x0Interface<LR2021>
 
   private:
     uint8_t sideSFs_[MAX_SF_TABLE] = {0};
+    uint8_t sideSyncWords_[MAX_SF_TABLE] = {0};
     uint8_t sideSFsCount_ = 0;
 };
 #endif

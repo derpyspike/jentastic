@@ -25,6 +25,7 @@
 #include "UptimeClock.h"
 #include "mesh/Throttle.h"
 #include "modules/NexusModule.h"
+#include "modules/NexusTxHook.h"
 // Decaf-split (Nexus-28006): NexusModule_private.h is only present
 // in private builds. Gate the include so public builds compile cleanly
 // when the header is absent (the public tree strips it via
@@ -37,9 +38,11 @@
 #include "Channels.h"
 #include "MeshService.h"
 #include "NodeDB.h"
+#include "Power.h"
 #include "PowerFSM.h"
 #include "RTC.h"
 #include "SPILock.h"
+#include "modules/NodeInfoModule.h"
 #include "input/InputBroker.h"
 #include "meshUtils.h"
 #include <FSCommon.h>
@@ -93,6 +96,12 @@
 #include "modules/TraceRouteModule.h"
 #include "modules/ExternalNotificationModule.h"
 #include "RadioLibInterface.h"
+#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+#include "mesh/JenCoreCompanion.h"
+#endif
+#if MESHTASTIC_ENABLE_RNODE
+#include "mesh/RNodeEngine.h"
+#endif
 #if (defined(USE_LR2021) || defined(ARCH_PORTDUINO)) && !RADIOLIB_EXCLUDE_LR2021
 // Nexus-28005: /nexus LR2021_SF handler uses LR2021Interface accessors
 // (sideDetectorsCount, setSideDetectors, clearSideDetectors) for the
@@ -2239,24 +2248,142 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         } else if (!*sub || strcasecmp(sub, "LIST") == 0) {
             uint8_t count = lr2021->sideDetectorsCount();
             int length = snprintf(replyMsg, sizeof(replyMsg), "JT LR2021_SF: side=%s", count ? "[" : "(empty)");
-            for (uint8_t i = 0; i < count; ++i)
-                length +=
-                    snprintf(replyMsg + length, sizeof(replyMsg) - length, "%sSF%u", i ? "," : "", lr2021->sideDetectors()[i]);
+            for (uint8_t i = 0; i < count; ++i) {
+                uint8_t sw = lr2021->sideSyncWords()[i];
+                if (sw)
+                    length += snprintf(replyMsg + length, sizeof(replyMsg) - length, "%sSF%u:0x%02X", i ? "," : "",
+                                       lr2021->sideDetectors()[i], sw);
+                else
+                    length += snprintf(replyMsg + length, sizeof(replyMsg) - length, "%sSF%u", i ? "," : "",
+                                       lr2021->sideDetectors()[i]);
+            }
             if (count)
                 snprintf(replyMsg + length, sizeof(replyMsg) - length, "] (n=%u)", count);
         } else {
             uint8_t sfs[LR2021Interface::MAX_SF_TABLE] = {};
+            uint8_t syncwords[LR2021Interface::MAX_SF_TABLE] = {};
             uint8_t count = 0;
-            if (!nexus::parseSideDetectors(sub, sfs, LR2021Interface::MAX_SF_TABLE, count)) {
-                snprintf(replyMsg, sizeof(replyMsg), "JT LR2021_SF: use OFF, 0, or 1-3 distinct SFs [5..12], spread <= 4");
-            } else if (lr2021->configureSideDetectors(sfs, count)) {
-                lr2021->setSideDetectors(sfs, count);
+            if (!nexus::parseSideDetectors(sub, sfs, syncwords, LR2021Interface::MAX_SF_TABLE, count)) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT LR2021_SF: use OFF, 0, or 1-3 distinct SFs [5..12] (optional :0xSW), spread <= 4");
+            } else if (lr2021->configureSideDetectors(sfs, count, syncwords)) {
+                lr2021->setSideDetectors(sfs, count, syncwords);
                 snprintf(replyMsg, sizeof(replyMsg),
                          count ? "JT LR2021_SF: stored and applied (n=%u)" : "JT LR2021_SF: cleared and applied (single-SF RX)",
                          count);
             } else {
                 snprintf(replyMsg, sizeof(replyMsg), "JT LR2021_SF: chip rejected change; previous stored table retained");
             }
+        }
+    }
+#endif
+#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+    else if (strcasecmp(cmd, "JENCORE") == 0 || strcasecmp(cmd, "JC") == 0 || strcasecmp(cmd, "JEN_CORE") == 0 ||
+             strcasecmp(cmd, "JENCORE") == 0 || strcasecmp(cmd, "MCORE") == 0 ||
+             strncasecmp(cmd, "JENCORE ", 8) == 0 || strncasecmp(cmd, "JC ", 3) == 0 ||
+             strncasecmp(cmd, "JEN_CORE ", 9) == 0 || strncasecmp(cmd, "JENCORE ", 9) == 0 ||
+             strncasecmp(cmd, "MCORE ", 6) == 0) {
+        RadioLibInterface *rli = static_cast<RadioLibInterface *>(RadioLibInterface::instance);
+        const char *sub = skipToken(cmd);
+        if (!rli) {
+            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: radio interface unavailable");
+        } else if (!*sub || strcasecmp(sub, "STATUS") == 0) {
+            snprintf(replyMsg, sizeof(replyMsg),
+                     "JT JENCORE:\n Relay: %s\n HybridSync: %s\n RxSeen: %u (dup=%u)\n TxRelay: %u\n Contacts: %u",
+                     rli->jencoreRepeater.isRelayEnabled() ? "ON" : "OFF",
+#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
+                     rli->hybridSyncEnabled ? "ON (0x14B4)" : "OFF",
+#else
+                     "N/A",
+#endif
+                     (unsigned)rli->jencoreRepeater.rxSeen, (unsigned)rli->jencoreRepeater.rxDup,
+                     (unsigned)rli->jencoreRepeater.txRelayed,
+#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+                     (unsigned)jencoreCompanion.contactCount()
+#else
+                     0
+#endif
+            );
+        } else if (strcasecmp(sub, "RELAY ON") == 0 || strcasecmp(sub, "RELAY 1") == 0) {
+            rli->jencoreRepeater.setRelayEnabled(true);
+            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: Relay ON");
+        } else if (strcasecmp(sub, "RELAY OFF") == 0 || strcasecmp(sub, "RELAY 0") == 0) {
+            rli->jencoreRepeater.setRelayEnabled(false);
+            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: Relay OFF");
+        } else if (strcasecmp(sub, "HYBRID ON") == 0 || strcasecmp(sub, "HYBRID 1") == 0) {
+#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
+            rli->hybridSyncEnabled = true;
+            rli->startReceive();
+            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: HybridSync ON (0x14B4)");
+#else
+            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: HybridSync not supported on this radio");
+#endif
+        } else if (strcasecmp(sub, "HYBRID OFF") == 0 || strcasecmp(sub, "HYBRID 0") == 0) {
+#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
+            rli->hybridSyncEnabled = false;
+            rli->startReceive();
+            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: HybridSync OFF (standard 0x2B)");
+#else
+            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: HybridSync not supported on this radio");
+#endif
+        } else if (strcasecmp(sub, "STATS") == 0) {
+            char statsBuf[161];
+            if (rli->formatContentionStats(statsBuf, sizeof(statsBuf))) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JC STATS: %s", statsBuf);
+            } else {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JC STATS: stats unavailable");
+            }
+        } else {
+            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: Usage: JENCORE [STATUS|RELAY ON/OFF|HYBRID ON/OFF|STATS]");
+        }
+    }
+#endif
+#if MESHTASTIC_ENABLE_RNODE
+    else if (strcasecmp(cmd, "RNODE") == 0 || strcasecmp(cmd, "RN") == 0 ||
+             strncasecmp(cmd, "RNODE ", 6) == 0 || strncasecmp(cmd, "RN ", 3) == 0) {
+        const char *sub = skipToken(cmd);
+        if (!*sub || strcasecmp(sub, "STATUS") == 0) {
+            const char *modeStr = (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) ? "STANDALONE" :
+                                  (rnodeEngine.getMode() == RNODE_MODE_BRIDGE) ? "BRIDGE" : "OFF";
+            snprintf(replyMsg, sizeof(replyMsg),
+                     "JT RNODE:\n Mode: %s\n Tier SF: %u\n TCP: %s (%s)\n BLE: %s (%s)\n RxPkts: %u (bytes=%u)\n TxPkts: %u (bytes=%u)\n LastRSSI: %d, SNR: %.1f",
+                     modeStr, rnodeEngine.getSf(),
+                     rnodeEngine.isTcpEnabled() ? "ON" : "OFF", rnodeEngine.isTcpConnected() ? "conn" : "idle",
+                     rnodeEngine.isBleEnabled() ? "ON" : "OFF", rnodeEngine.isBleConnected() ? "conn" : "idle",
+                     (unsigned)rnodeEngine.rxPackets, (unsigned)rnodeEngine.rxBytes,
+                     (unsigned)rnodeEngine.txPackets, (unsigned)rnodeEngine.txBytes,
+                     (int)rnodeEngine.lastRssi, (double)rnodeEngine.lastSnr);
+        } else if (strcasecmp(sub, "MODE OFF") == 0 || strcasecmp(sub, "OFF") == 0) {
+            rnodeEngine.setMode(RNODE_MODE_OFF);
+            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: Mode OFF");
+        } else if (strcasecmp(sub, "MODE BRIDGE") == 0 || strcasecmp(sub, "BRIDGE") == 0) {
+            rnodeEngine.setMode(RNODE_MODE_BRIDGE);
+            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: Mode BRIDGE (Concurrent Meshtastic + JenCore + Reticulum)");
+        } else if (strcasecmp(sub, "MODE STANDALONE") == 0 || strcasecmp(sub, "STANDALONE") == 0) {
+            rnodeEngine.setMode(RNODE_MODE_STANDALONE);
+            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: Mode STANDALONE (Dedicated Reticulum RNode)");
+        } else if (strcasecmp(sub, "TCP ON") == 0 || strcasecmp(sub, "TCP 1") == 0) {
+            rnodeEngine.setTcpEnabled(true);
+            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: TCP server ON (port 7633)");
+        } else if (strcasecmp(sub, "TCP OFF") == 0 || strcasecmp(sub, "TCP 0") == 0) {
+            rnodeEngine.setTcpEnabled(false);
+            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: TCP server OFF");
+        } else if (strcasecmp(sub, "BLE ON") == 0 || strcasecmp(sub, "BLE 1") == 0) {
+            rnodeEngine.setBleEnabled(true);
+            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: BLE NUS ON");
+        } else if (strcasecmp(sub, "BLE OFF") == 0 || strcasecmp(sub, "BLE 0") == 0) {
+            rnodeEngine.setBleEnabled(false);
+            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: BLE NUS OFF");
+        } else if (strncasecmp(sub, "TIER ", 5) == 0 || strncasecmp(sub, "SF ", 3) == 0) {
+            const char *valStr = skipToken(sub);
+            int sfVal = atoi(valStr);
+            if (sfVal >= 5 && sfVal <= 12) {
+                rnodeEngine.setSf((uint8_t)sfVal);
+                snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: Reticulum tier SF set to %d", sfVal);
+            } else {
+                snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: Invalid SF %d (must be 5..12)", sfVal);
+            }
+        } else {
+            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: Usage: RNODE [STATUS|MODE BRIDGE/STANDALONE/OFF|TCP ON/OFF|BLE ON/OFF|TIER <5-12>]");
         }
     }
 #endif
@@ -3855,32 +3982,432 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         snprintf(replyMsg, sizeof(replyMsg), "JT ROLE: %s (%u)", getRoleName(config.device.role), (uint32_t)config.device.role);
     }
     else if (strncasecmp(cmd, "SETROLE ", 8) == 0) {
-        const char *roleStr = cmd + 8;
-        while (*roleStr == ' ') roleStr++;
+        const char *p = cmd + 8;
+        while (*p == ' ') p++;
+        char roleArg[32] = {0};
+        bool isRam = false;
+        int len = 0;
+        while (*p && *p != ' ' && len < (int)sizeof(roleArg) - 1) {
+            roleArg[len++] = *p++;
+        }
+        roleArg[len] = '\0';
+        while (*p == ' ') p++;
+        if (strcasecmp(p, "RAM") == 0) {
+            isRam = true;
+        }
 
         int role = -1;
-        if (strcasecmp(roleStr, "CLIENT") == 0) role = meshtastic_Config_DeviceConfig_Role_CLIENT;
-        else if (strcasecmp(roleStr, "SENS") == 0 || strcasecmp(roleStr, "SENSOR") == 0) role = meshtastic_Config_DeviceConfig_Role_SENSOR;
-        else if (strcasecmp(roleStr, "RTR") == 0 || strcasecmp(roleStr, "ROUTER") == 0) role = meshtastic_Config_DeviceConfig_Role_ROUTER;
-        else if (strcasecmp(roleStr, "RTR_CLIENT") == 0) role = meshtastic_Config_DeviceConfig_Role_ROUTER_CLIENT;
-        else if (strcasecmp(roleStr, "BASE") == 0 || strcasecmp(roleStr, "CLIENT_BASE") == 0) role = meshtastic_Config_DeviceConfig_Role_CLIENT_BASE;
-        else if (strcasecmp(roleStr, "MUTE") == 0 || strcasecmp(roleStr, "CLIENT_MUTE") == 0) role = meshtastic_Config_DeviceConfig_Role_CLIENT_MUTE;
-        else if (strcasecmp(roleStr, "HIDDEN") == 0 || strcasecmp(roleStr, "CLIENT_HIDDEN") == 0) role = meshtastic_Config_DeviceConfig_Role_CLIENT_HIDDEN;
-        else if (strcasecmp(roleStr, "LOST") == 0 || strcasecmp(roleStr, "LOST_AND_FOUND") == 0) role = meshtastic_Config_DeviceConfig_Role_LOST_AND_FOUND;
-        else if (strcasecmp(roleStr, "TAK") == 0) role = meshtastic_Config_DeviceConfig_Role_TAK;
-        else if (strcasecmp(roleStr, "TAK_TRACKER") == 0) role = meshtastic_Config_DeviceConfig_Role_TAK_TRACKER;
-        else if (isdigit(roleStr[0])) role = atoi(roleStr);
+        if (strcasecmp(roleArg, "CLIENT") == 0) role = meshtastic_Config_DeviceConfig_Role_CLIENT;
+        else if (strcasecmp(roleArg, "SENS") == 0 || strcasecmp(roleArg, "SENSOR") == 0) role = meshtastic_Config_DeviceConfig_Role_SENSOR;
+        else if (strcasecmp(roleArg, "RTR") == 0 || strcasecmp(roleArg, "ROUTER") == 0) role = meshtastic_Config_DeviceConfig_Role_ROUTER;
+        else if (strcasecmp(roleArg, "RTR_CLIENT") == 0) role = meshtastic_Config_DeviceConfig_Role_ROUTER_CLIENT;
+        else if (strcasecmp(roleArg, "ROUTER_LATE") == 0) role = meshtastic_Config_DeviceConfig_Role_ROUTER_LATE;
+        else if (strcasecmp(roleArg, "BASE") == 0 || strcasecmp(roleArg, "CLIENT_BASE") == 0) role = meshtastic_Config_DeviceConfig_Role_CLIENT_BASE;
+        else if (strcasecmp(roleArg, "MUTE") == 0 || strcasecmp(roleArg, "CLIENT_MUTE") == 0) role = meshtastic_Config_DeviceConfig_Role_CLIENT_MUTE;
+        else if (strcasecmp(roleArg, "HIDDEN") == 0 || strcasecmp(roleArg, "CLIENT_HIDDEN") == 0) role = meshtastic_Config_DeviceConfig_Role_CLIENT_HIDDEN;
+        else if (strcasecmp(roleArg, "LOST") == 0 || strcasecmp(roleArg, "LOST_AND_FOUND") == 0) role = meshtastic_Config_DeviceConfig_Role_LOST_AND_FOUND;
+        else if (strcasecmp(roleArg, "TAK") == 0) role = meshtastic_Config_DeviceConfig_Role_TAK;
+        else if (strcasecmp(roleArg, "TAK_TRACKER") == 0) role = meshtastic_Config_DeviceConfig_Role_TAK_TRACKER;
+        else if (isdigit(roleArg[0])) role = atoi(roleArg);
 
         if (role >= 0 && role <= 13) {
-            meshtastic_Config c = meshtastic_Config_init_default;
-            c.which_payload_variant = meshtastic_Config_device_tag;
-            c.payload_variant.device = config.device;
-            c.payload_variant.device.role = (meshtastic_Config_DeviceConfig_Role)role;
+            if (isRam) {
+                config.device.role = (meshtastic_Config_DeviceConfig_Role)role;
+                owner.role = (meshtastic_Config_DeviceConfig_Role)role;
+                meshtastic_NodeInfoLite *us = nodeDB->getMeshNode(nodeDB->getNodeNum());
+                if (us) us->role = (meshtastic_Config_DeviceConfig_Role)role;
+                nodeDB->installRoleDefaults((meshtastic_Config_DeviceConfig_Role)role);
+                if (nodeInfoModule) nodeInfoModule->triggerImmediateNodeInfoCheck();
+                snprintf(replyMsg, sizeof(replyMsg), "JT: Role set to %s (%d) in RAM (no reboot).", roleArg, role);
+            } else {
+                meshtastic_Config c = meshtastic_Config_init_default;
+                c.which_payload_variant = meshtastic_Config_device_tag;
+                c.payload_variant.device = config.device;
+                c.payload_variant.device.role = (meshtastic_Config_DeviceConfig_Role)role;
 
-            if (adminModule) adminModule->handleSetConfig(c, false);
-            snprintf(replyMsg, sizeof(replyMsg), "JT: Role updated to %s (%d).", roleStr, role);
+                if (adminModule) adminModule->handleSetConfig(c, false);
+                snprintf(replyMsg, sizeof(replyMsg), "JT: Role updated to %s (%d).", roleArg, role);
+            }
         } else {
-            snprintf(replyMsg, sizeof(replyMsg), "JT: Invalid role '%s'", roleStr);
+            snprintf(replyMsg, sizeof(replyMsg), "JT: Invalid role '%s'", roleArg);
+        }
+    }
+    else if (strcasecmp(cmd, "VOLT") == 0 || strcasecmp(cmd, "VOLTAGE") == 0 ||
+             strncasecmp(cmd, "VOLT ", 5) == 0 || strncasecmp(cmd, "VOLTAGE ", 8) == 0) {
+        const char *p = (strncasecmp(cmd, "VOLTAGE", 7) == 0) ? cmd + 7 : cmd + 4;
+        while (*p == ' ') p++;
+
+        if (*p == '\0' || strcasecmp(p, "LIST") == 0 || strcasecmp(p, "STATUS") == 0) {
+            startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "VOLT Rules");
+            char header[64];
+            uint16_t bV = getVoltageReadingMv(0);
+            snprintf(header, sizeof(header), "JT VOLT (Bat: %u.%02uV, Hib: %s):\n",
+                     bV / 1000, (bV % 1000) / 10, is_hibernating ? "YES" : "NO");
+            appendPaging(header);
+
+            for (int i = 0; i < 4; i++) {
+                char line[96];
+                NexusVoltRule &r = volt_rules[i];
+                if (r.action == NEXUS_VOLT_ACT_NONE || r.mv == 0) {
+                    snprintf(line, sizeof(line), "[%d] OFF\n", i + 1);
+                } else {
+                    const char *actStr = (r.action == NEXUS_VOLT_ACT_CMD) ? "CMD" :
+                                         (r.action == NEXUS_VOLT_ACT_HIBERNATE) ? "HIB" :
+                                         (r.action == NEXUS_VOLT_ACT_WAKE) ? "WAKE" : "UNK";
+                    const char *dirStr = (r.direction == NEXUS_VOLT_DIR_HIGH) ? "HIGH" : "LOW";
+                    const char *chStr = (r.channel == 1) ? "CH2" : (r.channel == 2) ? "CH3" : "BAT";
+                    const char *stateStr = volt_triggered[i] ? "TRIGGERED" : "ARMED";
+                    uint16_t reading = getVoltageReadingMv(r.channel);
+                    snprintf(line, sizeof(line), "[%d] %u.%02uV %s %s [%s] (%s, cur %u.%02uV)%s%.20s\n",
+                             i + 1, r.mv / 1000, (r.mv % 1000) / 10, dirStr, actStr, chStr, stateStr,
+                             reading / 1000, (reading % 1000) / 10,
+                             r.command[0] ? " : " : "", r.command);
+                }
+                appendPaging(line);
+            }
+            snprintf(replyMsg, sizeof(replyMsg), "JT: Paging VOLT rules...");
+            return;
+        }
+
+        if (strcasecmp(p, "WAKE") == 0) {
+            setHibernating(false);
+            snprintf(replyMsg, sizeof(replyMsg), "JT: Hibernation cleared in RAM.");
+            return;
+        }
+
+        // Parse slot: 1..4
+        if (*p < '1' || *p > '4') {
+            snprintf(replyMsg, sizeof(replyMsg), "JT VOLT: Invalid slot '%s'. Use 1..4.", p);
+            return;
+        }
+        int slot = *p - '0';
+        p++;
+        while (*p == ' ') p++;
+
+        if (*p == '\0') {
+            // Show single slot
+            NexusVoltRule &r = volt_rules[slot - 1];
+            if (r.action == NEXUS_VOLT_ACT_NONE || r.mv == 0) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT VOLT [%d]: OFF", slot);
+            } else {
+                const char *actStr = (r.action == NEXUS_VOLT_ACT_CMD) ? "CMD" :
+                                     (r.action == NEXUS_VOLT_ACT_HIBERNATE) ? "HIB" :
+                                     (r.action == NEXUS_VOLT_ACT_WAKE) ? "WAKE" : "UNK";
+                const char *dirStr = (r.direction == NEXUS_VOLT_DIR_HIGH) ? "HIGH" : "LOW";
+                const char *chStr = (r.channel == 1) ? "CH2" : (r.channel == 2) ? "CH3" : "BAT";
+                snprintf(replyMsg, sizeof(replyMsg), "JT VOLT [%d]: %u.%02uV %s %s [%s] %s%s",
+                         slot, r.mv / 1000, (r.mv % 1000) / 10, dirStr, actStr, chStr,
+                         volt_triggered[slot - 1] ? "[TRIG] " : "[ARMED] ", r.command);
+            }
+            return;
+        }
+
+        // Check if clearing slot: OFF / CLEAR / NONE / 0
+        if (strcasecmp(p, "OFF") == 0 || strcasecmp(p, "CLEAR") == 0 ||
+            strcasecmp(p, "NONE") == 0 || strcmp(p, "0") == 0) {
+            NexusVoltRule &r = volt_rules[slot - 1];
+            memset(&r, 0, sizeof(r));
+            volt_debounce_count[slot - 1] = 0;
+            volt_triggered[slot - 1] = false;
+            snprintf(replyMsg, sizeof(replyMsg), "JT: Volt slot [%d] cleared (RAM). /nexus SAVE to persist.", slot);
+            return;
+        }
+
+        // Parse: <voltage> <HIGH|LOW> <CMD|HIB|WAKE> [CH1..3|BAT] [command...]
+        char tokVolt[16] = {0};
+        char tokDir[16] = {0};
+        char tokAct[16] = {0};
+
+        int tlen = 0;
+        while (*p && *p != ' ' && tlen < (int)sizeof(tokVolt) - 1) tokVolt[tlen++] = *p++;
+        tokVolt[tlen] = '\0';
+        while (*p == ' ') p++;
+
+        tlen = 0;
+        while (*p && *p != ' ' && tlen < (int)sizeof(tokDir) - 1) tokDir[tlen++] = *p++;
+        tokDir[tlen] = '\0';
+        while (*p == ' ') p++;
+
+        tlen = 0;
+        while (*p && *p != ' ' && tlen < (int)sizeof(tokAct) - 1) tokAct[tlen++] = *p++;
+        tokAct[tlen] = '\0';
+        while (*p == ' ') p++;
+
+        if (tokVolt[0] == '\0' || tokDir[0] == '\0' || tokAct[0] == '\0') {
+            snprintf(replyMsg, sizeof(replyMsg), "JT VOLT: Usage: VOLT <1..4> <V|mV> <HIGH|LOW> <CMD|HIB|WAKE> [CH1..3] [cmd...]");
+            return;
+        }
+
+        // Parse voltage
+        uint16_t targetMv = 0;
+        if (strchr(tokVolt, '.') != nullptr) {
+            float v = atof(tokVolt);
+            if (v > 0) targetMv = (uint16_t)(v * 1000.0f + 0.5f);
+        } else {
+            int v = atoi(tokVolt);
+            if (v > 0 && v <= 24) targetMv = v * 1000;
+            else if (v > 24) targetMv = (uint16_t)v;
+        }
+        if (targetMv < 500 || targetMv > 30000) {
+            snprintf(replyMsg, sizeof(replyMsg), "JT VOLT: Invalid voltage '%s' (range 500..30000 mV)", tokVolt);
+            return;
+        }
+
+        // Parse direction
+        uint8_t dir = 0;
+        if (strcasecmp(tokDir, "HIGH") == 0 || strcasecmp(tokDir, "HI") == 0 ||
+            strcasecmp(tokDir, "RISE") == 0 || strcasecmp(tokDir, "UP") == 0 || strcmp(tokDir, ">=") == 0) {
+            dir = NEXUS_VOLT_DIR_HIGH;
+        } else if (strcasecmp(tokDir, "LOW") == 0 || strcasecmp(tokDir, "LO") == 0 ||
+                   strcasecmp(tokDir, "FALL") == 0 || strcasecmp(tokDir, "DOWN") == 0 || strcmp(tokDir, "<=") == 0) {
+            dir = NEXUS_VOLT_DIR_LOW;
+        } else {
+            snprintf(replyMsg, sizeof(replyMsg), "JT VOLT: Invalid direction '%s' (HIGH or LOW)", tokDir);
+            return;
+        }
+
+        // Parse action
+        uint8_t act = 0;
+        if (strcasecmp(tokAct, "CMD") == 0 || strcasecmp(tokAct, "COMMAND") == 0) {
+            act = NEXUS_VOLT_ACT_CMD;
+        } else if (strcasecmp(tokAct, "HIB") == 0 || strcasecmp(tokAct, "HIBERNATE") == 0 ||
+                   strcasecmp(tokAct, "SLEEP") == 0) {
+            act = NEXUS_VOLT_ACT_HIBERNATE;
+        } else if (strcasecmp(tokAct, "WAKE") == 0) {
+            act = NEXUS_VOLT_ACT_WAKE;
+        } else {
+            snprintf(replyMsg, sizeof(replyMsg), "JT VOLT: Invalid action '%s' (CMD, HIB, or WAKE)", tokAct);
+            return;
+        }
+
+        // Parse optional channel: CH1, CH2, CH3, BAT
+        uint8_t ch = 0;
+        if (strncasecmp(p, "CH1", 3) == 0 && (p[3] == ' ' || p[3] == '\0')) {
+            ch = 0; p += 3; while (*p == ' ') p++;
+        } else if (strncasecmp(p, "CH2", 3) == 0 && (p[3] == ' ' || p[3] == '\0')) {
+            ch = 1; p += 3; while (*p == ' ') p++;
+        } else if (strncasecmp(p, "CH3", 3) == 0 && (p[3] == ' ' || p[3] == '\0')) {
+            ch = 2; p += 3; while (*p == ' ') p++;
+        } else if (strncasecmp(p, "BAT", 3) == 0 && (p[3] == ' ' || p[3] == '\0')) {
+            ch = 0; p += 3; while (*p == ' ') p++;
+        }
+
+        NexusVoltRule &rule = volt_rules[slot - 1];
+        rule.mv = targetMv;
+        rule.direction = dir;
+        rule.action = act;
+        rule.channel = ch;
+        rule.flags = 0;
+        strncpy(rule.command, p, sizeof(rule.command) - 1);
+        rule.command[sizeof(rule.command) - 1] = '\0';
+
+        volt_debounce_count[slot - 1] = 0;
+        volt_triggered[slot - 1] = false;
+
+        const char *actName = (act == NEXUS_VOLT_ACT_CMD) ? "CMD" : (act == NEXUS_VOLT_ACT_HIBERNATE) ? "HIB" : "WAKE";
+        const char *dirName = (dir == NEXUS_VOLT_DIR_HIGH) ? "HIGH" : "LOW";
+        const char *chName = (ch == 1) ? "CH2" : (ch == 2) ? "CH3" : "BAT";
+
+        snprintf(replyMsg, sizeof(replyMsg),
+                 "JT VOLT: [%d] %u.%02uV %s %s [%s]%s%.16s configured (RAM). Run /nexus SAVE to persist.",
+                 slot, targetMv / 1000, (targetMv % 1000) / 10, dirName, actName, chName,
+                 rule.command[0] ? " : " : "", rule.command);
+    }
+    else if (strcasecmp(cmd, "SPLIT") == 0 || strncasecmp(cmd, "SPLIT ", 6) == 0) {
+        const char *p = skipToken(cmd);
+        if (!*p || strcasecmp(p, "STATUS") == 0) {
+            const char *modeStr = (splitConfig.mode == NEXUS_SPLIT_ROOF_MSF)     ? "ROOF_MSF" :
+                                  (splitConfig.mode == NEXUS_SPLIT_ROOF_SPLIT)   ? "ROOF_SPLIT" :
+                                  (splitConfig.mode == NEXUS_SPLIT_CLIENT_SPLIT) ? "CLIENT_SPLIT" : "OFF";
+            snprintf(replyMsg, sizeof(replyMsg),
+                     "JT SPLIT: Mode=%s Alt=SF%u/%.1fk/%.3fMHz Pwr=%d dBm Flags=0x%02X",
+                     modeStr, splitConfig.alt_sf, (float)splitConfig.alt_bw, splitConfig.alt_freq,
+                     splitConfig.alt_tx_power, splitConfig.flags);
+        } else if (strcasecmp(p, "OFF") == 0) {
+            splitConfig.mode = NEXUS_SPLIT_OFF;
+            snprintf(replyMsg, sizeof(replyMsg), "JT SPLIT: OFF (RAM). Run /nexus SAVE to persist.");
+        } else {
+            char subMode[16] = {0};
+            char targetTok[32] = {0};
+            const char *rest = nullptr;
+
+            const char *sp = strchr(p, ' ');
+            if (sp) {
+                size_t l = sp - p;
+                if (l >= sizeof(subMode)) l = sizeof(subMode) - 1;
+                strncpy(subMode, p, l);
+                subMode[l] = '\0';
+                p = skipToken(p);
+            } else {
+                strncpy(subMode, p, sizeof(subMode) - 1);
+                p = "";
+            }
+
+            if (*p) {
+                sp = strchr(p, ' ');
+                if (sp) {
+                    size_t l = sp - p;
+                    if (l >= sizeof(targetTok)) l = sizeof(targetTok) - 1;
+                    strncpy(targetTok, p, l);
+                    targetTok[l] = '\0';
+                    rest = skipToken(p);
+                } else {
+                    strncpy(targetTok, p, sizeof(targetTok) - 1);
+                    rest = "";
+                }
+            }
+
+            NexusSplitMode newMode = NEXUS_SPLIT_OFF;
+            if (strcasecmp(subMode, "MSF") == 0) {
+                newMode = NEXUS_SPLIT_ROOF_MSF;
+            } else if (strcasecmp(subMode, "ROOF") == 0) {
+                newMode = NEXUS_SPLIT_ROOF_SPLIT;
+            } else if (strcasecmp(subMode, "CLIENT") == 0) {
+                newMode = NEXUS_SPLIT_CLIENT_SPLIT;
+            } else {
+                snprintf(replyMsg, sizeof(replyMsg), "JT SPLIT: Unknown mode '%s'. Use MSF, ROOF, CLIENT, or OFF.", subMode);
+                return;
+            }
+
+            if (!targetTok[0]) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT SPLIT: Missing target preset/SF. Usage: SPLIT %s <PRESET|SF> [PWR=<dBm>] [ECHO] [MESHRELAY]", subMode);
+                return;
+            }
+
+            RadioInterface *iface = (router) ? router->getInterface() : nullptr;
+            uint8_t targetSf = 0;
+            // F2 fix (Jenny 2026-10-23): getBW() returns kHz (e.g. 62.5) — alt_bw stores the
+            // wire code (62); convert before comparing or the fast path never matches.
+            uint16_t targetBw = iface ? bwKHzToCode(iface->getBW()) : 62;
+            uint8_t targetCr = iface ? iface->getCR() : 5;
+            float targetFreq = iface ? iface->getFreq() : 869.6180f;
+            int8_t targetPwr = -9;
+
+            char *endp = nullptr;
+            long numericSf = strtol(targetTok, &endp, 10);
+            if (endp && *endp == '\0' && numericSf >= 5 && numericSf <= 12) {
+                targetSf = (uint8_t)numericSf;
+            } else if (strncasecmp(targetTok, "SF", 2) == 0 && isdigit((unsigned char)targetTok[2])) {
+                targetSf = (uint8_t)atoi(targetTok + 2);
+            } else if (strcasecmp(targetTok, "P1") == 0 || strcasecmp(targetTok, "SFNARROW") == 0) {
+                targetSf = 7; targetBw = 62; targetCr = 5; targetFreq = 869.6180f;
+            } else if (strcasecmp(targetTok, "P7") == 0 || strcasecmp(targetTok, "NARROWPLUS") == 0) {
+                targetSf = 6; targetBw = 62; targetCr = 5; targetFreq = 869.6180f;
+            } else if (strcasecmp(targetTok, "NARROWPROMAX") == 0 || strcasecmp(targetTok, "NARROWPREMIUM") == 0) {
+                targetSf = 5; targetBw = 62; targetCr = 5; targetFreq = 869.6180f;
+            } else if (strcasecmp(targetTok, "NF") == 0 || strcasecmp(targetTok, "NARROWFAST") == 0 || strcasecmp(targetTok, "NARF") == 0) {
+                targetSf = 7; targetBw = 62; targetCr = 6; targetFreq = 869.4417f;
+            } else if (strcasecmp(targetTok, "NS") == 0 || strcasecmp(targetTok, "NARROWSLOW") == 0 || strcasecmp(targetTok, "NARS") == 0) {
+                targetSf = 8; targetBw = 62; targetCr = 6; targetFreq = 869.4417f;
+            // F4 fix (Jenny 2026-10-23): Mini-1..8 = SF6, matching R4's PRESET MINI table
+            // (SF6/BW31/CR5) — these were SF7 here, so a SPLIT tier set to Mini-x never
+            // decoded nodes configured via PRESET MINI-x.
+            } else if (strcasecmp(targetTok, "MINI-1") == 0 || strcasecmp(targetTok, "MINI1") == 0) {
+                targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 865.6188f;
+            } else if (strcasecmp(targetTok, "MINI-2") == 0 || strcasecmp(targetTok, "MINI2") == 0) {
+                targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 865.7812f;
+            } else if (strcasecmp(targetTok, "MINI-3") == 0 || strcasecmp(targetTok, "MINI3") == 0) {
+                targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 866.2188f;
+            } else if (strcasecmp(targetTok, "MINI-4") == 0 || strcasecmp(targetTok, "MINI4") == 0) {
+                targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 866.3812f;
+            } else if (strcasecmp(targetTok, "MINI-5") == 0 || strcasecmp(targetTok, "MINI5") == 0) {
+                targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 866.8188f;
+            } else if (strcasecmp(targetTok, "MINI-6") == 0 || strcasecmp(targetTok, "MINI6") == 0) {
+                targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 866.9812f;
+            } else if (strcasecmp(targetTok, "MINI-7") == 0 || strcasecmp(targetTok, "MINI7") == 0) {
+                targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 867.4188f;
+            } else if (strcasecmp(targetTok, "MINI-8") == 0 || strcasecmp(targetTok, "MINI8") == 0) {
+                targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 867.5812f;
+            } else if (strcasecmp(targetTok, "LF") == 0 || strcasecmp(targetTok, "LONGFAST") == 0) {
+                targetSf = 11; targetBw = 250; targetCr = 5; targetFreq = 869.5250f;
+            } else if (strcasecmp(targetTok, "SF") == 0 || strcasecmp(targetTok, "SHORTFAST") == 0) {
+                targetSf = 7; targetBw = 250; targetCr = 5; targetFreq = 869.5250f;
+            } else {
+                snprintf(replyMsg, sizeof(replyMsg), "JT SPLIT: Unknown target preset '%s'", targetTok);
+                return;
+            }
+
+            if (targetSf < 5 || targetSf > 12) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT SPLIT: Invalid SF%u (must be 5..12)", targetSf);
+                return;
+            }
+
+            uint8_t flags = NEXUS_SPLIT_FLAG_USE_ZH_MASK;
+            if (rest && *rest) {
+                char restBuf[64] = {0};
+                strncpy(restBuf, rest, sizeof(restBuf) - 1);
+                char *tok = strtok(restBuf, " ");
+                while (tok) {
+                    if (strncasecmp(tok, "PWR=", 4) == 0) {
+                        targetPwr = (int8_t)atoi(tok + 4);
+                    } else if (strcasecmp(tok, "ECHO") == 0) {
+                        flags |= NEXUS_SPLIT_FLAG_INDOOR_ECHO;
+                    } else if (strcasecmp(tok, "MESHRELAY") == 0) {
+                        flags |= NEXUS_SPLIT_FLAG_MESH_RELAY;
+                    } else if (strcasecmp(tok, "NOZH") == 0) {
+                        flags &= ~NEXUS_SPLIT_FLAG_USE_ZH_MASK;
+                    }
+                    tok = strtok(nullptr, " ");
+                }
+            }
+
+            if (newMode == NEXUS_SPLIT_ROOF_MSF) {
+#if (defined(USE_LR2021) || defined(ARCH_PORTDUINO)) && !RADIOLIB_EXCLUDE_LR2021
+                LR2021Interface *lr2021 = static_cast<LR2021Interface *>(RadioLibInterface::instance);
+                if (lr2021) {
+                    uint8_t curMainSf = lr2021->getSF();
+                    if (targetSf <= curMainSf) {
+                        snprintf(replyMsg, sizeof(replyMsg),
+                                 "JT SPLIT: LR2021 requires Side SF > Main SF. Current Main=SF%u, Target=SF%u (reverse them).",
+                                 curMainSf, targetSf);
+                        return;
+                    }
+                    uint8_t sfs[1] = { targetSf };
+                    if (!lr2021->configureSideDetectors(sfs, 1)) {
+                        snprintf(replyMsg, sizeof(replyMsg), "JT SPLIT: LR2021 rejected Side Detector SF%u", targetSf);
+                        return;
+                    }
+                    lr2021->setSideDetectors(sfs, 1);
+                } else {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT SPLIT: ROOF_MSF requires LR2021 hardware.");
+                    return;
+                }
+#else
+                snprintf(replyMsg, sizeof(replyMsg), "JT SPLIT: ROOF_MSF requires LR2021 hardware.");
+                return;
+#endif
+            }
+
+            splitConfig.mode = newMode;
+            splitConfig.flags = flags;
+            splitConfig.alt_sf = targetSf;
+            splitConfig.alt_bw = targetBw;
+            splitConfig.alt_cr = targetCr;
+            splitConfig.alt_freq = targetFreq;
+            splitConfig.alt_tx_power = targetPwr;
+
+            snprintf(replyMsg, sizeof(replyMsg),
+                     "JT SPLIT: %s configured (Alt=SF%u/%.1fk/%.3fMHz Pwr=%d dBm, RAM). Run /nexus SAVE to persist.",
+                     subMode, targetSf, (float)targetBw, targetFreq, targetPwr);
+        }
+    }
+    else if (strcasecmp(cmd, "APC") == 0 || strncasecmp(cmd, "APC ", 4) == 0) {
+        const char *sub = (strlen(cmd) > 3) ? skipToken(cmd) : "";
+        if (!*sub || strcasecmp(sub, "STATUS") == 0) {
+            bool en = (splitConfig.flags & NEXUS_SPLIT_FLAG_APC_EN) != 0;
+            snprintf(replyMsg, sizeof(replyMsg), "JT APC: %s (Min: %d dBm)", en ? "ON" : "OFF", splitConfig.apc_min_power);
+        } else if (strncasecmp(sub, "ON", 2) == 0) {
+            splitConfig.flags |= NEXUS_SPLIT_FLAG_APC_EN;
+            const char *minTok = strstr(sub, "MIN=");
+            if (minTok) {
+                splitConfig.apc_min_power = (int8_t)atoi(minTok + 4);
+            }
+            snprintf(replyMsg, sizeof(replyMsg), "JT APC: ON (Min: %d dBm, RAM). Run /nexus SAVE to persist.", splitConfig.apc_min_power);
+        } else if (strcasecmp(sub, "OFF") == 0) {
+            splitConfig.flags &= ~NEXUS_SPLIT_FLAG_APC_EN;
+            snprintf(replyMsg, sizeof(replyMsg), "JT APC: OFF (RAM). Run /nexus SAVE to persist.");
+        } else {
+            snprintf(replyMsg, sizeof(replyMsg), "JT APC: Usage: APC [ON [MIN=<dBm>] | OFF | STATUS]");
         }
     }
     else if (strcasecmp(cmd, "LNA") == 0) {
@@ -4294,14 +4821,17 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             for (int i = 0; i < 4; i++) if (v->macros[i].command[0] != '\0') macrosUsed++;
             uint8_t cronUsed = 0;
             for (int i = 0; i < 8; i++) if (v->cron_table[i].active) cronUsed++;
+            uint8_t voltUsed = 0;
+            for (int i = 0; i < 4; i++) if (v->volt_rules[i].action != NEXUS_VOLT_ACT_NONE && v->volt_rules[i].mv > 0) voltUsed++;
             snprintf(replyMsg, sizeof(replyMsg),
-                     "JT VAULT:\nVer:v%u Size:%uB\nDrop:0x%08lX%08lX\nOutDr:0x%08lX%08lX\nInv:0x%08X\nGroups:%u/4\nAliases:%u/16\nMacros:%u/4\nCron:%u/8",
+                     "JT VAULT:\nVer:v%u Size:%uB\nDrop:0x%08lX%08lX\nOutDr:0x%08lX%08lX\nInv:0x%08X\nGroups:%u/4\nAliases:%u/16\nMacros:%u/4\nCron:%u/8\nVolt:%u/4\nSplit:%u APC:%s",
                      (unsigned int)v->version, (unsigned int)sizeof(NexusVault),
                      (unsigned long)(v->drop_mask >> 32), (unsigned long)(v->drop_mask & 0xFFFFFFFFu),
                      (unsigned long)(v->out_drop_mask >> 32), (unsigned long)(v->out_drop_mask & 0xFFFFFFFFu),
                      (unsigned int)v->invalid_mask,
                      (unsigned int)groupsUsed, (unsigned int)aliasesUsed,
-                     (unsigned int)macrosUsed, (unsigned int)cronUsed);
+                     (unsigned int)macrosUsed, (unsigned int)cronUsed, (unsigned int)voltUsed,
+                     (unsigned int)v->split_config.mode, (v->split_config.flags & NEXUS_SPLIT_FLAG_APC_EN) ? "ON" : "OFF");
         }
     }
     else if (strncasecmp(cmd, "VAULT DIFF", 10) == 0 || strcasecmp(cmd, "VDF") == 0) {
@@ -4881,6 +5411,40 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 diffs++;
             }
 
+            // volt_rules (4 slots, v68)
+            for (int i = 0; i < 4; i++) {
+                if (volt_rules[i].action != v->volt_rules[i].action ||
+                    volt_rules[i].mv != v->volt_rules[i].mv ||
+                    volt_rules[i].direction != v->volt_rules[i].direction ||
+                    volt_rules[i].channel != v->volt_rules[i].channel ||
+                    strncmp(volt_rules[i].command, v->volt_rules[i].command, 32) != 0) {
+                    char line[96];
+                    snprintf(line, sizeof(line),
+                             "volt_rules[%d]: RAM=a%u/%umV/d%u/ch%u/'%.16s' Vault=a%u/%umV/d%u/ch%u/'%.16s'",
+                             i + 1, (unsigned)volt_rules[i].action, (unsigned)volt_rules[i].mv,
+                             (unsigned)volt_rules[i].direction, (unsigned)volt_rules[i].channel, volt_rules[i].command,
+                             (unsigned)v->volt_rules[i].action, (unsigned)v->volt_rules[i].mv,
+                             (unsigned)v->volt_rules[i].direction, (unsigned)v->volt_rules[i].channel, v->volt_rules[i].command);
+                    appendPaging(line);
+                    diffs++;
+                }
+            }
+
+            // split_config (v69)
+            if (splitConfig.mode != v->split_config.mode ||
+                splitConfig.flags != v->split_config.flags ||
+                splitConfig.alt_sf != v->split_config.alt_sf ||
+                splitConfig.alt_tx_power != v->split_config.alt_tx_power ||
+                splitConfig.apc_min_power != v->split_config.apc_min_power) {
+                char line[96];
+                snprintf(line, sizeof(line),
+                         "split_config: RAM=m%u/f0x%02X/SF%u/%ddBm/apc%d Vault=m%u/f0x%02X/SF%u/%ddBm/apc%d",
+                         splitConfig.mode, splitConfig.flags, splitConfig.alt_sf, splitConfig.alt_tx_power, splitConfig.apc_min_power,
+                         v->split_config.mode, v->split_config.flags, v->split_config.alt_sf, v->split_config.alt_tx_power, v->split_config.apc_min_power);
+                appendPaging(line);
+                diffs++;
+            }
+
             // Summary footer
             char summary[64];
             if (diffs == 0) {
@@ -5363,12 +5927,16 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 // Per Carson's rule (Semtech SX1261-2 §6.2.1 / LR1110 §8.2.1), DSB receiver filter
                 // bandwidth must satisfy rxBw >= br + 2*freqDev (e.g. 50 kbps + 2*25 kHz = 100 kHz -> 117.3 kHz step).
                 const char *p = sub;
-                float br = atof(p); while (*p && *p != ' ') p++; while (*p == ' ') p++;
+                float br = atof(p);
+                while (*p && *p != ' ') p++;
+                while (*p == ' ') p++;
                 float dev = (*p) ? atof(p) : ((br >= 3.0f && br <= 300.0f) ? (br * 0.5f) : 25.0f);
                 if (dev > 200.0f) dev = 200.0f;
-                while (*p && *p != ' ') p++; while (*p == ' ') p++;
+                while (*p && *p != ' ') p++;
+                while (*p == ' ') p++;
                 float rbw = (*p) ? atof(p) : 0.0f;
-                while (*p && *p != ' ') p++; while (*p == ' ') p++;
+                while (*p && *p != ' ') p++;
+                while (*p == ' ') p++;
                 int pre = (*p) ? atoi(p) : 16;
                 float carsonMinBw = br + 2.0f * dev;
                 if (rbw < carsonMinBw) {
@@ -7648,7 +8216,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             appendPaging("FIREWALL: DROPS, DROP, OUTDROP, PRALLOW, PRBLOCK, SS, SETHEX, SETHEXOUT, RL, FSIG\n");
             appendPaging("SIGINT: RSSILOG, NETSCAN, CLIENTSCAN, FREQSCAN, NOISE, PPING, CHASH, DBINFO, MODULES, INFRA, RELAYS, SRELAY, SEARCHKEY, HOPSTATS, TRANSSTATS, CHANNELSTATS, SORTEDCHANNELSTATS, SORTEDPACKETSTATS, LORACHIPSTATS\n");
             appendPaging("SEND: TEXTC, DM, REDIRECT (R), SENDPOS, SENDNODE\n");
-            appendPaging("ADMIN: SKEY, DM-FORWARD, SAVE, LOAD, BD, SETCHNAME, SETCHPSK, ADDCH, DELCH, SETROLE, SETPOWER, OKTOMQTT, BELL, PLAY, STARWARS, FULLCONFIGDUMP\n");
+            appendPaging("ADMIN: SKEY, DM-FORWARD, SAVE, LOAD, BD, SETCHNAME, SETCHPSK, ADDCH, DELCH, SETROLE, VOLT, SPLIT, APC, SETPOWER, OKTOMQTT, BELL, PLAY, STARWARS, FULLCONFIGDUMP\n");
             appendPaging("SYSTEM: SYS, HW, TELEMETRY, POS, INFO, COMPILATION, VAULT, STATS, SS, VS, HEAP, NODES, FNODE, GROUP, TIME, UTIL, PHONE, PMGT, SMI, GPIO, WIFIOTA, MCUINFO, SENSORS\n");
             appendPaging("TARGETS: FAV, UNFAV, IGNORE, UNIGNORE, NIGN\n");
             appendPaging("STORAGE: LS, RM, CAT, FS\n");
@@ -7701,7 +8269,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             snprintf(replyMsg, sizeof(replyMsg), "JT: Paging SIGINT help...");
         } else if (strcasecmp(sub, "ADMIN") == 0 || strcasecmp(sub, "SYSTEM") == 0) {
             startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "Help ADMIN/SYS");
-            appendPaging("SKEY [1|2] [Key]: Dynamic keys.\nSETROLE <role>.\nSETPOWER <dBm>.\n");
+            appendPaging("SKEY [1|2] [Key]: Dynamic keys.\nSETROLE <role> [RAM].\nVOLT <1..4> ...\nSETPOWER <dBm>.\n");
             appendPaging("SETCHNAME <idx> <name>.\nSETCHPSK <idx> <psk>.\nADDCH <name> [psk].\nDELCH <idx>.\nSAVE/LOAD: Vault management.\n");
             appendPaging("SYS: Core health.\nHW: Radio/Clock info.\nTELEMETRY: Power/Env report.\nUTIL: Ch/TX airtime.\nWIFIOTA: ESP32 OTA loader info (project, version, IDF, SHA256, built).\nMCUINFO: MCU identity + runtime state (chip, flash, heap, MAC/DeviceID, up-time).\nSENSORS: I2C devices detected at boot + live power/env/values + GPS.");
             snprintf(replyMsg, sizeof(replyMsg), "JT: Paging ADMIN/SYS help...");
@@ -7712,6 +8280,40 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             appendPaging("Jitter floor stays at 100ms; range scales to N*1000ms.\n");
             appendPaging("Default 5. Persisted to vault on SAVE.");
             snprintf(replyMsg, sizeof(replyMsg), "JT: Paging ADMIN/SYS help...");
+        } else if (strcasecmp(sub, "VOLT") == 0 || strcasecmp(sub, "VOLTAGE") == 0) {
+            startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "Help VOLT");
+            appendPaging("Usage: VOLT [LIST|STATUS]             -> Display all 4 slots, status & live readings\n");
+            appendPaging("Usage: VOLT <1..4> OFF                 -> Disable slot\n");
+            appendPaging("Usage: VOLT WAKE                       -> Clear hibernation flag in RAM\n");
+            appendPaging("Usage: VOLT <1..4> <V|mV> <HIGH|LOW> <CMD|HIB|WAKE> [CH1|CH2|CH3|BAT] [cmd...]\n");
+            appendPaging("Examples:\n");
+            appendPaging("  VOLT 1 3.80V HIGH CMD SETROLE ROUTER RAM\n");
+            appendPaging("  VOLT 2 3.60V LOW  CMD SETROLE MUTE RAM\n");
+            appendPaging("  VOLT 3 3.50V HIGH WAKE\n");
+            appendPaging("  VOLT 4 3.20V LOW  HIB\n");
+            appendPaging("Multi-channel INA: pass CH2 or CH3 after action type. Default BAT / CH1.\n");
+            appendPaging("Persistence: RAM-only. Run /nexus SAVE to write to /nexus.bin vault.");
+            snprintf(replyMsg, sizeof(replyMsg), "JT: Paging VOLT help...");
+        } else if (strcasecmp(sub, "SPLIT") == 0) {
+            startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "Help SPLIT");
+            appendPaging("Usage: SPLIT [STATUS]                  -> Display current split-tier state\n");
+            appendPaging("Usage: SPLIT OFF                       -> Disable split-tier repeating\n");
+            appendPaging("Usage: SPLIT MSF <preset|SF> [PWR=<dBm>] [ECHO] [MESHRELAY]\n");
+            appendPaging("  LR2021 Concurrent Multi-SF Bridge: Main SF < Side SF (e.g. Main=P7 SF6, Alt=P1 SF7).\n");
+            appendPaging("  ECHO: also echoes indoor->indoor on SF6. MESHRELAY: relays outside SF7->SF7 too.\n");
+            appendPaging("Usage: SPLIT ROOF <preset> [PWR=<dBm>] [ECHO]\n");
+            appendPaging("  Single-Radio Rooftop Split: listens on primary preset, downlinks to house on target preset.\n");
+            appendPaging("Usage: SPLIT CLIENT <preset> [PWR=<dBm>]\n");
+            appendPaging("  Indoor Client: listens on primary, switches to target preset on TX (uplink to roof).\n");
+            appendPaging("Persistence: RAM-only. Run /nexus SAVE to write to /nexus.bin vault.");
+            snprintf(replyMsg, sizeof(replyMsg), "JT: Paging SPLIT help...");
+        } else if (strcasecmp(sub, "APC") == 0) {
+            startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "Help APC");
+            appendPaging("Usage: APC [STATUS]                    -> Display APC state & min power\n");
+            appendPaging("Usage: APC ON [MIN=<dBm>]              -> Enable SNR-based Automatic Power Control on 0-hop direct unicast\n");
+            appendPaging("Usage: APC OFF                         -> Disable APC (always use configured preset power)\n");
+            appendPaging("Persistence: RAM-only. Run /nexus SAVE to write to /nexus.bin vault.");
+            snprintf(replyMsg, sizeof(replyMsg), "JT: Paging APC help...");
         } else if (strcasecmp(sub, "IDENTITY") == 0 || strcasecmp(sub, "NAME") == 0) {
             startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "Help IDENTITY");
             appendPaging("NAME <name>: Identity rotation + reboot.");

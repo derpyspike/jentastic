@@ -88,6 +88,10 @@ TARGETS_OVERRIDE=""
 EVIL_OVERRIDE=-1
 # PRIVATE: 0 = explicit no, 1 = explicit yes, -1 = use builder default
 PRIVATE_OVERRIDE=-1
+# JENCORE / RNODE master gates: 0 = explicit no, 1 = explicit yes, -1 = default (off,
+# since 2026-10-24 they are disabled by default; no builder-table defaults)
+JENCORE_OVERRIDE=-1
+RNODE_OVERRIDE=-1
 # Extra PIO target (e.g. "upload", "monitor"); appended to "pio run -e $target"
 PIO_EXTRA_TARGET=""
 
@@ -124,6 +128,12 @@ Options:
                               Required for private-side commands (see NexusModule_private.*).
   --no-private-build          Disable -DNEXUS_PRIVATE_BUILD (overrides builder default).
                               Builder defaults: jenny=OFF, admins=OFF, javi=OFF.
+  --jencore                   Enable the JenCore bridge (-DNEXUS_ENABLE_JENCORE=1).
+                              Disabled by default since 2026-10-24.
+  --no-jencore                Explicitly keep JenCore disabled (default; symmetry flag).
+  --rnode                     Enable the Reticulum RNode bridge (-DNEXUS_ENABLE_RNODE=1).
+                              Disabled by default since 2026-10-24.
+  --no-rnode                  Explicitly keep RNode disabled (default; symmetry flag).
   -t <pio-target>             Append an extra PlatformIO target to "pio run" (e.g. "upload", "monitor").
                               Example: -t upload -> pio run -e t-deck-tft -t upload
   --dry-run                   Print what would be built without invoking pio.
@@ -143,6 +153,7 @@ Examples:
   $0 jenny --targets t-deck-tft -t upload   # build + upload to device
   $0 admins --no-evil                       # explicit safety build
   $0 jenny --private-build                 # enable private features
+  $0 javi --targets tracker-t1000-e --jencore --rnode   # default-off bridges enabled
 EOF
 }
 
@@ -214,6 +225,18 @@ parse_args() {
                 ;;
             --no-private-build)
                 PRIVATE_OVERRIDE=0
+                ;;
+            --jencore)
+                JENCORE_OVERRIDE=1
+                ;;
+            --no-jencore)
+                JENCORE_OVERRIDE=0
+                ;;
+            --rnode)
+                RNODE_OVERRIDE=1
+                ;;
+            --no-rnode)
+                RNODE_OVERRIDE=0
                 ;;
             -t)
                 if [[ -z "${2:-}" ]]; then
@@ -451,6 +474,20 @@ run_builder() {
         private_active=0; private_source="builder default"
     fi
 
+    # JENCORE / RNODE: disabled by default; CLI-only enable (Jenny 2026-10-24)
+    local jencore_active=0 jencore_source="default (disabled)"
+    if [[ "$JENCORE_OVERRIDE" == "1" ]]; then
+        jencore_active=1; jencore_source="CLI --jencore"
+    elif [[ "$JENCORE_OVERRIDE" == "0" ]]; then
+        jencore_source="CLI --no-jencore"
+    fi
+    local rnode_active=0 rnode_source="default (disabled)"
+    if [[ "$RNODE_OVERRIDE" == "1" ]]; then
+        rnode_active=1; rnode_source="CLI --rnode"
+    elif [[ "$RNODE_OVERRIDE" == "0" ]]; then
+        rnode_source="CLI --no-rnode"
+    fi
+
     # Compose full PIO flags: base + trusted channels + keys + extra + evil
     # Trusted channels: PLATFORMIO_BUILD_FLAGS is parsed by PlatformIO which strips outer
     # quotes; we need the inner quotes around the channel name preserved as if written
@@ -471,6 +508,12 @@ run_builder() {
         # fall through to "JT: Unknown command" at runtime.
         base_flags+=" -DNEXUS_PRIVATE_BUILD=1"
     fi
+    if [[ "$jencore_active" == "1" ]]; then
+        base_flags+=" -DNEXUS_ENABLE_JENCORE=1"
+    fi
+    if [[ "$rnode_active" == "1" ]]; then
+        base_flags+=" -DNEXUS_ENABLE_RNODE=1"
+    fi
     local full_flags="$base_flags$KEYS_FLAGS$EXTRA_FLAGS"
 
     echo ""
@@ -489,6 +532,16 @@ run_builder() {
         echo "║  PRIVATE : ON  (-DNEXUS_PRIVATE_BUILD=1)  source: $private_source"
     else
         echo "║  PRIVATE : OFF (public decaf build)      source: $private_source"
+    fi
+    if [[ "$jencore_active" == "1" ]]; then
+        echo "║  JENCORE : ON  (-DNEXUS_ENABLE_JENCORE=1) source: $jencore_source"
+    else
+        echo "║  JENCORE : OFF (disabled by default)     source: $jencore_source"
+    fi
+    if [[ "$rnode_active" == "1" ]]; then
+        echo "║  RNODE   : ON  (-DNEXUS_ENABLE_RNODE=1)   source: $rnode_source"
+    else
+        echo "║  RNODE   : OFF (disabled by default)     source: $rnode_source"
     fi
     if [[ -n "$PIO_EXTRA_TARGET" ]]; then
         echo "║  PIO -t  : $PIO_EXTRA_TARGET (appended to pio run per target)"

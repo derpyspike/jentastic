@@ -340,12 +340,17 @@ Again: The 2.8 already does this automatically, but if you wanna override it man
 | **`CLIENTALWAYS`** | `CLIENTALWAYS [ON\|OFF]` | Disables relay cancelation. Works both on CLIENTs and CLIENT_BASEs **USE ONLY WHEN A NODE MUST REPEAT LIKE A ROUTER BUT CANNOT BE A ROUTER.** (No `CA` alias.) Bare form queries. | `JT: Client Always set to <ON\|OFF>`<br>Query: `JT: Client Always is <ON\|OFF>` |
 | `BASETEXTS` | `BASETEXTS [ON\|OFF]` | Useful for roof top base nodes, does the same thing a Client Always but only with text messages, if CA is on it changes nothing. (No `BT` alias.) Bare form queries. | `JT: Base Texts set to <ON\|OFF>`<br>Query: `JT: Base Texts is <ON\|OFF>` |
 | `ROLE` | `ROLE` | Query active device role. | `JT ROLE: <role> (<n>)` |
-| `SETROLE` | `SETROLE <role>` | Change device role. Accepted: `CLIENT`, `SENS`/`SENSOR`, `RTR`/`ROUTER`, `RTR_CLIENT`, `BASE`/`CLIENT_BASE`, `MUTE`/`CLIENT_MUTE`, `HIDDEN`/`CLIENT_HIDDEN`, `LOST`/`LOST_AND_FOUND`, `TAK`, `TAK_TRACKER`, or digit 0-13. (`REPEATER`/`TRACKER` are **not** valid.) | `JT: Role updated to <role> (<n>).` |
-| `LR2021_SF` / **`MULTISF`** / `MSF`| `LR2021_SF [SFs...]` | Configure LR2021 hardware multi-SF concurrent receiver channels (compiled only with `USE_LR2021` / `ARCH_PORTDUINO`). Example: `LR2021_SF 7 8 9`. | `JT LR2021_SF: side=[SF7,SF8] stored and applied (n=<n>)`<br>`JT LR2021_SF: side=(empty) cleared (single-SF RX, n=0)` |
+| `SETROLE` | `SETROLE <role> [RAM]` | Change device role. Append `RAM` for live in-memory change with role defaults applied without saving to flash and without rebooting (anti-flash-wear for solar threshold crossing). Accepted: `CLIENT`, `SENS`/`SENSOR`, `RTR`/`ROUTER`, `RTR_CLIENT`, `BASE`/`CLIENT_BASE`, `MUTE`/`CLIENT_MUTE`, `HIDDEN`/`CLIENT_HIDDEN`, `LOST`/`LOST_AND_FOUND`, `TAK`, `TAK_TRACKER`, or digit 0-13. | RAM: `JT: Role set to <role> (<n>) in RAM (no reboot).`<br>Flash: `JT: Role updated to <role> (<n>).` |
+| **`VOLT`** / `VOLTAGE` | `VOLT [LIST\|STATUS]`<br>`VOLT <1..4> OFF`<br>`VOLT WAKE`<br>`VOLT <1..4> <V\|mV> <HIGH\|LOW> <CMD\|HIB\|WAKE> [CH1..3\|BAT] [cmd...]` | 4-threshold voltage power automation engine (v68). Monitors battery or multi-channel INA voltage (3-reading debounce, 50 mV hysteresis). Actions:<br>• `CMD`: Execute local command (up to 31 chars)<br>• `HIB`: Enter timed 60s microamp deep sleep sniff loop<br>• `WAKE`: Wake from hibernation + run optional wake command<br>Channels: `BAT`/`CH1` (default), `CH2`, `CH3` (multi-channel INA3221). Persistent via `/nexus SAVE`. | `JT: Paging VOLT rules...`<br>`JT VOLT: [<slot>] <V> <DIR> <ACT> [<CH>] configured (RAM). Run /nexus SAVE to persist.` |
+| `LR2021_SF` / **`MULTISF`** / `MSF`| `LR2021_SF [SFs...]` | Configure LR2021 hardware multi-SF concurrent receiver channels with independent syncwords (compiled only with `USE_LR2021` / `ARCH_PORTDUINO`). Supports optional `:0xSW`, `:jc`, or `:mc` per channel. Example: `LR2021_SF 6 7 8:0x12` or `LR2021_SF 6 7 8:jc`. | `JT LR2021_SF: side=[SF6,SF7,SF8:0x12] stored and applied (n=<n>)`<br>`JT LR2021_SF: side=(empty) cleared (single-SF RX, n=0)` |
+| **`JENCORE`** / `JC` / `MCORE` | `JENCORE [STATUS]`<br>`JENCORE RELAY <ON\|OFF>`<br>`JENCORE HYBRID <ON\|OFF>`<br>`JENCORE STATS` | JenCore interop & sniffer subsystem. Bridges JenCore/JenCore traffic, decodes direct messages and group text on `JC:` channels, relays flood packets, and manages SX126x hybrid syncword (`0x14B4`) mode. | `JT JENCORE:\n Relay: <ON\|OFF>\n HybridSync: <ON\|OFF>\n RxSeen: <n> ...`<br>`JT JENCORE: Relay <ON\|OFF>`<br>`JT JENCORE: HybridSync <ON\|OFF>`<br>`JT JC STATS: ...` |
+| **`RNODE`** / `RN` | `RNODE [STATUS]`<br>`RNODE MODE <BRIDGE\|STANDALONE\|OFF>`<br>`RNODE TCP <ON\|OFF>`<br>`RNODE BLE <ON\|OFF>`<br>`RNODE TIER <SF>` | Reticulum RNode engine. Turns node into an RNode via TCP port 7633 (WiFi) and Nordic UART Service (BLE NUS). In BRIDGE mode (default), runs concurrently with Meshtastic and JenCore, ACKing Reticulum parameter commands while maintaining the configured tier. In STANDALONE mode, radio hardware is dedicated exclusively to Reticulum. | `JT RNODE:\n Mode: <BRIDGE\|STANDALONE\|OFF>\n Tier SF: <SF>\n TCP: <ON\|OFF> ...`<br>`JT RNODE: Mode <mode>`<br>`JT RNODE: TCP server <ON\|OFF>`<br>`JT RNODE: BLE NUS <ON\|OFF>`<br>`JT RNODE: Reticulum tier SF set to <SF>` |
 | `G3` / `FRONTEND` | `G3 [STATUS]` | Station G3 PA / LNA RF front-end control status (compiled only on `STATION_G3` builds). | `JT G3 STATUS`<br>`  PA  = <state>`<br>`  LNA = <state>`<br>`  vault: PA=<st> LNA=<st> (run /nexus SAVE to persist)` |
 | | `G3 LNA <ON\|OFF\|BYPASS>` | Set G3 frontend LNA state (RAM-only until SAVE). | `JT G3: LNA=<ON\|OFF> (GPIO10 OUTPUT <LOW\|HIGH> / bypassed). RAM-only — run /nexus SAVE to persist.` |
 | | `G3 PA <ON\|OFF>` | Set G3 frontend PA state (RAM-only until SAVE). | `JT G3: PA=<ON\|OFF> (GPIO9 OUTPUT HIGH / INPUT Hi-Z). RAM-only — run /nexus SAVE to persist.` |
 | | `G3 REINIT` | Re-probe both jumper pads and re-apply front-end state. | `JT G3 REINIT`<br>`  PA  = <state>`<br>`  LNA = <state>` |
+| **`APC`** | `APC [STATUS]`<br>`APC ON [MIN=<dBm>]`<br>`APC OFF` | Automatic Power Control engine. Dynamically scales down TX power for direct 0-hop unicast packets (DMs, routing ACKs) based on the target node's last recorded SNR. Prevents receiver saturation, saves battery, and reduces unnecessary RF pollution. Example: `APC ON MIN=-9`. Persistent via `/nexus SAVE`. | `JT APC: <ON\|OFF> (Min: <dBm> dBm)`<br>`JT APC: ON (Min: <dBm> dBm, RAM). Run /nexus SAVE to persist.`<br>`JT APC: OFF (RAM). Run /nexus SAVE to persist.` |
+| **`SPLIT`** | `SPLIT [STATUS]`<br>`SPLIT OFF`<br>`SPLIT MSF <PRESET\|SF> [PWR=<dBm>] [ECHO] [MESHRELAY]`<br>`SPLIT ROOF <PRESET\|SF> [PWR=<dBm>] [ECHO] [MESHRELAY]`<br>`SPLIT CLIENT <PRESET\|SF> [PWR=<dBm>]` | Split-Tier Dual-Preset Engine (v69). Bridges outdoor community mesh and high-speed low-power indoor networks.<br>• `MSF`: Concurrent multi-SF bridge on LR2021 hardware (zero deafness, stock clients supported). E.g. Main=SF6 (`NarrowPlus`), Side=SF7 (`SFNarrow`).<br>• `ROOF`: Single-radio rooftop split (SX1262/SX1280/LR1121). Listens outside, repeats indoor packets at low power, repeats indoor client uplinks out to mesh.<br>• `CLIENT`: Asymmetric indoor client. Listens on indoor tier, transmits uplinks directly on outdoor mesh tier.<br>Options: `PWR=<dBm>` (default -9), `ECHO` (repeat indoor traffic indoors), `MESHRELAY` (repeat mesh traffic out to mesh), `NOZH` (disable zero-hop mask check). Persistent via `/nexus SAVE`. | `JT SPLIT: Mode=<mode> Alt=SF<sf>/<bw>k/<freq>MHz Pwr=<dBm> dBm Flags=0x<HEX>`<br>`JT SPLIT: <mode> configured (Alt=SF<sf>/<bw>k/<freq>MHz Pwr=<dBm> dBm, RAM). Run /nexus SAVE to persist.`<br>`JT SPLIT: OFF (RAM). Run /nexus SAVE to persist.` |
 
 **PRESET settings reference** — presets accepted across Sub-GHz (`EU_868`, `EU_N_868`, `EU_866`) and 2.4 GHz (`LORA_24`):
 **Beware that the legality of each varies per country. Make sure to always verify and follow your local regulations.**
@@ -760,6 +765,7 @@ Nexus stores its persistent configuration in an encrypted / versioned flash segm
 | `ADDCH` | §12 Channels & Config | Add a new channel slot |
 | `ADMINS` | §8 Identity & NodeDB | List authorized admin public keys |
 | `ALIAS` | §15 Aliases, Macros & Automation | Custom 4-char node alias management |
+| `APC` | §7 Radio & RF Control | Automatic Power Control (dynamic SNR step-down) |
 | `BASETEXTS` | §7 Radio & RF Control | Client-base text-only rebroadcast toggle |
 | `BD` | §11 Vault & Persistence | Broadcast delay / paging jitter settings |
 | `BELL` | §14 Messaging & Routing | Hardware buzzer single alert bell |
@@ -828,6 +834,7 @@ Nexus stores its persistent configuration in an encrypted / versioned flash segm
 | `LS` | §16 Filesystem & Utilities | List LittleFS files |
 | `MACRO` / `MC` | §15 Aliases, Macros & Automation | Stored command macro execution |
 | `MCUINFO` / `MCU` | §13 Hardware & Sensors | Detailed MCU core and flash info |
+| `JENCORE` / `JC` | §7 Radio & RF Control | JenCore interop & sniffer bridge |
 | `META_ALERT` / `MA` | §13 Hardware & Sensors | Alert on metadata request receipt |
 | `METRICS` | §13 Hardware & Sensors | Another node's battery / channel-utilization metrics |
 | `MODULES` / `MOD` | §12 Channels & Config | List active firmware modules |
@@ -865,6 +872,7 @@ Nexus stores its persistent configuration in an encrypted / versioned flash segm
 | `REBOOT` | §16 Filesystem & Utilities | Safe reboot with 20s delay |
 | `RELAYS` / `RY` | §9 Observation & SIGINT | All active relay IDs with D/R/T counts |
 | `RM` | §16 Filesystem & Utilities | Delete file from filesystem |
+| `RNODE` / `RN` | §7 Radio & RF Control | Reticulum RNode engine & KISS bridge |
 | `ROLE` | §7 Radio & RF Control | Show active device role |
 | `RSSI` / `RS` | §9 Observation & SIGINT | Last received packet RF metrics |
 | `SHORTRSSI` / `SR` | §9 Observation & SIGINT | Minimal 2-line packet RF report |
@@ -899,6 +907,7 @@ Nexus stores its persistent configuration in an encrypted / versioned flash segm
 | `SORTEDCHANNELSTATS` | §9 Observation & SIGINT | Sorted channel traffic distribution |
 | `SORTEDPACKETSTATS` | §9 Observation & SIGINT | Sorted PortNum traffic activity list |
 | `SORTEDRELAYSTATS` | §9 Observation & SIGINT | Sorted relay ID activity list |
+| `SPLIT` | §7 Radio & RF Control | Split-Tier Dual-Preset Engine (MSF/Roof/Client) |
 | `STARWARS` | §14 Messaging & Routing | Play Star Wars melody on buzzer |
 | `STATUSPS` | §9 Observation & SIGINT | Send packet-volume summary as Node Status |
 | `SYS` | §13 Hardware & Sensors | CPU temperature, boot reason, heap |
@@ -918,6 +927,7 @@ Nexus stores its persistent configuration in an encrypted / versioned flash segm
 | `VAULT DIFF` / `VDF` | §11 Vault & Persistence | Diff RAM settings against saved vault |
 | `VERIFYSTATS` / `VS` | §9 Observation & SIGINT | XEdDSA signature verification stats |
 | `VERSION` / `V` | §2 Help & Build Info | Firmware version string |
+| `VOLT` / `VOLTAGE` | §7 Radio & RF Control / §13 Hardware & Sensors | 4-threshold voltage automation engine |
 | `WATCH` | §10 Target Watchlist | In-depth continuous node RF & hop tracker |
 | `WIFI` | §13 Hardware & Sensors | WiFi connection status, SSID, IP |
 | `WIFIOTA` / `OTA` | §13 Hardware & Sensors | ESP32 OTA firmware metadata |

@@ -479,6 +479,52 @@ public:
         uint8_t type;      // 0=hex, 1=base64, 2=text (for display only)
     };
 
+    enum NexusVoltAction : uint8_t {
+        NEXUS_VOLT_ACT_NONE      = 0,
+        NEXUS_VOLT_ACT_CMD       = 1,
+        NEXUS_VOLT_ACT_HIBERNATE = 2,
+        NEXUS_VOLT_ACT_WAKE      = 3
+    };
+
+    enum NexusVoltDir : uint8_t {
+        NEXUS_VOLT_DIR_HIGH = 0, // >= target
+        NEXUS_VOLT_DIR_LOW  = 1  // <= target
+    };
+
+    struct __attribute__((packed)) NexusVoltRule {
+        uint16_t mv;          // Target millivolts
+        uint8_t  action;      // NexusVoltAction
+        uint8_t  direction;   // NexusVoltDir
+        uint8_t  channel;     // 0 = default battery / INA CH1, 1 = INA CH2, 2 = INA CH3
+        uint8_t  flags;       // Reserved / trigger tracking
+        char     command[32]; // Command string
+    };
+
+    enum NexusSplitMode : uint8_t {
+        NEXUS_SPLIT_OFF          = 0,
+        NEXUS_SPLIT_ROOF_SPLIT   = 1, // Single-RX rooftop: RX on primary, downlink on altPreset, indoor 0-hop uplink on primary
+        NEXUS_SPLIT_CLIENT_SPLIT = 2, // Indoor client: RX on primary, all TX on altPreset
+        NEXUS_SPLIT_ROOF_MSF     = 3  // LR2021 concurrent RX: Primary=low SF (indoor), SideDet=high SF (mesh), cross-repeats
+    };
+
+    enum NexusSplitFlags : uint8_t {
+        NEXUS_SPLIT_FLAG_USE_ZH_MASK = (1 << 0), // Only treat nodes in zero_hop_mask as indoor nodes (default in ROOF_SPLIT)
+        NEXUS_SPLIT_FLAG_INDOOR_ECHO = (1 << 1), // Rooftop also echoes indoor->indoor packets on the indoor preset
+        NEXUS_SPLIT_FLAG_MESH_RELAY  = (1 << 2), // In ROOF_MSF, also relay outside SF7->SF7 in addition to SF7->SF6 downlink
+        NEXUS_SPLIT_FLAG_APC_EN      = (1 << 3)  // Enable SNR-based per-packet APC on unicast direct hops
+    };
+
+    struct __attribute__((packed)) NexusSplitConfig {
+        uint8_t mode;            // NexusSplitMode (0..3)
+        uint8_t flags;           // NexusSplitFlags bitmask
+        uint8_t alt_sf;          // Secondary preset SF (5..12)
+        uint8_t alt_cr;          // Secondary preset CR (5..8)
+        uint16_t alt_bw;         // Secondary preset BW code (31, 62, 125, 250, 400, 500, 800, 1600)
+        float alt_freq;          // Secondary preset frequency in MHz (e.g. 869.6180f, 867.5812f)
+        int8_t alt_tx_power;     // TX power (dBm) when transmitting on secondary/indoor tier (e.g. -9)
+        int8_t apc_min_power;    // Minimum TX power (dBm) for APC step-down (default 0)
+    }; // Total: 12 bytes
+
     // Nexus Storage Vault structure (Fixed-length for simplicity and speed)
     struct __attribute__((packed)) NexusVault {
         char magic[4];       // "JenT"
@@ -551,6 +597,8 @@ public:
         uint32_t nexus_security_bitmask;  // v65: security subsystem bitmask.
         uint64_t features_mask;           // v66: feature toggles (see NexusModule.h FEATURES_* constants)
         uint64_t nexusVariantBits;        // v67: generic variant-bitmask pool. Each variant carves its own bit range from this 64-bit field. Additive; defaults to 0 (all variant-extensions off) when loaded from a v66 vault (fileSize clamp leaves the trailing 8 B as zero-init).
+        NexusVoltRule volt_rules[4];      // v68: 4-voltage threshold rules
+        NexusSplitConfig split_config;    // v69: Dual-preset split-tier and APC configuration (12 bytes)
         uint32_t crc32;
     };
 
@@ -648,6 +696,24 @@ public:
 
     uint16_t nexus_ignore_count = 0;
     uint32_t nexus_ignore_list[64] = {0};
+
+    // Voltage Threshold Automation Engine (v68)
+    NexusVoltRule volt_rules[4] = {{0}};
+    uint32_t last_volt_check_ms = 0;
+    uint8_t volt_debounce_count[4] = {0};
+    bool volt_triggered[4] = {false};
+    bool is_hibernating = false;
+    void setHibernating(bool hib);
+    uint16_t getVoltageReadingMv(uint8_t channel);
+    void runVoltageAutomations();
+
+    // Dual-Preset Split-Tier and APC Engine (v69)
+    NexusSplitConfig splitConfig = {};
+    bool isSplitEnabled() const { return splitConfig.mode != NEXUS_SPLIT_OFF; }
+    bool isApcEnabled() const { return (splitConfig.flags & NEXUS_SPLIT_FLAG_APC_EN) != 0; }
+    int8_t getApcMinPower() const { return splitConfig.apc_min_power; }
+    void onRebroadcastPacket(const meshtastic_MeshPacket *rxp, meshtastic_MeshPacket *txp);
+    void onClientSendPacket(meshtastic_MeshPacket *p);
 
     // Zero-Hop System (v22)
     uint8_t zero_hop_config = 0; // Bit 0: EN, Bit 1: TELE, Bit 2: POS, Bit 3: AUTO_ROUTER, Bit 4: AUTO_CLIENT

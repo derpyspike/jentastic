@@ -42,6 +42,12 @@ template <typename Vault> bool decodeVault(Vault &out, size_t fileSize, size_t b
         payloadSize = offsetof(Vault, nexusVariantBits);
         break;
     case 67:
+        payloadSize = offsetof(Vault, volt_rules);
+        break;
+    case 68:
+        payloadSize = offsetof(Vault, split_config);
+        break;
+    case 69:
         payloadSize = offsetof(Vault, crc32);
         break;
     default:
@@ -199,7 +205,7 @@ inline bool dailyDue(uint32_t now, uint32_t secondsOfDay, uint32_t lastRun)
            (lastRun == 0 || now / 86400 > lastRun / 86400);
 }
 
-inline bool parseSideDetectors(const char *args, uint8_t *sfs, size_t capacity, uint8_t &count)
+inline bool parseSideDetectors(const char *args, uint8_t *sfs, uint8_t *syncwords, size_t capacity, uint8_t &count)
 {
     count = 0;
     if (strcasecmp(args, "OFF") == 0 || strcmp(args, "0") == 0)
@@ -212,7 +218,30 @@ inline bool parseSideDetectors(const char *args, uint8_t *sfs, size_t capacity, 
         for (uint8_t i = 0; i < count; ++i)
             if (sfs[i] == value)
                 return false;
-        sfs[count++] = static_cast<uint8_t>(value);
+        uint8_t sw = 0;
+        if (*args == ':') {
+            ++args;
+            if (strncasecmp(args, "jc", 2) == 0 || strncasecmp(args, "mc", 2) == 0) {
+                sw = 0x12;
+                args += 2;
+            } else if (strncasecmp(args, "0x", 2) == 0) {
+                char *endp = nullptr;
+                unsigned long parsedSw = strtoul(args + 2, &endp, 16);
+                if (endp == args + 2 || parsedSw > 0xFF)
+                    return false;
+                sw = static_cast<uint8_t>(parsedSw);
+                args = endp;
+            } else {
+                uint32_t parsedSw = 0;
+                if (!readUnsigned(args, parsedSw) || parsedSw > 0xFF)
+                    return false;
+                sw = static_cast<uint8_t>(parsedSw);
+            }
+        }
+        sfs[count] = static_cast<uint8_t>(value);
+        if (syncwords)
+            syncwords[count] = sw;
+        count++;
         low = std::min(low, value);
         high = std::max(high, value);
         if (*args && *args != ' ')
@@ -221,6 +250,11 @@ inline bool parseSideDetectors(const char *args, uint8_t *sfs, size_t capacity, 
             ++args;
     }
     return count != 0 && high - low <= 4;
+}
+
+inline bool parseSideDetectors(const char *args, uint8_t *sfs, size_t capacity, uint8_t &count)
+{
+    return parseSideDetectors(args, sfs, nullptr, capacity, count);
 }
 
 } // namespace meshtastic::nexus

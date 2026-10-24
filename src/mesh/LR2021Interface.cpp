@@ -64,7 +64,7 @@ bool LR2021Interface::wideLora()
 // with the same opcodes and same byte layout, just bundled with the
 // syncword side (0x0225) that we were missing anyway.
 
-bool LR2021Interface::configureSideDetectors(const uint8_t *sfs, uint8_t num)
+bool LR2021Interface::configureSideDetectors(const uint8_t *sfs, uint8_t num, const uint8_t *syncWords)
 {
     // Disable path — RadioLib handles nullptr-or-zero cleanly: returns
     // RADIOLIB_ERR_NONE which we map to true here.
@@ -79,11 +79,13 @@ bool LR2021Interface::configureSideDetectors(const uint8_t *sfs, uint8_t num)
         sideDet[i].sf = sfs[i];
         sideDet[i].ldro = false;
         sideDet[i].invertIQ = false;
-        // Use the main detector's syncword (default 0x2B, or whatever the
-        // operator set via /nexus SETSYNCWORD, vault v40). Reading directly
-        // from the RadioLibInterface member ensures the side detectors
-        // always match the channel's syncword — the chip-actual byte.
-        sideDet[i].syncWord = syncWord;
+        // Use custom syncword if provided (e.g. 0x12 for JenCore), otherwise use the main
+        // detector's syncword (default 0x2B, or whatever the operator set via /nexus SETSYNCWORD).
+        if (syncWords && syncWords[i] != 0) {
+            sideDet[i].syncWord = syncWords[i];
+        } else {
+            sideDet[i].syncWord = syncWord;
+        }
     }
     return lora.setSideDetector(sideDet, num) == RADIOLIB_ERR_NONE;
 }
@@ -107,7 +109,15 @@ void LR2021Interface::applyStoredSideDetectors()
     if (sideSFsCount_ == 0) {
         return;
     }
-    if (configureSideDetectors(sideSFs_, sideSFsCount_)) {
+    // Guard (2.8.105): never attempt to apply if the current spreading factor is >= any side detector SF
+    // (such as during a transient TX switch to a higher SF), which would fail chip validation
+    // and wipe our stored table!
+    for (uint8_t i = 0; i < sideSFsCount_; ++i) {
+        if (sf >= sideSFs_[i]) {
+            return;
+        }
+    }
+    if (configureSideDetectors(sideSFs_, sideSFsCount_, sideSyncWords_)) {
         LOG_INFO("LR2021 side detectors applied (n=%u)", (unsigned)sideSFsCount_);
     } else {
         LOG_WARN("LR2021 side detectors rejected by chip (n=%u) — falling back to single-SF",
@@ -126,7 +136,7 @@ void LR2021Interface::applyStoredSideDetectors()
 //
 // Returns true on accepted storage; false on validation failure (caller
 // uses this to format an error reply).
-void LR2021Interface::setSideDetectors(const uint8_t *sfs, uint8_t num)
+void LR2021Interface::setSideDetectors(const uint8_t *sfs, uint8_t num, const uint8_t *syncWords)
 {
     // Defensive CLI-side validation. The CLI handler in NexusCommands.cpp
     // pre-validates with the same rules and emits per-constraint error
@@ -150,6 +160,7 @@ void LR2021Interface::setSideDetectors(const uint8_t *sfs, uint8_t num)
     if ((hi - lo) > 4) return;
     for (uint8_t i = 0; i < num; i++) {
         sideSFs_[i] = sfs[i];
+        sideSyncWords_[i] = syncWords ? syncWords[i] : 0;
     }
     sideSFsCount_ = num;
 }
