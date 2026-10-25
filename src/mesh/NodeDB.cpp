@@ -12,6 +12,7 @@
 #include "MessageStore.h"
 #include "NodeDB.h"
 #include "PacketHistory.h"
+#include "PacketProfiler.h"
 #include "PowerFSM.h"
 #include "RadioInterface.h"
 #include "Router.h"
@@ -3948,6 +3949,7 @@ bool NodeDB::updateUser(uint32_t nodeId, meshtastic_User &p, uint8_t channelInde
 /// we updateGUI and updateGUIforNode if we think our this change is big enough for a redraw
 void NodeDB::updateFrom(const meshtastic_MeshPacket &mp)
 {
+    PROF_SCOPE(NODEDB_UPDATE);
     if (mp.from == getNodeNum()) {
         LOG_DEBUG("Ignore update from self");
         return;

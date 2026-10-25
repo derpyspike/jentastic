@@ -1,5 +1,6 @@
 #include "RadioLibInterface.h"
 #include "ContentionStats.h"
+#include "PacketProfiler.h"
 #include "modules/NexusModule.h"
 #if MESHTASTIC_ENABLE_JENCORE_SNIFFER
 #include "FSCommon.h"
@@ -85,6 +86,7 @@ RadioLibInterface::RadioLibInterface(LockingArduinoHal *hal, RADIOLIB_PIN_TYPE c
 
 void INTERRUPT_ATTR RadioLibInterface::isrLevel0Common(PendingISR cause)
 {
+    PROF_DO(prof::isrAt = micros());
     instance->disableInterrupt();
 
     BaseType_t xHigherPriorityTaskWoken;
@@ -218,6 +220,7 @@ ErrorCode RadioLibInterface::send(meshtastic_MeshPacket *p)
         packetPool.release(p);
         return res;
     }
+    PROF_DO(prof::mark(p->id, prof::SLOT_TXQ));
 
     // set (random) transmit delay to let others reconfigure their radio,
     // to avoid collisions and implement timing-based flooding
@@ -423,21 +426,32 @@ void RadioLibInterface::deliverPendingIrqFromPoll(PendingISR cause)
 
 void RadioLibInterface::onNotify(uint32_t notification)
 {
+#ifdef PROFILE_PACKETS
+    if (prof::isrAt && (notification == ISR_TX || notification == ISR_RX)) {
+        prof::add(prof::ISR_LATENCY, micros() - prof::isrAt);
+        if (notification == ISR_TX)
+            prof::add(prof::TX_AIR, prof::isrAt - prof::txStartAt);
+        prof::isrAt = 0;
+    }
+#endif
 
     switch (notification) {
     case ISR_TX:
-        handleTransmitInterrupt(); // completeSending() already restored the radio to the home config
-        // Let the hooks pre-stage the radio for the NEXT queued packet. Not required for correctness -
-        // TRANSMIT_DELAY_COMPLETED asks again before the scan, which is where the answer is acted on -
-        // but it keeps the post-TX listen window on the channel we are about to transmit on.
-        (void)RadioTxHooks::beforeTransmit(this, txQueue.getFront());
-        startReceive();
-        setTransmitDelay();
-#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
-        // A JenCore frame never follows a transmission straight away: hold it back a few random slots.
-        jencoreRepeater.afterTransmit(slotTimeMsec);
-        wakeJenCoreRelay();
-#endif
+        if (sendingPacket) {
+            if (uint32_t wait = nextFrameDelayMsec()) {
+                notifyLater(wait, NEXT_FRAME, true); // sendingPacket stays set, so nothing else is sent meanwhile
+                break;
+            }
+        }
+        onTransmitDone();
+        break;
+    case NEXT_FRAME:
+        PROF_DO(prof::txStartAt = micros());
+        if (sendingPacket && sendNextFrame()) {
+            enableInterrupt(isrTxLevel0);
+            break;
+        }
+        onTransmitDone();
         break;
     case ISR_RX:
         // PREAMBLE_DETECTED/HEADER_VALID/SYNC are routed to the edge-triggered DIO1
@@ -519,6 +533,22 @@ void RadioLibInterface::onNotify(uint32_t notification)
     default:
         assert(0); // We expected to receive a valid notification from the ISR
     }
+}
+
+void RadioLibInterface::onTransmitDone()
+{
+    handleTransmitInterrupt(); // completeSending() already restored the radio to the home config
+    // Let the hooks pre-stage the radio for the NEXT queued packet. Not required for correctness -
+    // TRANSMIT_DELAY_COMPLETED asks again before the scan, which is where the answer is acted on -
+    // but it keeps the post-TX listen window on the channel we are about to transmit on.
+    (void)RadioTxHooks::beforeTransmit(this, txQueue.getFront());
+    startReceive();
+    setTransmitDelay();
+#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+    // A JenCore frame never follows a transmission straight away: hold it back a few random slots.
+    jencoreRepeater.afterTransmit(slotTimeMsec);
+    wakeJenCoreRelay();
+#endif
 }
 
 void RadioLibInterface::setTransmitDelay()
@@ -1136,6 +1166,7 @@ void RadioLibInterface::completeSending()
 
 void RadioLibInterface::handleReceiveInterrupt()
 {
+    PROF_SCOPE(RX_HANDLE);
     // when this is called, we should be in receive mode - if we are not, just jump out instead of bombing. Possible Race
     // Condition?
     if (!isReceiving) {
@@ -1165,7 +1196,9 @@ void RadioLibInterface::handleReceiveInterrupt()
     }
 #endif
 
-    int state = iface->readData((uint8_t *)&radioBuffer, length);
+    int state = readFrame(length);
+    if (state == RX_FRAME_PARTIAL)
+        return;
 #if ARCH_PORTDUINO
     if (portduino_config.logoutputlevel == level_trace) {
         printBytes("Raw incoming packet: ", (uint8_t *)&radioBuffer, length);
@@ -1449,7 +1482,9 @@ bool RadioLibInterface::startSend(meshtastic_MeshPacket *txp)
 
         size_t numbytes = beginSending(txp);
 
-        int res = iface->startTransmit((uint8_t *)&radioBuffer, numbytes);
+        PROF_DO(prof::markEnd(txp->id, prof::SLOT_TXQ, prof::TX_QUEUE));
+        PROF_DO(prof::txStartAt = micros());
+        int res = startTransmitFrame(numbytes);
         if (res != RADIOLIB_ERR_NONE) {
             LOG_ERROR("startTransmit failed, error=%d", res);
             RECORD_CRITICALERROR(meshtastic_CriticalErrorCode_RADIO_SPI_BUG);

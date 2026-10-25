@@ -825,6 +825,11 @@ uint32_t RadioInterface::getPacketTime(const meshtastic_MeshPacket *p, bool rece
     return getPacketTime(pl, received);
 }
 
+bool RadioInterface::altModemActive()
+{
+    return meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0;
+}
+
 /** The delay to use for retransmitting dropped packets */
 uint32_t RadioInterface::getRetransmissionMsec(const meshtastic_MeshPacket *p)
 {
@@ -838,7 +843,7 @@ uint32_t RadioInterface::getRetransmissionMsec(const meshtastic_MeshPacket *p)
     uint8_t CWsize = map(channelUtil, 0, 100, CWmin, CWmax);
     // Assuming we pick max. of CWsize and there will be a client with SNR at half the range
     return 2 * packetAirtime + (pow_of_2(CWsize) + 2 * CWmax + pow_of_2(int((CWmax + CWmin) / 2))) * slotTimeMsec +
-           PROCESSING_TIME_MSEC;
+           (altModemActive() ? ALT_MODEM_PROCESSING_TIME_MSEC : PROCESSING_TIME_MSEC);
 }
 
 /** The delay to use when we want to send something */
@@ -850,7 +855,7 @@ uint32_t RadioInterface::getTxDelayMsec()
     float channelUtil = airTime->channelUtilizationPercent();
     uint8_t CWsize = map(channelUtil, 0, 100, CWmin, CWmax);
     // LOG_DEBUG("Current channel utilization is %f so setting CWsize to %d", channelUtil, CWsize);
-    return random(0, pow_of_2(CWsize)) * slotTimeMsec;
+    return random(0, pow_of_2(CWsize)) * slotTimeMsec + (altModemActive() ? ALT_MODEM_MIN_TX_GAP_MSEC : 0);
 }
 
 /** The CW size to use when calculating SNR_based delays */
@@ -1465,7 +1470,8 @@ void RadioInterface::applyModemConfig()
     }
 
     slotTimeMsec = computeSlotTimeMsec();
-    preambleTimeMsec = preambleLength * (pow_of_2(sf) / bw);
+    // FSK/FLRC preambles are a few dozen bits: well under a millisecond
+    preambleTimeMsec = altModemActive() ? 1 : preambleLength * (pow_of_2(sf) / bw);
 
     LOG_INFO("Radio freq=%.3f, config.lora.frequency_offset=%.3f", freq, loraConfig.frequency_offset);
     LOG_INFO("Set radio: region=%s, name=%s, config=%u, ch=%d, power=%d", newRegion->name, channelName, loraConfig.modem_preset,
@@ -1490,6 +1496,11 @@ void RadioInterface::applyModemConfig()
   - MAC processing time (measured on T-beam) */
 uint32_t RadioInterface::computeSlotTimeMsec()
 {
+    // No CAD outside LoRa: carrier sense is an instantaneous RSSI/sync-word check, so a slot only has to cover
+    // turnaround; the LoRa formula would give ~10 ms slots for packets that take 1-10 ms on air
+    if (altModemActive())
+        return ALT_MODEM_SLOT_TIME_MSEC;
+
     float sumPropagationTurnaroundMACTime = 0.2 + 0.4 + 7; // in milliseconds
     float symbolTime = pow_of_2(sf) / bw;                  // in milliseconds
 

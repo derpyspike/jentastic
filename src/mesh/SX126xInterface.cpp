@@ -253,28 +253,27 @@ template <typename T> int16_t SX126xInterface<T>::programAltModemFSK()
     // FREQUENCY (-12, band is 150-960) -> chip re-inited to LoRa -> retried -> same
     // -> "radio down until reboot". The base-class overload (SX126x.h:105) takes no
     // freq argument — this is that one; our tail below re-programs freq/power.
-    int16_t err = lora.SX126x::beginFSK(m.brKbps, m.freqDevKHz, m.rxBwKHz, m.preambleBits);
+    // Floor preamble at 32 bits for reliable bit-sync lock at higher data rates
+    uint16_t preambleBits = max(m.preambleBits, (uint16_t)32);
+    int16_t err = lora.SX126x::beginFSK(m.brKbps, m.freqDevKHz, m.rxBwKHz, preambleBits);
     if (err != RADIOLIB_ERR_NONE) {
         LOG_ERROR("SX126X beginFSK(%.1fk/%.1fk/%.1fk/%u) %s%d", m.brKbps, m.freqDevKHz, m.rxBwKHz,
-                  m.preambleBits, radioLibErr, err);
+                  preambleBits, radioLibErr, err);
         return err;
     }
 
-    // Uniform Nexus wire profile (research doc 2026-10-09 §7; Jenny ruling 2026-10-14:
-    // "whatever it takes so they are compatible with each other, and GFSK chips with FSK
-    // chips too") — pin EVERY frame-format field instead of relying on per-chip beginFSK()
-    // defaults: sync 0x12AD (RadioLib's cross-family GFSK default, pinned so a future
-    // default change can't silently split the fleet), whitening OFF (SX126x beginFSK
-    // leaves it off — verified in RadioLib source), NRZ, variable packet mode, and
-    // 2-byte CCITT inverted CRC (0x1D0F/0x1021 — the setCRC defaults, called
-    // explicitly so the profile is identical on every chip family).
+    // Uniform Nexus wire profile (research doc 2026-10-09 §7; Jenny ruling 2026-10-14):
+    // 4-byte balanced sync word nexusAltSyncWord (0x2D, 0x4B, 0xD4, 0x93) across the entire fleet
+    // to prevent receiver false-correlator locks on noise, whitening OFF, NRZ, variable packet mode,
+    // and 2-byte CCITT inverted CRC (0x1D0F/0x1021).
     err = lora.setFrequency(getFreq());
     if (err != RADIOLIB_ERR_NONE) {
         LOG_ERROR("SX126X setFrequency(%.3f) %s%d", getFreq(), radioLibErr, err);
         return err;
     }
-    uint8_t wireSync[2] = {0x12, 0xAD};
-    err = lora.setSyncWord(wireSync, sizeof(wireSync)); // GFSK multi-byte overload
+    uint8_t altSync[sizeof(nexusAltSyncWord)];
+    memcpy(altSync, nexusAltSyncWord, sizeof(altSync));
+    err = lora.setSyncWord(altSync, sizeof(altSync)); // GFSK multi-byte overload
     if (err != RADIOLIB_ERR_NONE) {
         LOG_ERROR("SX126X GFSK setSyncWord %s%d", radioLibErr, err);
         return err;
@@ -749,16 +748,17 @@ template <typename T> bool SX126xInterface<T>::isChannelActive()
                                        .timeout = 0,
                                        .irqFlags = RADIOLIB_IRQ_CAD_DEFAULT_FLAGS,
                                        .irqMask = RADIOLIB_IRQ_CAD_DEFAULT_MASK}};
-    // Nexus SETFSK: GFSK has no LoRa CAD — RSSI energy sniff instead (preamble-sniff
-    // approximation, Jenny ruling 2026-10-14): an active FSK carrier sits well above
-    // -100 dBm on the current channel.
+    // Nexus SETFSK: GFSK has no LoRa CAD — dynamic RSSI energy sniff instead:
+    // busy = 10 dB over the larger of the mode's sensitivity and the noise floor.
+    // Wide FSK filters (e.g. 467 kHz at 300k) have elevated noise floors that exceed -100 dBm.
     // MUST sample instantaneous RSSI while still in continuous RX mode: entering standby
     // shuts down the receiver/ADC, dropping getRSSI(false) to the standby noise floor (~-128 dBm)
     // and rendering channel activity detection completely blind.
     if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode == 1) {
         float rssi = lora.getRSSI(false);
-        LOG_TRACE("SX126X FSK channel sniff RSSI=%.1f dBm", rssi);
-        if (rssi > -100.0f)
+        float threshold = max(altSensitivityDbm(), (float)getNoiseFloor()) + 10.0f;
+        LOG_TRACE("SX126X FSK channel sniff RSSI=%.1f dBm (busy above %.1f)", rssi, threshold);
+        if (rssi > threshold)
             return true;
         setTransmitEnable(false);
         int16_t result = trySetStandby();
@@ -951,6 +951,13 @@ template <typename T> void SX126xInterface<T>::setTransmitEnable(bool txon)
         loraFEMInterface.setRxModeEnable();
     }
 #endif
+}
+
+/// Approximate SX126x sensitivity (Semtech datasheet table 13-3) of the active FSK setting
+template <typename T> float SX126xInterface<T>::altSensitivityDbm()
+{
+    const auto &m = meshtastic::nexusModule->altModem;
+    return m.brKbps >= 250 ? -99.0f : m.brKbps >= 150 ? -103.0f : m.brKbps >= 50 ? -108.0f : m.brKbps >= 10 ? -114.0f : -118.0f;
 }
 
 #endif

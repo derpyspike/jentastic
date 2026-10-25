@@ -9,6 +9,7 @@
 #include "MeshService.h"
 #include "MessageStore.h"
 #include "NodeDB.h"
+#include "PacketProfiler.h"
 #include "Power.h"
 #include "PowerFSM.h"
 #include "TypeConversions.h"
@@ -644,6 +645,7 @@ void MeshService::sendToPhone(meshtastic_MeshPacket *p)
         }
     }
 
+    PROF_DO(prof::mark(p->id, prof::SLOT_PQ));
     if (toPhoneQueue.enqueue(p, 0) == false) {
         LOG_CRIT("Queue to toPhoneQueue failed");
         releaseToPool(p);

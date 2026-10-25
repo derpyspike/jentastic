@@ -3,6 +3,7 @@
 #include "Channels.h"
 #include "MeshService.h"
 #include "NodeDB.h"
+#include "PacketProfiler.h"
 #include "configuration.h"
 #include "modules/RoutingModule.h"
 #include <algorithm>
@@ -115,6 +116,7 @@ meshtastic_MeshPacket *MeshModule::allocErrorResponse(meshtastic_Routing_Error e
 
 void MeshModule::callModules(meshtastic_MeshPacket &mp, RxSource src)
 {
+    PROF_SCOPE(MODULES);
     // LOG_DEBUG("In call modules");
     bool moduleFound = false;
 
@@ -171,9 +173,11 @@ void MeshModule::callModules(meshtastic_MeshPacket &mp, RxSource src)
                 } else
                     printPacket("packet on wrong channel, but can't respond", &mp);
             } else {
+                PROF_DO(uint32_t profModStart = micros());
                 ProcessMessage handled = pi.handleReceived(mp);
 
                 pi.alterReceived(mp);
+                PROF_DO(prof::threadRan(&pi, pi.name, micros() - profModStart)); // listed as "thread=<module name>"
 
                 // Possibly send replies (but only if the message was directed to us specifically, i.e. not for promiscious
                 // sniffing) also: we only let the one module send a reply, once that happens, remaining modules are not

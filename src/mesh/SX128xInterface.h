@@ -2,6 +2,10 @@
 
 #include "RadioLibInterface.h"
 
+#ifndef RADIOLIB_SX128X_MAX_PACKET_LENGTH
+#define RADIOLIB_SX128X_MAX_PACKET_LENGTH 255
+#endif
+
 /**
  * \brief Adapter for SX128x radio family. Implements common logic for child classes.
  * \tparam T RadioLib module type for SX128x: SX1280.
@@ -79,9 +83,39 @@ template <class T> class SX128xInterface : public RadioLibInterface
     virtual int16_t setOutputPowerLive(int8_t powerDb) override;
     virtual int16_t setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr = 0x7F) override;
 
-    uint32_t getPacketTime(uint32_t pl, bool received) override { return computePacketTime(lora, pl, received); }
+    uint32_t getPacketTime(uint32_t pl, bool received) override
+    {
+        return usesFragments() ? flrcPacketTimeMsec(pl) : computePacketTime(lora, pl, received);
+    }
+
+    // FLRC frames carry at most 127 bytes, so FLRC packets get a 1-byte fragment header and are split when needed.
+    int16_t startTransmitFrame(size_t numbytes) override;
+    uint32_t nextFrameDelayMsec() override;
+    bool sendNextFrame() override;
+    int readFrame(size_t &length) override;
 
   private:
+    static const uint8_t FLRC_MAX_FRAME = 127;
+    // GFSK and FLRC sync word (SX128x-only links): 4 bytes, no long runs of equal bits
+    static constexpr uint8_t sx128xAltSyncWord[4] = {0x2D, 0x4B, 0xD4, 0x93};
+    // The receiver reads each fragment from its main loop before the next one overwrites the chip's buffer
+    static const uint8_t FRAG_GAP_MSEC = 10;
+
+    uint8_t frameBuf[FLRC_MAX_FRAME];
+    size_t txFragLen = 0;
+    uint8_t txFragCount = 0, txFragNext = 0, txFragTag = 0;
+    uint8_t rxFrag[sizeof(RadioBuffer)];
+    size_t rxFragLen = 0;
+    uint8_t rxFragTag = 0, rxFragCount = 0, rxFragNext = 0xFF;
+
+    static bool usesFragments() { return meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode == 2; }
+    static size_t maxFrameLen() { return usesFragments() ? FLRC_MAX_FRAME : RADIOLIB_SX128X_MAX_PACKET_LENGTH; }
+    static uint8_t fragmentCount(size_t len) { return (len + FLRC_MAX_FRAME - 2) / (FLRC_MAX_FRAME - 1); }
+    int16_t transmitFragment();
+    uint32_t flrcPacketTimeMsec(uint32_t pl);
+    float altSensitivityDbm();
+    static constexpr uint16_t FLRC_MIN_PREAMBLE_BITS = 32;
+
     /** Program all modem parameters into the chip; returns the first RadioLib error, or RADIOLIB_ERR_NONE */
     int16_t programModemParams();
 

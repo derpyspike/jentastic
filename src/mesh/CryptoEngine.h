@@ -108,6 +108,17 @@ class CryptoEngine
                                    size_t numBytes, const uint8_t *bytes, uint8_t *bytesOut);
     virtual bool setDHPublicKey(uint8_t *publicKey);
 
+  private:
+    struct DhCacheEntry {
+        uint8_t peer[32], priv[32], secret[32];
+        bool used;
+    };
+    static constexpr uint8_t DH_CACHE_SIZE = 4;
+    DhCacheEntry dhCache[DH_CACHE_SIZE] = {};
+    uint8_t dhCacheNext = 0;
+
+  public:
+
     // Temporary holder for a peer's not-yet-verified public key, learned in-band during an
     // in-progress key-verification handshake before it is committed to NodeDB. Lets the Router
     // run the DH handshake to encode/decode the follow-on PKI packet. Single slot is enough:

@@ -11,6 +11,7 @@
 #include "MeshRadio.h"
 #include "MeshService.h"
 #include "NodeDB.h"
+#include "mesh/PacketProfiler.h"
 #include "PowerFSM.h"
 #include "PowerMon.h"
 #include "RadioLibInterface.h"
@@ -1396,6 +1397,9 @@ void scannerToSensorsMap(const std::unique_ptr<ScanI2CTwoWire> &i2cScanner, Scan
 void loop()
 {
     runASAP = false;
+    PROF_DO(uint32_t profLoopStart = micros());
+    PROF_DO(static uint32_t profLoopEnd = profLoopStart);
+    PROF_DO(prof::add(prof::LOOP_GAP, profLoopStart - profLoopEnd));
 
     // The single writer of the monotonic wrap carry; every other caller only reads it.
     Time::serviceMonotonic();
@@ -1571,7 +1575,13 @@ void loop()
 #if !MESHTASTIC_EXCLUDE_WAYPOINT && ENABLE_WAYPOINT_PERSISTENCE
     waypointStoreAutosaveTick();
 #endif
+    PROF_DO(uint32_t profThreadsStart = micros());
+    PROF_DO(prof::add(prof::LOOP_PRE, profThreadsStart - profLoopStart));
     long delayMsec = mainController.runOrDelay();
+    PROF_DO(prof::add(prof::LOOP_THREADS, micros() - profThreadsStart));
+    PROF_DO(prof::add(prof::LOOP_BUSY, micros() - profLoopStart));
+    PROF_DO(prof::loopTick());
+    PROF_DO(profLoopEnd = micros());
 
     // We want to sleep as long as possible here - because it saves power
     if (!runASAP && loopCanSleep()) {

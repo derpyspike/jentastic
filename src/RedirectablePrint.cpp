@@ -5,6 +5,7 @@
 #include "gps/RTC.h"
 #include "main.h"
 #include "memGet.h"
+#include "mesh/PacketProfiler.h"
 #include "mesh/generated/meshtastic/mesh.pb.h"
 #include <assert.h>
 #include <cstring>
@@ -286,6 +287,7 @@ meshtastic_LogRecord_Level RedirectablePrint::getLogLevel(const char *logLevel)
 
 void RedirectablePrint::log(const char *logLevel, const char *format, ...)
 {
+    PROF_SCOPE(LOG);
 
     // append \n to format
     size_t len = strlen(format);

@@ -1,4 +1,5 @@
 #include "CryptoEngine.h"
+#include "PacketProfiler.h"
 // #include "NodeDB.h"
 #include "aes-ccm.h"
 #include "architecture.h"
@@ -174,6 +175,7 @@ static size_t buildSigningBuffer(uint8_t *buf, size_t bufSize, uint32_t fromNode
 bool CryptoEngine::xeddsa_sign(uint32_t fromNode, uint32_t packetId, uint32_t toNode, const meshtastic_Data *d,
                                uint8_t *signature)
 {
+    PROF_SCOPE(XEDDSA_SIGN);
     if (memfll(xeddsa_private_key, 0, sizeof(xeddsa_private_key)))
         return false;
     uint8_t sigBuf[XEDDSA_SIGN_BUF_LEN];
@@ -192,6 +194,7 @@ bool CryptoEngine::xeddsa_sign(uint32_t fromNode, uint32_t packetId, uint32_t to
 bool CryptoEngine::xeddsa_verify(const uint8_t *pubKey, uint32_t fromNode, uint32_t packetId, uint32_t toNode,
                                  const meshtastic_Data *d, const uint8_t *signature)
 {
+    PROF_SCOPE(XEDDSA_VERIFY);
     // Use cached Ed25519 key if the Curve25519 key matches, avoiding expensive field inversion
     if (memcmp(pubKey, cached_curve_pubkey, 32) != 0) {
         curve_to_ed_pub(pubKey, cached_ed_pubkey);
@@ -360,6 +363,7 @@ static const char ACK_PROOF_LABEL[] = "ack";
 bool CryptoEngine::ackProofCompute(const uint8_t *peerPubKey, uint32_t ackFrom, uint32_t ackTo, uint32_t requestId,
                                    const uint8_t *routing, size_t routingLen, uint8_t *proofOut)
 {
+    PROF_SCOPE(ACK_PROOF);
     if (memfll(private_key, 0, sizeof(private_key)))
         return false; // no identity yet - nothing to prove with
 
@@ -443,7 +447,19 @@ void CryptoEngine::aesEncrypt(uint8_t *in, uint8_t *out)
 
 bool CryptoEngine::setDHPublicKey(uint8_t *pubKey)
 {
+    PROF_SCOPE(DH_SHARED);
+    // X25519 takes ~70 ms on an nRF52 and every DM / ack proof needs one, so keep the last few results. Entries are
+    // keyed on our private key too, so a key change can never serve a stale secret. Callers hold cryptLock.
+    for (auto &e : dhCache) {
+        if (e.used && memcmp(e.peer, pubKey, 32) == 0 && memcmp(e.priv, private_key, 32) == 0) {
+            memcpy(shared_key, e.secret, 32);
+            return true;
+        }
+    }
+
     uint8_t local_priv[32];
+    uint8_t peer[32];
+    memcpy(peer, pubKey, 32);
     memcpy(shared_key, pubKey, 32);
     memcpy(local_priv, private_key, 32);
     // Calculate the shared secret with the specified node's public key and our private key
@@ -452,6 +468,13 @@ bool CryptoEngine::setDHPublicKey(uint8_t *pubKey)
         LOG_WARN("Curve25519DH step 2 failed");
         return false;
     }
+
+    DhCacheEntry &e = dhCache[dhCacheNext];
+    dhCacheNext = (dhCacheNext + 1) % DH_CACHE_SIZE;
+    memcpy(e.peer, peer, 32);
+    memcpy(e.priv, private_key, 32);
+    memcpy(e.secret, shared_key, 32);
+    e.used = true;
     return true;
 }
 

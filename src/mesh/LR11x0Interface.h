@@ -92,6 +92,7 @@ template <class T> class LR11x0Interface : public RadioLibInterface
     // Nexus SETFSK (Phase 2): GFSK programming for LR11x0 (T1000-E); no FLRC on this family.
     int16_t programAltModemFSK();
     uint8_t altModemCaps() const override { return 0x01; } // FSK only
+    float altSensitivityDbm();
 
     /** Reset and re-begin() a chip that lost its runtime configuration (reset/brownout) */
     bool reinitChip();

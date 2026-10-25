@@ -4,6 +4,7 @@
 #include "MeshRadio.h"
 #include "MeshService.h"
 #include "NodeDB.h"
+#include "PacketProfiler.h"
 #include "PositionPrecision.h"
 #include "UptimeClock.h"
 #include "gps/RTC.h"
@@ -340,6 +341,7 @@ int32_t Router::runOnce()
  */
 void Router::enqueueReceivedMessage(meshtastic_MeshPacket *p)
 {
+    PROF_DO(prof::mark(p->id, prof::SLOT_RQ));
 #if HAS_NEXUS
     // Nexus port: run the Nexus long-name tag hook on this packet before enqueueing.
     if (meshtastic::nexusModule)
@@ -988,6 +990,7 @@ bool decodesOnOurChannels(NodeNum from, PacketId id, ChannelHash channelHash, co
 
 DecodeState perhapsDecode(meshtastic_MeshPacket *p)
 {
+    PROF_SCOPE(DECODE);
     concurrency::LockGuard g(cryptLock);
 
     if (config.device.rebroadcast_mode == meshtastic_Config_DeviceConfig_RebroadcastMode_KNOWN_ONLY &&
@@ -1308,6 +1311,7 @@ static bool ackNeedsPkcFallback(const meshtastic_MeshPacket *p, ChannelIndex chI
  */
 meshtastic_Routing_Error perhapsEncode(meshtastic_MeshPacket *p)
 {
+    PROF_SCOPE(ENCODE);
     concurrency::LockGuard g(cryptLock);
 
     int16_t hash;
@@ -1779,6 +1783,8 @@ void Router::dispatchReceived(meshtastic_MeshPacket *p, RxSource src)
 
 void Router::perhapsHandleReceived(meshtastic_MeshPacket *p)
 {
+    PROF_DO(prof::markEnd(p->id, prof::SLOT_RQ, prof::ROUTER_QUEUE));
+    PROF_SCOPE(ROUTER_HANDLE);
 #if ARCH_PORTDUINO
     // Even ignored packets get logged in the trace
     if (portduino_config.traceFilename != "" || portduino_config.logoutputlevel == level_trace) {

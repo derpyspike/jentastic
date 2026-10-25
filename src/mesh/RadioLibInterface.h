@@ -112,7 +112,7 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
 
   protected:
     /// Used as our notification from the ISR
-    enum PendingISR { ISR_NONE = 0, ISR_RX, ISR_TX, TRANSMIT_DELAY_COMPLETED, ISR_POLL_TICK };
+    enum PendingISR { ISR_NONE = 0, ISR_RX, ISR_TX, TRANSMIT_DELAY_COMPLETED, ISR_POLL_TICK, NEXT_FRAME };
 
     /**
      * Raw ISR handler that just calls our polymorphic method
@@ -415,6 +415,9 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     void handleTransmitInterrupt();
     void handleReceiveInterrupt();
 
+    /** Everything that follows the last frame of a transmission: release it, listen, schedule the next one */
+    void onTransmitDone();
+
     static void timerCallback(void *p1, uint32_t p2);
 
     virtual void onNotify(uint32_t notification) override;
@@ -556,6 +559,16 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
 
     /** If a raw (non-MeshPacket) frame was being transmitted, mark it finished and log its airtime. */
     void completeRawSend();
+
+    // Frame hooks for modems whose frames are shorter than a Meshtastic packet (SX128x FLRC: 127 bytes).
+    // The default sends and reads the whole radioBuffer as one frame.
+    static const int RX_FRAME_PARTIAL = 1;
+    virtual int16_t startTransmitFrame(size_t numbytes) { return iface->startTransmit((uint8_t *)&radioBuffer, numbytes); }
+    /** >0 while more frames of the current packet remain: wait this long, then sendNextFrame() */
+    virtual uint32_t nextFrameDelayMsec() { return 0; }
+    virtual bool sendNextFrame() { return false; }
+    /** Read one received frame; RX_FRAME_PARTIAL means a fragment was stored and no packet is complete yet */
+    virtual int readFrame(size_t &length) { return iface->readData((uint8_t *)&radioBuffer, length); }
 
     /**
      * Add SNR data to received messages

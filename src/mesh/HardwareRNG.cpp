@@ -15,6 +15,7 @@
 #elif defined(ARCH_NRF52)
 #include <Adafruit_nRFCrypto.h>
 extern Adafruit_nRFCrypto nRFCrypto;
+void nrf52CryptoCellAcquire(); // NRF52CryptoEngine.cpp: keeps CryptoCell up between uses, powers it down when idle
 #elif defined(ARCH_ESP32)
 #include <esp_system.h>
 #elif defined(ARCH_RP2040)
@@ -116,9 +117,8 @@ bool fill(uint8_t *buffer, size_t length, bool useRadioEntropy)
     nRF54Crypto.end();
 #elif defined(ARCH_NRF52)
     // The Nordic SDK RNG provides cryptographic-quality randomness backed by hardware.
-    nRFCrypto.begin();
+    nrf52CryptoCellAcquire();
     auto result = nRFCrypto.Random.generate(buffer, length);
-    nRFCrypto.end();
     filled = result;
 #elif defined(ARCH_ESP32)
     // ESP32 exposes a true RNG via esp_fill_random().

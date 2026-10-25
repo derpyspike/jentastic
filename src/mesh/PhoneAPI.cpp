@@ -16,6 +16,7 @@
 #include "MeshService.h"
 #include "NodeDB.h"
 #include "PacketHistory.h"
+#include "PacketProfiler.h"
 #include "PhoneAPI.h"
 #include "PowerFSM.h"
 #include "RadioInterface.h"
@@ -436,6 +437,7 @@ bool PhoneAPI::checkConnectionTimeout()
  */
 bool PhoneAPI::handleToRadio(const uint8_t *buf, size_t bufLength)
 {
+    PROF_SCOPE(API_TO_RADIO);
     powerFSM.trigger(EVENT_CONTACT_FROM_PHONE); // As long as the phone keeps talking to us, don't let the radio go to sleep
     lastContactMsec = Time::skipZero(Time::getMillis());
 
@@ -1078,6 +1080,7 @@ size_t PhoneAPI::getFromRadio(uint8_t *buf)
 #endif
             {
                 printPacket("phone downloaded packet", packetForPhone);
+                PROF_DO(prof::markEnd(packetForPhone->id, prof::SLOT_PQ, prof::PHONE_QUEUE));
                 // Encapsulate as a FromRadio packet
                 fromRadioScratch.which_payload_variant = meshtastic_FromRadio_packet_tag;
                 fromRadioScratch.packet = *packetForPhone;

@@ -301,10 +301,12 @@ template <typename T> int16_t LR11x0Interface<T>::programAltModemFSK()
     // `using LR11x0::beginGFSK`, so name hiding would bind an unqualified 4-arg
     // call to that one with our bit rate read as the FREQUENCY (same bug as
     // SX126x SETFSK, bench 2026-10-17 -> INVALID_FREQUENCY, radio down).
-    int16_t err = lora.LR11x0::beginGFSK(m.brKbps, m.freqDevKHz, m.rxBwKHz, m.preambleBits);
+    // Floor preamble at 32 bits for reliable bit-sync lock at higher data rates
+    uint16_t preambleBits = max(m.preambleBits, (uint16_t)32);
+    int16_t err = lora.LR11x0::beginGFSK(m.brKbps, m.freqDevKHz, m.rxBwKHz, preambleBits);
     if (err != RADIOLIB_ERR_NONE) {
         LOG_ERROR("LR11x0 beginGFSK(%.1fk/%.1fk/%.1fk/%u) %s%d", m.brKbps, m.freqDevKHz,
-                  m.rxBwKHz, m.preambleBits, radioLibErr, err);
+                  m.rxBwKHz, preambleBits, radioLibErr, err);
         return err;
     }
     // beginGFSK() internally calls modSetup() -> findChip() -> reset(), which hardware-resets
@@ -317,8 +319,10 @@ template <typename T> int16_t LR11x0Interface<T>::programAltModemFSK()
         LOG_ERROR("LR11x0 setFrequency(%.3f) %s%d", getFreq(), radioLibErr, err);
         return err;
     }
-    uint8_t wireSync[2] = {0x12, 0xAD};
-    err = lora.setSyncWord(wireSync, sizeof(wireSync)); // GFSK multi-byte overload
+    // Uniform Nexus wire profile: 4-byte balanced sync word nexusAltSyncWord (0x2D, 0x4B, 0xD4, 0x93)
+    uint8_t altSync[sizeof(nexusAltSyncWord)];
+    memcpy(altSync, nexusAltSyncWord, sizeof(altSync));
+    err = lora.setSyncWord(altSync, sizeof(altSync)); // GFSK multi-byte overload
     if (err != RADIOLIB_ERR_NONE) {
         LOG_ERROR("LR11x0 GFSK setSyncWord %s%d", radioLibErr, err);
         return err;
@@ -652,14 +656,15 @@ template <typename T> bool LR11x0Interface<T>::isChannelActive()
                                        .timeout = 0,
                                        .irqFlags = RADIOLIB_IRQ_CAD_DEFAULT_FLAGS,
                                        .irqMask = RADIOLIB_IRQ_CAD_DEFAULT_MASK}};
-    // Nexus SETFSK: GFSK has no LoRa CAD — RSSI energy sniff instead (Jenny ruling
-    // 2026-10-14): an active FSK carrier sits well above -100 dBm.
+    // Nexus SETFSK: GFSK has no LoRa CAD — dynamic RSSI energy sniff instead:
+    // busy = 10 dB over the larger of the mode's sensitivity and the noise floor.
     // MUST sample instantaneous RSSI while still in continuous RX mode: entering standby
     // drops getRSSI to the standby floor and makes channel activity detection blind.
     if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
         float rssi = lora.getRSSI(false, true); // instantaneous, not last-packet status
-        LOG_TRACE("LR11x0 alt-modem channel sniff RSSI=%.1f dBm", rssi);
-        if (rssi > -100.0f)
+        float threshold = max(altSensitivityDbm(), (float)getNoiseFloor()) + 10.0f;
+        LOG_TRACE("LR11x0 alt-modem channel sniff RSSI=%.1f dBm (busy above %.1f)", rssi, threshold);
+        if (rssi > threshold)
             return true;
         int16_t result = trySetStandby();
         if (result != RADIOLIB_ERR_NONE) {
@@ -779,6 +784,16 @@ template <typename T> int16_t LR11x0Interface<T>::getCurrentRSSI()
     float rssi = lora.getRSSI(false, true);
 #endif
     return (int16_t)round(rssi);
+}
+
+/// Approximate LR11x0 sensitivity (Semtech datasheet) of the active GFSK setting
+template <typename T> float LR11x0Interface<T>::altSensitivityDbm()
+{
+    const auto &m = meshtastic::nexusModule->altModem;
+    if (getFreq() > 1000.0f) {
+        return m.brKbps >= 2000 ? -85.0f : m.brKbps >= 1000 ? -89.0f : m.brKbps >= 500 ? -92.0f : -95.0f;
+    }
+    return m.brKbps >= 250 ? -99.0f : m.brKbps >= 150 ? -103.0f : m.brKbps >= 50 ? -108.0f : m.brKbps >= 10 ? -114.0f : -118.0f;
 }
 
 #endif

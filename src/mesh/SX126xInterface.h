@@ -106,6 +106,7 @@ template <class T> class SX126xInterface : public RadioLibInterface
     // chosen by programModemParams() when NexusModule::altModem.mode == 1.
     int16_t programAltModemFSK();
     uint8_t altModemCaps() const override { return 0x01; } // FSK yes, FLRC no (no FLRC hw)
+    float altSensitivityDbm();
 
     /** begin() and chip-side setup, shared by init() and by reconfigure()'s recovery of a chip that lost its state */
     bool reinitChip();
