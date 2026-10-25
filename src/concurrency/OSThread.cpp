@@ -1,6 +1,7 @@
 #include "OSThread.h"
 #include "configuration.h"
 #include "memGet.h"
+#include "mesh/PacketProfiler.h"
 #include <assert.h>
 
 namespace concurrency
@@ -91,7 +92,9 @@ void OSThread::run()
 #endif
     currentThread = this;
     fromNowDuringRun = false;
+    PROF_DO(uint32_t profStart = micros());
     auto newDelay = runOnce();
+    PROF_DO(prof::threadRan(this, ThreadName.c_str(), micros() - profStart));
 #ifdef DEBUG_HEAP
     auto newHeap = memGet.getFreeHeap();
     if (newHeap < heap)

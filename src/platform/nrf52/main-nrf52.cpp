@@ -384,6 +384,8 @@ void checkSDEvents()
     }
 }
 
+void nrf52CryptoCellIdleCheck(); // NRF52CryptoEngine.cpp
+
 void nrf52Loop()
 {
     {
@@ -394,6 +396,7 @@ void nrf52Loop()
         }
     }
     nrfx_wdt_channel_feed(&nrfx_wdt, nrfx_wdt_channel_id_nrf52_main);
+    nrf52CryptoCellIdleCheck();
 
     if (nrf52Bluetooth) {
         nrf52Bluetooth->tick();
@@ -605,6 +608,10 @@ void enterDfuMode()
 #ifdef NRF_USE_SERIAL_DFU
     enterSerialDfu();
 #else
+#ifdef NRF52_PROMICRO_DIY
+    // Test-bench addition: this board's UF2 bootloader also needs its RAM double-reset magic to stay in DFU
+    *(volatile uint32_t *)0x20007F7C = 0x5A1AD5;
+#endif
     enterUf2Dfu();
 #endif
 }

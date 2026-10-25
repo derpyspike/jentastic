@@ -5899,6 +5899,23 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 bool crOk = (crc == 2 || crc == 3 || crc == 4);
                 bool btOk = (bt >= 0 && bt <= 2);
                 bool preOk = (pre >= 4 && pre <= 1024);
+                if (radioType == SX1280_RADIO) {
+                    // A value beginFLRC() rejects leaves the radio unconfigured and the node deaf until SETFLRC OFF,
+                    // so check what the SX128x accepts here: its rates, no BT 0.3, preamble 4-32 bits in steps of 4
+                    static const float kFlrcRates[] = {260, 325, 520, 650, 1000, 1300};
+                    brOk = false;
+                    for (float r : kFlrcRates)
+                        brOk |= (br == r);
+                    btOk = (bt == 0 || bt == 2);
+                    preOk = (pre >= 4 && pre <= 32 && pre % 4 == 0);
+                } else if (radioType == LR2021_RADIO) {
+                    static const float kLr2021FlrcRates[] = {260, 325, 520, 650, 1040, 1300, 2080, 2600};
+                    brOk = false;
+                    for (float r : kLr2021FlrcRates)
+                        brOk |= (br == r);
+                    btOk = (bt >= 0 && bt <= 2);
+                    preOk = (pre >= 4 && pre <= 32 && pre % 4 == 0);
+                }
                 if (brOk && crOk && btOk && preOk) {
                     altModem.mode = 2;
                     altModem.brKbps = br;
@@ -5918,6 +5935,12 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                     snprintf(replyMsg, sizeof(replyMsg),
                              "JT: FLRC accepted. BR:%.1fk CR:%s BT:%d PRE:%d. Applying LIVE in 5s.",
                              br, crName, bt, pre);
+                } else if (radioType == SX1280_RADIO) {
+                    snprintf(replyMsg, sizeof(replyMsg),
+                             "JT: Invalid FLRC params (SX128x BR:260|325|520|650|1000|1300k, CR:2|3|4, BT:0|2, PRE:4-32 step 4)");
+                } else if (radioType == LR2021_RADIO) {
+                    snprintf(replyMsg, sizeof(replyMsg),
+                             "JT: Invalid FLRC params (LR2021 BR:260|325|520|650|1040|1300|2080|2600k, CR:2|3|4, BT:0|1|2, PRE:4-32 step 4)");
                 } else {
                     snprintf(replyMsg, sizeof(replyMsg),
                              "JT: Invalid FLRC params (BR:1-2600k, CR:2|3|4 = 1/2|3/4|uncoded, BT:0|1|2, PRE:4-1024)");
@@ -5927,11 +5950,18 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 // Per Carson's rule (Semtech SX1261-2 §6.2.1 / LR1110 §8.2.1), DSB receiver filter
                 // bandwidth must satisfy rxBw >= br + 2*freqDev (e.g. 50 kbps + 2*25 kHz = 100 kHz -> 117.3 kHz step).
                 const char *p = sub;
+                // SX128x GFSK: discrete rates 125-2000 kbps, deviation 62.5-1000 kHz and between br/8 and 2*br
+                // (RadioLib modulation-index table); the sub-GHz ranges below would cap it at 300 kbps
+                const bool sx128x = (radioType == SX1280_RADIO);
+                const bool lr2021 = (radioType == LR2021_RADIO);
                 float br = atof(p);
                 while (*p && *p != ' ') p++;
                 while (*p == ' ') p++;
-                float dev = (*p) ? atof(p) : ((br >= 3.0f && br <= 300.0f) ? (br * 0.5f) : 25.0f);
-                if (dev > 200.0f) dev = 200.0f;
+                float dev = (*p) ? atof(p)
+                                 : sx128x ? max(br * 0.25f, 62.5f) // modulation index 0.5
+                                          : ((br >= 3.0f && (lr2021 ? br <= 2000.0f : br <= 300.0f)) ? (br * 0.5f) : 25.0f);
+                if (!sx128x && !lr2021 && dev > 200.0f) dev = 200.0f;
+                else if (lr2021 && dev > 500.0f) dev = 500.0f;
                 while (*p && *p != ' ') p++;
                 while (*p == ' ') p++;
                 float rbw = (*p) ? atof(p) : 0.0f;
@@ -5942,9 +5972,10 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 if (rbw < carsonMinBw) {
                     static const float kSteps[] = {
                         4.8f, 5.8f, 7.3f, 9.7f, 11.7f, 14.6f, 19.5f, 23.4f, 29.3f, 39.0f,
-                        46.9f, 58.6f, 78.2f, 93.8f, 117.3f, 156.2f, 187.2f, 234.3f, 312.0f, 373.6f, 467.0f
+                        46.9f, 58.6f, 78.2f, 93.8f, 117.3f, 156.2f, 187.2f, 234.3f, 312.0f, 373.6f, 467.0f,
+                        555.6f, 666.7f, 769.2f, 1111.0f, 2222.0f, 2666.0f, 3076.0f
                     };
-                    rbw = 467.0f;
+                    rbw = lr2021 ? 3076.0f : 467.0f;
                     for (size_t i = 0; i < sizeof(kSteps) / sizeof(kSteps[0]); ++i) {
                         if (kSteps[i] >= carsonMinBw) {
                             rbw = kSteps[i];
@@ -5952,10 +5983,19 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                         }
                     }
                 }
-                bool brOk = (br >= 0.6f && br <= 300.0f);   // SX126x beginFSK range
-                bool devOk = (dev >= 1.5f && dev <= 200.0f); // SX126x/GFSK deviation limit
-                bool rbwOk = (rbw >= 4.8f && rbw <= 500.0f); // SX126x GFSK RX filter
+                bool brOk = lr2021 ? (br >= 0.5f && br <= 2000.0f) : (br >= 0.6f && br <= 300.0f);   // beginFSK/beginGFSK range
+                bool devOk = lr2021 ? (dev >= 0.6f && dev <= 500.0f) : (dev >= 1.5f && dev <= 200.0f); // GFSK deviation limit
+                bool rbwOk = lr2021 ? (rbw >= 4.8f && rbw <= 3076.0f) : (rbw >= 4.8f && rbw <= 500.0f); // GFSK RX filter
                 bool preOk = (pre >= 4 && pre <= 1024);
+                if (sx128x) {
+                    static const float kSx128xRates[] = {125, 250, 400, 500, 800, 1000, 1600, 2000};
+                    brOk = false;
+                    for (float r : kSx128xRates)
+                        brOk |= (br == r);
+                    devOk = (dev >= 62.5f && dev <= 1000.0f && dev >= br / 8.0f && dev <= 2.0f * br);
+                    rbwOk = true; // the SX128x picks its RX bandwidth from the bit rate
+                    preOk = (pre >= 4 && pre <= 32 && pre % 4 == 0);
+                }
                 if (brOk && devOk && rbwOk && preOk) {
                     altModem.mode = 1;
                     altModem.brKbps = br;
@@ -5972,6 +6012,13 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                     snprintf(replyMsg, sizeof(replyMsg),
                              "JT: FSK accepted. BR:%.1fk DEV:%.1fk BW:%.1fk PRE:%d. Applying LIVE in 5s.",
                              br, dev, rbw, pre);
+                } else if (sx128x) {
+                    snprintf(replyMsg, sizeof(replyMsg),
+                             "JT: Invalid FSK params (SX128x BR:125|250|400|500|800|1000|1600|2000k, DEV:62.5-1000k and "
+                             "BR/8-2*BR, PRE:4-32 step 4)");
+                } else if (lr2021) {
+                    snprintf(replyMsg, sizeof(replyMsg),
+                             "JT: Invalid FSK params (LR2021 BR:0.5-2000k, DEV:0.6-500k, BW:4.8-3076k, PRE:4-1024)");
                 } else {
                     snprintf(replyMsg, sizeof(replyMsg),
                              "JT: Invalid FSK params (BR:0.6-300k, DEV:1.5-200k, BW:4.8-500k, PRE:4-1024)");

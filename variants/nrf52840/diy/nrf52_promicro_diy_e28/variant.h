@@ -89,6 +89,8 @@ NRF52 PRO MICRO PIN ASSIGNMENT (E28 Variant)
 
 #define PIN_GPS_EN (0 + 24) // P0.24
 #define GPS_UBLOX
+// Most of these boards have no GNSS; probing an absent module blocks the main loop for up to 1 s at a time
+#define GPS_DEFAULT_NOT_PRESENT 1
 // define GPS_DEBUG
 
 // UART interfaces

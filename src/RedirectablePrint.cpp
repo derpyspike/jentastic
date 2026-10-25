@@ -5,6 +5,7 @@
 #include "gps/RTC.h"
 #include "main.h"
 #include "memGet.h"
+#include "mesh/PacketProfiler.h"
 #include "mesh/generated/meshtastic/mesh.pb.h"
 #include <assert.h>
 #include <cstring>
@@ -293,6 +294,7 @@ meshtastic_LogRecord_Level RedirectablePrint::getLogLevel(const char *logLevel)
 
 void RedirectablePrint::log(const char *logLevel, const char *format, ...)
 {
+    PROF_SCOPE(LOG);
 
 #if ARCH_PORTDUINO
     // level trace is special, two possible ways to handle it.
