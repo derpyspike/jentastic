@@ -489,6 +489,9 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     /// Queue a JenCore ADVERT now (flood or zero-hop) for /nexus JENCORE ADVERT.
     bool sendJenCoreAdvertNow(bool flood);
 
+    /// Re-arm the automatic ADVERT timers after the configured intervals change.
+    void refreshJenCoreAdvertSchedule();
+
     /**
      * Housekeeping around the ADVERT schedule, run from the same thread: hands the identity to the companion once it
      * exists, restores the saved contacts, saves them again when they changed, and times out unanswered direct

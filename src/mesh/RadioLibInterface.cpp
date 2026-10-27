@@ -852,13 +852,8 @@ uint32_t RadioLibInterface::jencoreRelayTick()
 #if NEXUS_ENABLE_JENCORE_SNIFFER
 static constexpr size_t JENCORE_SEED_LEN = 32;
 static constexpr uint32_t JENCORE_IDENTITY_LOAD_MS = 5 * 1000; // identity ready early: discovery needs it
-static constexpr uint32_t JENCORE_ADVERT_FIRST_MS = 60 * 1000; // first zero-hop ADVERT a minute after boot
-// A zero-hop advert every 2 minutes for direct neighbours (JenCore simple_repeater default); a flood advert for the whole
-// mesh a few minutes after boot, so the node shows up across repeaters without waiting, then every 12 hours. A flood is
-// re-sent by every node, so it must stay rare.
-static constexpr uint32_t JENCORE_LOCAL_ADVERT_INTERVAL_MS = 2 * 60 * 1000;
-static constexpr uint32_t JENCORE_FLOOD_ADVERT_FIRST_MS = 3 * 60 * 1000;
-static constexpr uint32_t JENCORE_FLOOD_ADVERT_INTERVAL_MS = 12UL * 60 * 60 * 1000;
+// Automatic ADVERT intervals are operator-configured (0 = disabled, both default OFF);
+// see /nexus JENCORE ADVERT INTERVAL. A flood is re-sent by every node, so keep it rare.
 static constexpr uint32_t JENCORE_ADVERT_RETRY_MS = 60 * 1000;           // no identity / no valid time
 static constexpr uint32_t JENCORE_ADVERT_NUDGE_MS = 1000;                // radio busy: ask again
 static constexpr uint32_t JENCORE_SERVICE_MS = 5 * 1000;                 // longest wait between housekeeping steps
@@ -1042,9 +1037,12 @@ bool RadioLibInterface::sendJenCoreAdvertNow(bool flood)
     }
     LOG_INFO("JenCore manual %s ADVERT queued (%u bytes, name=%s)", flood ? "flood" : "zero-hop", (unsigned)len, name);
     const uint32_t queuedAt = millis();
-    if (flood)
-        nextJenCoreFloodAdvertMs = queuedAt + JENCORE_FLOOD_ADVERT_INTERVAL_MS;
-    nextJenCoreLocalAdvertMs = queuedAt + JENCORE_LOCAL_ADVERT_INTERVAL_MS;
+    const uint32_t floodMin = JenCoreRepeater::getAdvertFloodMinutes();
+    const uint32_t localMin = JenCoreRepeater::getAdvertLocalMinutes();
+    if (flood && floodMin)
+        nextJenCoreFloodAdvertMs = queuedAt + floodMin * 60000UL;
+    if (!flood && localMin)
+        nextJenCoreLocalAdvertMs = queuedAt + localMin * 60000UL;
     wakeJenCoreRelay();
     return true;
 }
@@ -1073,12 +1071,25 @@ uint32_t RadioLibInterface::jencoreAdvertTick()
         return JENCORE_ADVERT_NUDGE_MS;
     }
 
-    const bool floodDue = Throttle::deadlinePassed(nextJenCoreFloodAdvertMs);
-    const bool localDue = Throttle::deadlinePassed(nextJenCoreLocalAdvertMs);
+    const uint16_t localMin = JenCoreRepeater::getAdvertLocalMinutes();
+    const uint16_t floodMin = JenCoreRepeater::getAdvertFloodMinutes();
+    if (!localMin && !floodMin)
+        return JENCORE_SERVICE_MS; // automatic adverts disabled
+
+    const bool floodDue = floodMin && Throttle::deadlinePassed(nextJenCoreFloodAdvertMs);
+    const bool localDue = localMin && Throttle::deadlinePassed(nextJenCoreLocalAdvertMs);
     if (!floodDue && !localDue) {
         const uint32_t now = millis();
-        const uint32_t toFlood = nextJenCoreFloodAdvertMs - now, toLocal = nextJenCoreLocalAdvertMs - now;
-        return toFlood < toLocal ? toFlood : toLocal;
+        uint32_t wait = JENCORE_SERVICE_MS;
+        if (floodMin) {
+            const uint32_t toFlood = nextJenCoreFloodAdvertMs - now;
+            if (toFlood < wait) wait = toFlood;
+        }
+        if (localMin) {
+            const uint32_t toLocal = nextJenCoreLocalAdvertMs - now;
+            if (toLocal < wait) wait = toLocal;
+        }
+        return wait;
     }
 
     // JenCore clients order adverts by timestamp, so it must be a real time - but any source will do.
@@ -1107,11 +1118,22 @@ uint32_t RadioLibInterface::jencoreAdvertTick()
     LOG_INFO("JenCore %s ADVERT queued (%u bytes, name=%s, ts=%u)", floodDue ? "flood" : "zero-hop", (unsigned)len, name,
              (unsigned)now);
     const uint32_t queuedAt = millis();
-    if (floodDue)
-        nextJenCoreFloodAdvertMs = queuedAt + JENCORE_FLOOD_ADVERT_INTERVAL_MS;
-    nextJenCoreLocalAdvertMs = queuedAt + JENCORE_LOCAL_ADVERT_INTERVAL_MS;
+    if (floodDue && floodMin)
+        nextJenCoreFloodAdvertMs = queuedAt + (uint32_t)floodMin * 60000UL;
+    if (localMin)
+        nextJenCoreLocalAdvertMs = queuedAt + (uint32_t)localMin * 60000UL;
     wakeJenCoreRelay();
     return JENCORE_ADVERT_NUDGE_MS;
+}
+
+void RadioLibInterface::refreshJenCoreAdvertSchedule()
+{
+    const uint32_t now = millis();
+    const uint16_t localMin = JenCoreRepeater::getAdvertLocalMinutes();
+    const uint16_t floodMin = JenCoreRepeater::getAdvertFloodMinutes();
+    nextJenCoreLocalAdvertMs = localMin ? now + (uint32_t)localMin * 60000UL : 0;
+    nextJenCoreFloodAdvertMs = floodMin ? now + (uint32_t)floodMin * 60000UL : 0;
+    wakeJenCoreRelay();
 }
 
 void RadioLibInterface::maybeSendJenCoreFrame()
@@ -1473,9 +1495,13 @@ void RadioLibInterface::startReceive()
     powerMon->setState(meshtastic_PowerMon_State_Lora_RXOn);
 #if NEXUS_ENABLE_JENCORE_SNIFFER
     if (!jencoreAdvertThread) {
-        // The zero-hop advert for direct neighbours goes out shortly after boot, the first flood a few minutes later.
-        nextJenCoreFloodAdvertMs = millis() + JENCORE_FLOOD_ADVERT_FIRST_MS;
-        nextJenCoreLocalAdvertMs = millis() + JENCORE_ADVERT_FIRST_MS;
+        // Both automatic advert schedules are OFF by default (interval 0). Only arm the timers that
+        // the operator enabled, using their configured interval.
+        const uint32_t now = millis();
+        const uint16_t localMin = JenCoreRepeater::getAdvertLocalMinutes();
+        const uint16_t floodMin = JenCoreRepeater::getAdvertFloodMinutes();
+        nextJenCoreLocalAdvertMs = localMin ? now + (uint32_t)localMin * 60000UL : 0;
+        nextJenCoreFloodAdvertMs = floodMin ? now + (uint32_t)floodMin * 60000UL : 0;
         jencoreAdvertThread = new JenCoreAdvertThread(this);
     }
 #endif

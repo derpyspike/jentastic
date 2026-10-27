@@ -636,6 +636,10 @@ public:
                 uint8_t reserved[2];
             } entries[8];
         } tier_channels;                  // v73: per-channel Meshtastic TX tier overrides
+        struct __attribute__((packed)) NexusJenAdvert {
+            uint16_t local_min;           // 0 = disabled
+            uint16_t flood_min;           // 0 = disabled
+        } jen_advert;                     // v74: automatic ADVERT intervals (default OFF)
         uint32_t crc32;
     };
 
