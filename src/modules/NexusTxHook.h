@@ -13,6 +13,7 @@ struct NexusTxOverride {
     uint16_t bw = 0;
     float freq = 0.0f;
     int8_t power = 0x7F; // 0x7F = no power override
+    uint8_t syncword = 0;  // 0 = leave the main syncword unchanged
     bool isFastPath = true; // true = same freq/bw/cr, only SF/power switch
 };
 
@@ -26,8 +27,9 @@ class NexusTxHook : public RadioTxHook
     bool holdsRadio(const meshtastic_MeshPacket *p) override;
     void packetReleased(RadioInterface *iface, const meshtastic_MeshPacket *p) override;
 
-    static void setOverride(PacketId id, uint8_t sf, int8_t power = 0x7F);
-    static void setOverrideFull(PacketId id, uint8_t sf, uint16_t bw, uint8_t cr, float freq, int8_t power = 0x7F);
+    static void setOverride(PacketId id, uint8_t sf, int8_t power = 0x7F, uint8_t syncword = 0);
+    static void setOverrideFull(PacketId id, uint8_t sf, uint16_t bw, uint8_t cr, float freq, int8_t power = 0x7F,
+                                uint8_t syncword = 0);
     static bool hasOverride(PacketId id);
     static void clearOverride(PacketId id);
 
@@ -42,6 +44,8 @@ class NexusTxHook : public RadioTxHook
 
     uint8_t originalSf = 0;
     int8_t originalPower = 0;
+    uint8_t originalSyncword = 0;
+    bool syncSwitched = false;
 
     // Full-path snapshots
     // F1 fix (Jenny 2026-10-23): snapshot the WHOLE config.lora — the full-path switch

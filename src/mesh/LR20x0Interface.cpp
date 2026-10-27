@@ -7,7 +7,7 @@
 #include "error.h"
 #include "mesh/NodeDB.h"
 #include "modules/NexusModule.h" // Nexus SETFSK/SETFLRC: altModem state (Phase 2: LR2021/X1)
-#if MESHTASTIC_ENABLE_RNODE
+#if NEXUS_ENABLE_RNODE
 #include "mesh/RNodeEngine.h"
 #endif
 
@@ -172,20 +172,20 @@ template <typename T> bool LR20x0Interface<T>::init()
     // Allow extra time for TCXO to stabilize after power-on
     delay(10);
 
-    int res = lora.begin(getFreq(), bw, sf, cr, syncWord, power, preambleLength, tcxoVoltage);
+    int res = lora.begin(getFreq(), bw, sf, cr, effectiveMainSyncword(), power, preambleLength, tcxoVoltage);
 
     // Retry if we get SPI command failed - some units need extra TCXO stabilization time
     if (res == RADIOLIB_ERR_SPI_CMD_FAILED) {
         LOG_WARN("LR20x0 init failed with %d (SPI_CMD_FAILED), retry after delay", res);
         delay(100);
-        res = lora.begin(getFreq(), bw, sf, cr, syncWord, power, preambleLength, tcxoVoltage);
+        res = lora.begin(getFreq(), bw, sf, cr, effectiveMainSyncword(), power, preambleLength, tcxoVoltage);
     }
 
     // If init failed for any reason other than chip not found, retry without TCXO (XTAL mode)
     if (TCXO_OPTIONAL_ENABLED && res != RADIOLIB_ERR_NONE && res != RADIOLIB_ERR_CHIP_NOT_FOUND && tcxoVoltage > 0) {
         LOG_WARN("LR20x0 init failed with TCXO Vref %f V (err %d), retry without TCXO", tcxoVoltage, res);
         tcxoVoltage = 0;
-        res = lora.begin(getFreq(), bw, sf, cr, syncWord, power, preambleLength, tcxoVoltage);
+        res = lora.begin(getFreq(), bw, sf, cr, effectiveMainSyncword(), power, preambleLength, tcxoVoltage);
         if (res == RADIOLIB_ERR_NONE)
             LOG_INFO("LR20x0 init success without TCXO (XTAL mode)");
     }
@@ -491,7 +491,7 @@ template <typename T> bool LR20x0Interface<T>::reconfigure()
             standbySuccess = false;
         }
 
-        err = lora.setSyncWord(syncWord);
+        err = lora.setSyncWord(effectiveMainSyncword());
         if (err != RADIOLIB_ERR_NONE) {
             LOG_ERROR("LR20x0 setSyncWord %s%d", radioLibErr, err);
             RECORD_CRITICALERROR(meshtastic_CriticalErrorCode_INVALID_RADIO_SETTING);
@@ -594,16 +594,16 @@ template <typename T> bool LR20x0Interface<T>::fullBegin(float freq)
 
         delay(10); // same TCXO settle window as init()
 
-        int res = lora.begin(freq, bw, sf, cr, syncWord, power, preambleLength, tcxoVoltage);
+        int res = lora.begin(freq, bw, sf, cr, effectiveMainSyncword(), power, preambleLength, tcxoVoltage);
         if (res == RADIOLIB_ERR_SPI_CMD_FAILED) {
             LOG_WARN("LR20x0 band-hop begin SPI_CMD_FAILED, retrying");
             delay(100);
-            res = lora.begin(freq, bw, sf, cr, syncWord, power, preambleLength, tcxoVoltage);
+            res = lora.begin(freq, bw, sf, cr, effectiveMainSyncword(), power, preambleLength, tcxoVoltage);
         }
         if (TCXO_OPTIONAL_ENABLED && res != RADIOLIB_ERR_NONE && res != RADIOLIB_ERR_CHIP_NOT_FOUND && tcxoVoltage > 0) {
             LOG_WARN("LR20x0 band-hop begin TCXO failed (%s%d), retry without TCXO", radioLibErr, res);
             tcxoVoltage = 0;
-            res = lora.begin(freq, bw, sf, cr, syncWord, power, preambleLength, tcxoVoltage);
+            res = lora.begin(freq, bw, sf, cr, effectiveMainSyncword(), power, preambleLength, tcxoVoltage);
         }
         if (res != RADIOLIB_ERR_NONE) {
             LOG_ERROR("LR20x0 band-hop begin %s%d", radioLibErr, res);
@@ -780,11 +780,22 @@ template <typename T> int16_t LR20x0Interface<T>::setOutputPowerLive(int8_t powe
 
 template <typename T> int16_t LR20x0Interface<T>::setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr)
 {
-    int16_t err = lora.setSpreadingFactor(targetSf);
-    if (err != RADIOLIB_ERR_NONE)
-        return err;
-    sf = targetSf;
-    applyDcdcWorkaround();
+    // SetLoraModulationParams disables every side detector on LR2021, so skip it when the SF is unchanged
+    // and re-arm the stored table after a real change (the apply guard parks it while sf is above a side SF).
+    if (targetSf != sf) {
+        int16_t err = lora.setSpreadingFactor(targetSf);
+        if (err != RADIOLIB_ERR_NONE)
+            return err;
+        sf = targetSf;
+        applyDcdcWorkaround();
+
+        bool sideDetectorsUsable = !meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0;
+#if NEXUS_ENABLE_RNODE
+        sideDetectorsUsable = sideDetectorsUsable && (rnodeEngine.getMode() != RNODE_MODE_STANDALONE);
+#endif
+        if (sideDetectorsUsable)
+            static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
+    }
     if (targetPwr != 0x7F) {
         return setOutputPowerLive(targetPwr);
     }
@@ -802,6 +813,42 @@ template <typename T> uint8_t LR20x0Interface<T>::getLastRxSF()
     }
 #endif
     return sf;
+}
+
+template <typename T> uint8_t LR20x0Interface<T>::effectiveMainSyncword() const
+{
+    if (meshtastic::nexusModule && meshtastic::nexusModule->multiSFConfig.enabled)
+        return meshtastic::nexusModule->multiSFConfig.main_syncword;
+    return syncWord;
+}
+
+template <typename T> int16_t LR20x0Interface<T>::setSyncWordLive(uint8_t syncword)
+{
+    return lora.setSyncWord(syncword);
+}
+
+template <typename T> uint8_t LR20x0Interface<T>::getSyncWord()
+{
+    return effectiveMainSyncword();
+}
+
+template <typename T> uint8_t LR20x0Interface<T>::readRxTierProtocol()
+{
+    if (!meshtastic::nexusModule || !meshtastic::nexusModule->multiSFConfig.enabled)
+        return meshtastic::nexus::TIER_MESHTASTIC;
+#if (defined(USE_LR2021) || defined(ARCH_PORTDUINO)) && RADIOLIB_EXCLUDE_LR2021 != 1
+    uint8_t rxCR = 0;
+    bool hasCRC = true;
+    float snr = 0.0f;
+    float rssi = 0.0f;
+    uint8_t detector = 0;
+    if (lora.getLoRaPacketStatus(&rxCR, &hasCRC, nullptr, &snr, &rssi, nullptr, &detector) != RADIOLIB_ERR_NONE)
+        return meshtastic::nexus::TIER_MESHTASTIC;
+    lastRxDetector = detector;
+    return meshtastic::nexusModule->multiSFProtocolForDetector(detector);
+#else
+    return meshtastic::nexus::TIER_MESHTASTIC;
+#endif
 }
 
 /**
@@ -852,12 +899,21 @@ template <typename T> void LR20x0Interface<T>::addReceiveMetadata(meshtastic_Mes
  */
 template <typename T> void LR20x0Interface<T>::configHardwareForSend()
 {
-#if MESHTASTIC_ENABLE_RNODE
+#if NEXUS_ENABLE_RNODE
     if (getRawSendingType() == RAW_SEND_RNODE) {
-        lora.setSyncWord(0x12);
-        if (rnodeEngine.getSf() != this->sf) {
-            lora.setSpreadingFactor(rnodeEngine.getSf());
-        }
+        const uint8_t sw = getRawTxSync() ? getRawTxSync() : 0x12;
+        const uint8_t sfTarget = getRawTxSf() ? getRawTxSf() : rnodeEngine.getSf();
+        lora.setSyncWord(sw);
+        if (sfTarget != this->sf)
+            lora.setSpreadingFactor(sfTarget);
+    }
+#endif
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+    if (getRawSendingType() == RAW_SEND_JENCORE) {
+        if (getRawTxSync())
+            lora.setSyncWord(getRawTxSync());
+        if (getRawTxSf() && getRawTxSf() != this->sf)
+            lora.setSpreadingFactor(getRawTxSf());
     }
 #endif
     RadioLibInterface::configHardwareForSend();
@@ -877,6 +933,29 @@ template <typename T> void LR20x0Interface<T>::startReceive()
     if (err == RADIOLIB_ERR_NONE) {
         if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
             lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent.  Not sure why this is needed.
+#if NEXUS_ENABLE_RNODE
+            if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
+                lora.setSyncWord(0x12);
+                lora.setSpreadingFactor(rnodeEngine.getSf());
+                rnodeRadioDirty = false;
+                rnodeWasStandalone = true;
+            } else if (rnodeRadioDirty || rnodeWasStandalone) {
+                lora.setSyncWord(effectiveMainSyncword());
+                lora.setSpreadingFactor(this->sf);
+                rnodeRadioDirty = false;
+                rnodeWasStandalone = false;
+                // SetLoraModulationParams above disabled every side detector; re-arm the stored table now
+                // that the main SF is back (the apply guard parks it while sf is above a side SF).
+                static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
+            }
+#elif NEXUS_ENABLE_JENCORE_SNIFFER
+            if (rnodeRadioDirty) {
+                lora.setSyncWord(effectiveMainSyncword());
+                lora.setSpreadingFactor(this->sf);
+                rnodeRadioDirty = false;
+                static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
+            }
+#endif
         } else {
             (void)lora.variablePacketLengthMode(maxFrameLen());
         }

@@ -1337,7 +1337,7 @@ void RadioInterface::applyModemConfig()
     // (including the deferred apply triggered by /nexus SETSYNCWORD itself).
     // syncword_override == 0 means "use Meshtastic default 0x2b"; any non-zero byte is the
     // operator's override. The NexusModule instance exists by the time this runs (Modules.cpp
-    // creates it before initLoRa; NexusModule::setup -> loadVault runs in setupModules() before
+    // creates it before initLoRa; the constructor's loadVault runs in setupModules() before
     // initLoRa too, so vault v40 is already populated for the boot path). The actual write
     // to the driver-specific syncWord member happens in the virtual hook below — subclasses
     // (RadioLibInterface) override it to read from NexusModule directly. Non-Nexus

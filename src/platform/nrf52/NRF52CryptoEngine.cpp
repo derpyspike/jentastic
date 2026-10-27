@@ -7,18 +7,22 @@
 // Keep it up while in use and power it down after a short idle period instead.
 static const uint32_t CRYPTOCELL_IDLE_MSEC = 2000;
 static uint32_t cryptoCellLastUse;
+static bool cryptoCellActive;
 
 void nrf52CryptoCellAcquire()
 {
-    nRFCrypto.begin(); // no-op while already up
-    cryptoCellLastUse = millis() | 1;
+    if (!cryptoCellActive) {
+        nRFCrypto.begin();
+        cryptoCellActive = true;
+    }
+    cryptoCellLastUse = millis();
 }
 
 void nrf52CryptoCellIdleCheck()
 {
-    if (cryptoCellLastUse && millis() - cryptoCellLastUse > CRYPTOCELL_IDLE_MSEC) {
+    if (cryptoCellActive && (uint32_t)(millis() - cryptoCellLastUse) > CRYPTOCELL_IDLE_MSEC) {
         nRFCrypto.end();
-        cryptoCellLastUse = 0;
+        cryptoCellActive = false;
     }
 }
 

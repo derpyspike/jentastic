@@ -66,10 +66,15 @@ bool LR2021Interface::wideLora()
 
 bool LR2021Interface::configureSideDetectors(const uint8_t *sfs, uint8_t num, const uint8_t *syncWords)
 {
-    // Disable path — RadioLib handles nullptr-or-zero cleanly: returns
-    // RADIOLIB_ERR_NONE which we map to true here.
+    // Disable path. RadioLib's setSideDetector(nullptr, 0) returns early
+    // without sending SetLoraSideDetConfig, so it does not actually clear the
+    // chip. SetLoraModulationParams does disable every side detector, so rewrite
+    // the main SF to force the clear.
     if (num == 0) {
-        return lora.setSideDetector(nullptr, 0) == RADIOLIB_ERR_NONE;
+        int16_t err = lora.setSpreadingFactor(sf);
+        if (err == RADIOLIB_ERR_NONE)
+            applyDcdcWorkaround();
+        return err == RADIOLIB_ERR_NONE;
     }
     if (num > MAX_SF_TABLE) {
         return false;
@@ -106,6 +111,11 @@ bool LR2021Interface::configureSideDetectors(const uint8_t *sfs, uint8_t num, co
 // phantom entry on every subsequent reconfigure.
 void LR2021Interface::applyStoredSideDetectors()
 {
+    if (meshtastic::nexusModule && meshtastic::nexusModule->multiSFConfig.enabled) {
+        if (!applyMultiSFTiers())
+            LOG_WARN("LR2021 multi-SF tiers rejected; keeping the stored table");
+        return;
+    }
     if (sideSFsCount_ == 0) {
         return;
     }
@@ -114,6 +124,7 @@ void LR2021Interface::applyStoredSideDetectors()
     // and wipe our stored table!
     for (uint8_t i = 0; i < sideSFsCount_; ++i) {
         if (sf >= sideSFs_[i]) {
+            LOG_DEBUG("LR2021 side detectors parked: main SF%u >= side SF%u", sf, sideSFs_[i]);
             return;
         }
     }
@@ -124,6 +135,44 @@ void LR2021Interface::applyStoredSideDetectors()
                  (unsigned)sideSFsCount_);
         clearSideDetectors();
     }
+}
+
+bool LR2021Interface::applyMultiSFTiers()
+{
+    if (!meshtastic::nexusModule || !meshtastic::nexusModule->multiSFConfig.enabled)
+        return false;
+    const meshtastic::nexus::MultiSFConfig &cfg = meshtastic::nexusModule->multiSFConfig;
+    if (cfg.side_count > MAX_SF_TABLE)
+        return false;
+
+    uint8_t sfs[MAX_SF_TABLE] = {0};
+    uint8_t syncs[MAX_SF_TABLE] = {0};
+    for (uint8_t i = 0; i < cfg.side_count; ++i) {
+        if (!cfg.side[i].enabled)
+            return false;
+        sfs[i] = cfg.side[i].sf;
+        syncs[i] = cfg.side[i].syncword;
+        // Park rather than program an invalid table while an override is TXing
+        // on a side SF; the restore path re-applies once the main SF is back.
+        if (sf >= sfs[i]) {
+            LOG_DEBUG("LR2021 multi-SF parked: main SF%u >= side SF%u", sf, sfs[i]);
+            return true;
+        }
+    }
+
+    if (!configureSideDetectors(sfs, cfg.side_count, syncs))
+        return false;
+    setSideDetectors(sfs, cfg.side_count, syncs);
+    return true;
+}
+
+void LR2021Interface::clearMultiSFTiers()
+{
+    (void)configureSideDetectors(nullptr, 0, nullptr);
+    clearSideDetectors();
+    // main syncword: effectiveMainSyncword() now follows the normal member.
+    lora.setSyncWord(syncWord);
+    applyDcdcWorkaround();
 }
 
 // Nexus-28005 (2026-09-12): /nexus LR2021_SF <list> handler.

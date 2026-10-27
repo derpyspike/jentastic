@@ -4,6 +4,9 @@
 #include "RadioLibRF95.h"
 #include "configuration.h"
 #include "error.h"
+#if NEXUS_ENABLE_RNODE
+#include "mesh/RNodeEngine.h"
+#endif
 
 #if ARCH_PORTDUINO
 #include "PortduinoGlue.h"
@@ -412,6 +415,14 @@ void RF95Interface::setStandby()
  */
 void RF95Interface::configHardwareForSend()
 {
+#if NEXUS_ENABLE_RNODE
+    if (getRawSendingType() == RAW_SEND_RNODE) {
+        lora->setSyncWord(0x12);
+        if (rnodeEngine.getSf() != this->sf && rnodeEngine.getSf() >= 6) {
+            lora->setSpreadingFactor(rnodeEngine.getSf());
+        }
+    }
+#endif
     setTransmitEnable(true);
 
     RadioLibInterface::configHardwareForSend();
@@ -421,8 +432,23 @@ void RF95Interface::startReceive()
 {
     setTransmitEnable(false);
     int16_t err = trySetStandby();
-    if (err == RADIOLIB_ERR_NONE)
+    if (err == RADIOLIB_ERR_NONE) {
+#if NEXUS_ENABLE_RNODE
+        if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
+            lora->setSyncWord(0x12);
+            if (rnodeEngine.getSf() >= 6)
+                lora->setSpreadingFactor(rnodeEngine.getSf());
+            rnodeRadioDirty = false;
+            rnodeWasStandalone = true;
+        } else if (rnodeRadioDirty || rnodeWasStandalone) {
+            lora->setSyncWord(this->syncWord);
+            lora->setSpreadingFactor(this->sf);
+            rnodeRadioDirty = false;
+            rnodeWasStandalone = false;
+        }
+#endif
         err = lora->startReceive();
+    }
 
     if (err != RADIOLIB_ERR_NONE) {
         LOG_ERROR("RF95 startReceive %s%d", radioLibErr, err);

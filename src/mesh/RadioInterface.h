@@ -333,6 +333,29 @@ class RadioInterface
     virtual int16_t setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr = 0x7F) { return -1; }
 
     /**
+     * Nexus: per-packet LoRa syncword switch on the current carrier. Used by the
+     * multi-SF tier dispatcher (LR2021) to send Meshtastic on 0x2B and RNode/
+     * MeshCore on 0x12 without reconfiguring the whole radio.
+     */
+    virtual int16_t setSyncWordLive(uint8_t syncword)
+    {
+        (void)syncword;
+        return -1;
+    }
+
+    /** The syncword the main detector is using for RX. */
+    [[nodiscard]] virtual uint8_t getSyncWord() { return 0; }
+
+    /** True if this driver implements the SX126x-style 0x14B4 hybrid RX syncword. */
+    [[nodiscard]] virtual bool supportsHybridSync() const { return false; }
+
+    /**
+     * Protocol tier of the frame just read off the radio. 1 = Meshtastic is
+     * the default; LR2021 overrides this when a multi-SF table is enabled.
+     */
+    [[nodiscard]] virtual uint8_t readRxTierProtocol() { return 1; }
+
+    /**
      * Nexus (2.8.105): Returns the Spreading Factor of the last received packet.
      * On multi-SF hardware (LR2021), reports the actual detector SF that received the packet.
      */

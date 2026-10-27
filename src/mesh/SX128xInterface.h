@@ -82,6 +82,7 @@ template <class T> class SX128xInterface : public RadioLibInterface
 
     virtual int16_t setOutputPowerLive(int8_t powerDb) override;
     virtual int16_t setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr = 0x7F) override;
+    bool supportsHybridSync() const override { return true; }
 
     uint32_t getPacketTime(uint32_t pl, bool received) override
     {
@@ -95,6 +96,15 @@ template <class T> class SX128xInterface : public RadioLibInterface
     int readFrame(size_t &length) override;
 
   private:
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+    /** Write a raw 16-bit value into the LoRa sync word register (e.g. 0x14B4 hybrid). */
+    void setSyncWordRegister(uint16_t registerValue);
+#endif
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+    /** The chip holds JenCore's preamble length for a raw frame; startReceive() puts ours back. */
+    bool jencorePreambleSet = false;
+#endif
+
     static const uint8_t FLRC_MAX_FRAME = 127;
     // GFSK and FLRC sync word (SX128x-only links): 4 bytes, no long runs of equal bits
     static constexpr uint8_t sx128xAltSyncWord[4] = {0x2D, 0x4B, 0xD4, 0x93};

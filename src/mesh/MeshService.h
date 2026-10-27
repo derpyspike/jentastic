@@ -235,7 +235,7 @@ class MeshService
     int handleFromRadio(const meshtastic_MeshPacket *p);
 
   private:
-#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+#if NEXUS_ENABLE_JENCORE_COMPANION
     /// Encode p as a JenCore GRP_TXT and queue it on the radio. False if it could not be queued.
     bool sendJenCoreGroupText(const meshtastic_MeshPacket *p);
 

@@ -9,7 +9,7 @@
 
 #include "configuration.h"
 
-#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+#if NEXUS_ENABLE_JENCORE_COMPANION
 
 #include "Channels.h"
 #include "JenCoreContacts.h"
@@ -21,12 +21,12 @@
 class RadioInterface;
 
 /**
- * JenCore group-text bridge for the Meshtastic client.
+ * JenCore group-text and direct-message bridge.
  *
- * Channels named "MC:..." carry a JenCore group PSK. Text sent on one is encoded as a JenCore
+ * Channels named "JC:..." (or legacy "MC:...") carry a JenCore group PSK. Text sent on one is encoded as a JenCore
  * GRP_TXT flood (timestamp + "name: text", AES-128 + 2-byte HMAC); GRP_TXT frames we can decrypt
- * are injected into the Meshtastic router as a broadcast from PSEUDO_NODE_NUM, so the phone shows
- * them on that channel alongside Meshtastic traffic.
+ * are injected into the router as a broadcast from PSEUDO_NODE_NUM, so the phone shows
+ * them on that channel.
  */
 class JenCoreCompanion
 {
@@ -269,4 +269,4 @@ class JenCoreCompanion
 
 extern JenCoreCompanion jencoreCompanion;
 
-#endif // MESHTASTIC_ENABLE_JENCORE_COMPANION
+#endif // NEXUS_ENABLE_JENCORE_COMPANION

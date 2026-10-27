@@ -4,7 +4,7 @@
 #include "RadioInterface.h"
 #include "concurrency/NotifiedWorkerThread.h"
 
-#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#if NEXUS_ENABLE_JENCORE_SNIFFER
 #include "JenCoreRepeater.h"
 #endif
 #include "modules/NexusModule.h"
@@ -58,11 +58,11 @@ class LockingArduinoHal : public ArduinoHal
 // RadioLib's own default Vref, for a probe with no explicit voltage configured.
 #define TCXO_OPTIONAL_DEFAULT_VOLTAGE 1.6f
 
-#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#if NEXUS_ENABLE_JENCORE_SNIFFER || NEXUS_ENABLE_RNODE
 class RadioLibInterface;
 
 /**
- * Owns the wake-ups of the JenCore relay. The radio thread has a single notification slot, shared with the Meshtastic
+ * Owns the wake-ups of the JenCore / RNode raw relay. The radio thread has a single notification slot, shared with the
  * TX timer: a relay timer armed there either displaces the TX timer or is displaced by it. A thread of its own keeps
  * the two schedules independent; both still serialise on the radio, which only the radio thread and this one touch.
  */
@@ -150,7 +150,7 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     /** JenCore's sync word (RADIOLIB_SX126X_SYNC_WORD_PRIVATE), used to transmit relayed JenCore frames. */
     const uint8_t jencoreSyncWord = 0x12;
 
-#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
     bool hybridSyncEnabled = true;
 #endif
 
@@ -295,8 +295,8 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     uint32_t rxBad = 0, rxGood = 0, txGood = 0, txRelay = 0;
     uint16_t txDrop = 0;
 
-#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
-    // Meshtastic side of the contention measurements (JenCore's live in jencoreRepeater): CAD hits before a send, and airtime.
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+    // Primary-protocol side of the contention measurements (JenCore's live in jencoreRepeater): CAD hits before a send, and airtime.
     uint32_t meshtasticCadBusy = 0, meshtasticTxAirtimeMs = 0, meshtasticRxAirtimeMs = 0;
 #endif
 
@@ -433,7 +433,7 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     /** Queue a raw JenCore frame for the next idle radio slot (see RadioInterface::queueJenCoreFrame). */
     bool queueJenCoreFrame(const uint8_t *bytes, size_t len) override;
 
-#if MESHTASTIC_ENABLE_RNODE
+#if NEXUS_ENABLE_RNODE
     /** Queue a raw Reticulum RNode frame for transmission on the Reticulum tier. */
     bool queueRNodeFrame(const uint8_t *bytes, size_t len) override;
     void maybeSendRNodeFrame();
@@ -444,12 +444,26 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     /** True if a JenCore frame may go on air now: radio enabled, tx_enabled and within the duty cycle. */
     bool jencoreTxAllowed();
 
-#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#if NEXUS_ENABLE_JENCORE_SNIFFER || NEXUS_ENABLE_RNODE
+    /** True if the frame in radioBuffer decrypts as a valid packet on one of our local channels. */
+    bool isMeshtasticOnOurChannels(size_t length);
+
+    /** Owns the JenCore / RNode raw relay's wake-ups, apart from the radio thread's single notification slot. */
+    JenCoreRelayThread *jencoreRelayThread = nullptr;
+
+    /** Schedule the relay thread for when the next queued JenCore / RNode frame can go out. */
+    void wakeJenCoreRelay();
+
+    /**
+     * One step of the raw relay, run from its own thread: sends what is due and returns ms until the next step,
+     * or disables the thread when nothing is queued.
+     */
+    uint32_t jencoreRelayTick();
+#endif
+
+#if NEXUS_ENABLE_JENCORE_SNIFFER
     /** Dedup + optional relay for JenCore frames, fed from handleReceiveInterrupt. */
     JenCoreRepeater jencoreRepeater;
-
-    /** True if the frame in radioBuffer decrypts as a Meshtastic packet on one of our channels. */
-    bool isMeshtasticOnOurChannels(size_t length);
 #endif
 
     /**
@@ -458,13 +472,7 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
      */
     void maybeSendJenCoreFrame();
 
-#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
-    /** Owns the JenCore relay's wake-ups, apart from the radio thread's single notification slot. */
-    JenCoreRelayThread *jencoreRelayThread = nullptr;
-
-    /** Schedule the relay thread for when the next queued JenCore frame can go out. */
-    void wakeJenCoreRelay();
-
+#if NEXUS_ENABLE_JENCORE_SNIFFER
     /** Owns the ADVERT schedule; the radio thread's single notification slot cannot hold a long timer. */
     concurrency::OSThread *jencoreAdvertThread = nullptr;
     // Next flood / zero-hop ADVERT. The zero-hop one is due at the first tick (JENCORE_ADVERT_FIRST_MS after boot).
@@ -473,16 +481,13 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
 
   public:
     /**
-     * One step of the JenCore relay, run from its own thread: sends what is due and returns ms until the next step,
-     * or disables the thread when nothing is queued.
-     */
-    uint32_t jencoreRelayTick();
-
-    /**
      * One step of the JenCore ADVERT schedule, run from its own thread: loads the identity, queues a signed
      * ADVERT when due, and nudges the radio thread until it is on air. Returns ms until the next step.
      */
     uint32_t jencoreAdvertTick();
+
+    /// Queue a JenCore ADVERT now (flood or zero-hop) for /nexus JENCORE ADVERT.
+    bool sendJenCoreAdvertNow(bool flood);
 
     /**
      * Housekeeping around the ADVERT schedule, run from the same thread: hands the identity to the companion once it
@@ -515,7 +520,18 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     size_t rawTxLen = 0;
     bool rawSending = false;
 
-#if MESHTASTIC_ENABLE_RNODE
+    /** Target SF/syncword for the raw frame being sent (0 = leave unchanged). */
+    uint8_t rawTxSf = 0;
+    uint8_t rawTxSync = 0;
+    uint8_t getRawTxSf() const { return rawTxSf; }
+    uint8_t getRawTxSync() const { return rawTxSync; }
+
+#if NEXUS_ENABLE_RNODE || NEXUS_ENABLE_JENCORE_SNIFFER
+    /** A raw TX changed the modem sync/SF; startReceive() must restore the main tier. */
+    bool rnodeRadioDirty = false;
+#endif
+
+#if NEXUS_ENABLE_RNODE
     static constexpr size_t RNODE_TX_QUEUE_SIZE = 4;
     struct RNodeTxEntry {
         uint8_t buf[MAX_LORA_PAYLOAD_LEN];
@@ -525,6 +541,9 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     uint8_t rnodeTxHead = 0;
     uint8_t rnodeTxTail = 0;
     uint8_t rnodeTxCount = 0;
+
+    /** The last startReceive() left the radio on the RNode standalone parameters. */
+    bool rnodeWasStandalone = false;
 #endif
 
     /**

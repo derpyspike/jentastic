@@ -122,67 +122,88 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #endif
 
 #if !NEXUS_ENABLE_JENCORE
-#undef MESHTASTIC_ENABLE_JENCORE_SNIFFER
-#define MESHTASTIC_ENABLE_JENCORE_SNIFFER 0
-#undef MESHTASTIC_ENABLE_JENCORE_RELAY
-#define MESHTASTIC_ENABLE_JENCORE_RELAY 0
-#undef MESHTASTIC_ENABLE_JENCORE_COMPANION
-#define MESHTASTIC_ENABLE_JENCORE_COMPANION 0
-#undef MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
-#define MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC 0
+#undef NEXUS_ENABLE_JENCORE_SNIFFER
+#define NEXUS_ENABLE_JENCORE_SNIFFER 0
+#undef NEXUS_ENABLE_JENCORE_RELAY
+#define NEXUS_ENABLE_JENCORE_RELAY 0
+#undef NEXUS_ENABLE_JENCORE_COMPANION
+#define NEXUS_ENABLE_JENCORE_COMPANION 0
+#undef NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+#define NEXUS_ENABLE_JENCORE_HYBRID_SYNC 0
 #endif
 
-// Experimental: sniff LoRa frames from the JenCore protocol (meshcore-dev/JenCore) on the same
-// frequency/SF, without passing them into the Meshtastic routing pipeline. On by default; -D...=0 opts out.
-#ifndef MESHTASTIC_ENABLE_JENCORE_SNIFFER
-#define MESHTASTIC_ENABLE_JENCORE_SNIFFER 1
+// Experimental: sniff LoRa frames from the JenCore protocol on the same
+// frequency/SF, without passing them into the local routing pipeline. On when NEXUS_ENABLE_JENCORE=1; -D...=0 opts out.
+#ifndef NEXUS_ENABLE_JENCORE_SNIFFER
+#define NEXUS_ENABLE_JENCORE_SNIFFER 1
 #endif
 
 // Experimental: also re-broadcast JenCore flood frames (transparent relay, no decryption) so a
-// Meshtastic router node can extend a JenCore mesh sharing the same frequency and spreading factor.
-// Implies the sniffer. On by default; -D...=0 opts out.
-#ifndef MESHTASTIC_ENABLE_JENCORE_RELAY
-#define MESHTASTIC_ENABLE_JENCORE_RELAY 1
+// router node can extend a JenCore mesh sharing the same frequency and spreading factor.
+// Implies the sniffer. On when NEXUS_ENABLE_JENCORE=1; -D...=0 opts out.
+#ifndef NEXUS_ENABLE_JENCORE_RELAY
+#define NEXUS_ENABLE_JENCORE_RELAY 1
 #endif
 
-#if MESHTASTIC_ENABLE_JENCORE_RELAY && !MESHTASTIC_ENABLE_JENCORE_SNIFFER
-#error "MESHTASTIC_ENABLE_JENCORE_RELAY requires MESHTASTIC_ENABLE_JENCORE_SNIFFER"
+#if NEXUS_ENABLE_JENCORE_RELAY && !NEXUS_ENABLE_JENCORE_SNIFFER
+#error "NEXUS_ENABLE_JENCORE_RELAY requires NEXUS_ENABLE_JENCORE_SNIFFER"
 #endif
 
-// Experimental: expose JenCore group text channels to the Meshtastic client. Channels named
-// "MC:<name>" are seeded as secondaries on a fresh install; text sent on one is encrypted as a
+// Experimental: expose JenCore group text channels to the client. Channels named
+// "JC:<name>" (or legacy "MC:<name>") are seeded as secondaries on a fresh install; text sent on one is encrypted as a
 // JenCore GRP_TXT flood, and GRP_TXT frames we can decrypt are delivered to the phone as if sent
 // by a "JenCore" node. Requires the sniffer (it shares the JenCore repeater's raw TX path).
-#ifndef MESHTASTIC_ENABLE_JENCORE_COMPANION
-#define MESHTASTIC_ENABLE_JENCORE_COMPANION 1
+#ifndef NEXUS_ENABLE_JENCORE_COMPANION
+#define NEXUS_ENABLE_JENCORE_COMPANION 1
 #endif
 
-#if MESHTASTIC_ENABLE_JENCORE_COMPANION && !MESHTASTIC_ENABLE_JENCORE_SNIFFER
-#error "MESHTASTIC_ENABLE_JENCORE_COMPANION requires MESHTASTIC_ENABLE_JENCORE_SNIFFER"
+#if NEXUS_ENABLE_JENCORE_COMPANION && !NEXUS_ENABLE_JENCORE_SNIFFER
+#error "NEXUS_ENABLE_JENCORE_COMPANION requires NEXUS_ENABLE_JENCORE_SNIFFER"
 #endif
 
-// Experimental, SX126x only: receive with a hybrid sync word so one radio hears both Meshtastic (0x2B,
+// Experimental, SX126x only: receive with a hybrid sync word so one radio hears both standard (0x2B,
 // register 0x24B4) and JenCore (0x12, register 0x1424) frames, and transmit each protocol with its own
-// sync word. Unverified on air: measure reception of both networks before relying on it. On by default; -D...=0 opts out.
-#ifndef MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
-#define MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC 1
+// sync word. On when NEXUS_ENABLE_JENCORE=1; -D...=0 opts out.
+#ifndef NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+#define NEXUS_ENABLE_JENCORE_HYBRID_SYNC 1
 #endif
 
 // Raw SX126x sync word register value used in RX when the hybrid sync word is enabled.
-// 0x14B4 (JenCore's first sync nibble, Meshtastic's second) received both networks on a ThinkNode M1
-// (SX1262) against SX1262 senders; the mirror candidate 0x2424 received Meshtastic only.
-#ifndef MESHTASTIC_JENCORE_RX_SYNCWORD
-#define MESHTASTIC_JENCORE_RX_SYNCWORD 0x14B4
+// 0x14B4 (JenCore's first sync nibble, 0x2B's second) received both networks on a ThinkNode M1
+// (SX1262) against SX1262 senders; the mirror candidate 0x2424 received 0x2B only.
+#ifndef NEXUS_JENCORE_RX_SYNCWORD
+#define NEXUS_JENCORE_RX_SYNCWORD 0x14B4
 #endif
 
 // Debug only: log every preamble/header detection and every received frame's leading bytes, so a
 // JenCore frame is visible even when it fails the sniffer's header check. Never enable in a release.
-#ifndef MESHTASTIC_JENCORE_RX_DEBUG
-#define MESHTASTIC_JENCORE_RX_DEBUG 0
+#ifndef NEXUS_JENCORE_RX_DEBUG
+#define NEXUS_JENCORE_RX_DEBUG 0
 #endif
 
-#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC && !MESHTASTIC_ENABLE_JENCORE_SNIFFER
-#error "MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC requires MESHTASTIC_ENABLE_JENCORE_SNIFFER"
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC && !NEXUS_ENABLE_JENCORE_SNIFFER
+#error "NEXUS_ENABLE_JENCORE_HYBRID_SYNC requires NEXUS_ENABLE_JENCORE_SNIFFER"
+#endif
+
+// ===== Bot modules master gates (DEFAULT OFF) =====
+// StatsCommandModule ("/stats" DM auto-responder) and ReplyBotModule ("/ping", "/hello", "/test")
+// are disabled by default unless explicitly opted in (-DNEXUS_ENABLE_STATSBOT=1 / -DNEXUS_ENABLE_REPLYBOT=1).
+#ifndef NEXUS_ENABLE_STATSBOT
+#define NEXUS_ENABLE_STATSBOT 0
+#endif
+#if !NEXUS_ENABLE_JENCORE_SNIFFER
+#undef NEXUS_ENABLE_STATSBOT
+#define NEXUS_ENABLE_STATSBOT 0
+#endif
+
+#ifndef NEXUS_ENABLE_REPLYBOT
+#define NEXUS_ENABLE_REPLYBOT 0
+#endif
+#if NEXUS_ENABLE_REPLYBOT
+#undef MESHTASTIC_EXCLUDE_REPLYBOT
+#else
+#undef MESHTASTIC_EXCLUDE_REPLYBOT
+#define MESHTASTIC_EXCLUDE_REPLYBOT 1
 #endif
 
 // ===== Reticulum RNode master gate (Jenny & Jirachi 2026-10-23) =====
@@ -196,30 +217,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #endif
 
 #if !NEXUS_ENABLE_RNODE
-#undef MESHTASTIC_ENABLE_RNODE
-#define MESHTASTIC_ENABLE_RNODE 0
-#undef MESHTASTIC_ENABLE_RNODE_TCP
-#define MESHTASTIC_ENABLE_RNODE_TCP 0
-#undef MESHTASTIC_ENABLE_RNODE_BLE
-#define MESHTASTIC_ENABLE_RNODE_BLE 0
-#else
-#ifndef MESHTASTIC_ENABLE_RNODE
-#define MESHTASTIC_ENABLE_RNODE 1
-#endif
-#ifndef MESHTASTIC_ENABLE_RNODE_TCP
-#if HAS_WIFI
-#define MESHTASTIC_ENABLE_RNODE_TCP 1
-#else
-#define MESHTASTIC_ENABLE_RNODE_TCP 0
-#endif
-#endif
-#ifndef MESHTASTIC_ENABLE_RNODE_BLE
-#if HAS_BLUETOOTH || HAS_BLE
-#define MESHTASTIC_ENABLE_RNODE_BLE 1
-#else
-#define MESHTASTIC_ENABLE_RNODE_BLE 0
-#endif
-#endif
+#undef NEXUS_ENABLE_RNODE_TCP
+#define NEXUS_ENABLE_RNODE_TCP 0
+#undef NEXUS_ENABLE_RNODE_BLE
+#define NEXUS_ENABLE_RNODE_BLE 0
 #endif
 
 // Default RNode TCP KISS server port
@@ -748,6 +749,25 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #ifdef MESHTASTIC_EXCLUDE_BLUETOOTH
 #undef HAS_BLUETOOTH
 #define HAS_BLUETOOTH 0
+#endif
+
+// RNode transports can only be inferred once architecture.h/variant.h have
+// supplied HAS_WIFI / HAS_BLUETOOTH. Explicit -D overrides still win.
+#if NEXUS_ENABLE_RNODE
+#ifndef NEXUS_ENABLE_RNODE_TCP
+#if HAS_WIFI
+#define NEXUS_ENABLE_RNODE_TCP 1
+#else
+#define NEXUS_ENABLE_RNODE_TCP 0
+#endif
+#endif
+#ifndef NEXUS_ENABLE_RNODE_BLE
+#if HAS_BLUETOOTH || HAS_BLE
+#define NEXUS_ENABLE_RNODE_BLE 1
+#else
+#define NEXUS_ENABLE_RNODE_BLE 0
+#endif
+#endif
 #endif
 
 // // Turn off GPS

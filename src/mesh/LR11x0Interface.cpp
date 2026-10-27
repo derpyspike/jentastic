@@ -5,6 +5,9 @@
 #include "error.h"
 #include "mesh/NodeDB.h"
 #include "modules/NexusModule.h" // Nexus SETFSK: altModem state (Phase 2: LR11x0/T1000-E GFSK)
+#if NEXUS_ENABLE_RNODE
+#include "mesh/RNodeEngine.h"
+#endif
 
 // A variant may define LR11X0_UPDATE_FIRMWARE_TO to a Semtech transceiver firmware version (e.g. 0x0402) to
 // bake that image in and update the radio on first boot. Every supported image is 61320 words, so this costs
@@ -595,6 +598,14 @@ template <typename T> void LR11x0Interface<T>::addReceiveMetadata(meshtastic_Mes
  */
 template <typename T> void LR11x0Interface<T>::configHardwareForSend()
 {
+#if NEXUS_ENABLE_RNODE
+    if (getRawSendingType() == RAW_SEND_RNODE) {
+        lora.setSyncWord(0x12);
+        if (rnodeEngine.getSf() != this->sf) {
+            lora.setSpreadingFactor(rnodeEngine.getSf());
+        }
+    }
+#endif
     RadioLibInterface::configHardwareForSend();
 }
 
@@ -612,6 +623,19 @@ template <typename T> void LR11x0Interface<T>::startReceive()
     if (err == RADIOLIB_ERR_NONE) {
         if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
             lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent.  Not sure why this is needed.
+#if NEXUS_ENABLE_RNODE
+            if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
+                lora.setSyncWord(0x12);
+                lora.setSpreadingFactor(rnodeEngine.getSf());
+                rnodeRadioDirty = false;
+                rnodeWasStandalone = true;
+            } else if (rnodeRadioDirty || rnodeWasStandalone) {
+                lora.setSyncWord(this->syncWord);
+                lora.setSpreadingFactor(this->sf);
+                rnodeRadioDirty = false;
+                rnodeWasStandalone = false;
+            }
+#endif
         }
 
         // We use a 16 bit preamble so this should save some power by letting radio sit in standby mostly.

@@ -19,7 +19,7 @@
 #include "graphics/draw/MessageRenderer.h"
 #include "main.h"
 #include "modules/NexusModule.h"
-#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+#if NEXUS_ENABLE_JENCORE_COMPANION
 #include "JenCoreCompanion.h"
 #endif
 #include "mesh-pb-constants.h"
@@ -89,7 +89,7 @@ void MeshService::init()
     if (gps)
         gpsObserver.observe(&gps->newStatus);
 #endif
-#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+#if NEXUS_ENABLE_JENCORE_COMPANION
     jencoreCompanion.ensurePseudoNode();
 #endif
 }
@@ -404,7 +404,7 @@ ErrorCode MeshService::sendQueueStatusToPhone(const meshtastic_QueueStatus &qs, 
     return res ? ERRNO_OK : ERRNO_UNKNOWN;
 }
 
-#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+#if NEXUS_ENABLE_JENCORE_COMPANION
 bool MeshService::sendJenCoreGroupText(const meshtastic_MeshPacket *p)
 {
     uint8_t key[32];
@@ -424,7 +424,7 @@ bool MeshService::sendJenCoreGroupText(const meshtastic_MeshPacket *p)
     char text[sizeof(plain) + 64]; // room for the "@[name] " of a reply and the brackets of mentions
     jencoreCompanion.prepareGroupText(plain, p->decoded.reply_id, text, sizeof(text));
 
-    const char *sender = owner.long_name[0] ? owner.long_name : (owner.short_name[0] ? owner.short_name : "Meshtastic");
+    const char *sender = owner.long_name[0] ? owner.long_name : (owner.short_name[0] ? owner.short_name : "JenCore");
     uint8_t frame[JenCoreRepeater::MAX_FRAME_LEN];
     bool truncated = false;
     const size_t frameLen = JenCoreCompanion::encodeGroupText(key, keyLen, sender, jencoreCompanion.nextTxTimestamp(now), text,
@@ -464,10 +464,10 @@ ErrorCode MeshService::sendToMesh(meshtastic_MeshPacket *p, RxSource src, bool c
     uint32_t mesh_packet_id = p->id;
     nodeDB->updateFrom(*p); // update our local DB for this packet (because phone might have sent position packets etc...)
 
-#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+#if NEXUS_ENABLE_JENCORE_COMPANION
     // A text for a JenCore contact leaves as a TXT_MSG. Only contacts we hold a key for: any other node number is a
     // Meshtastic node, whatever its top byte.
-    if (p->which_payload_variant == meshtastic_MeshPacket_decoded_tag &&
+    if (p->which_payload_variant == meshtastic_MeshPacket_decoded_tag && JenCoreRepeater::isJenCoreEnabled() &&
         p->decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP && jencoreCompanion.hasContact(p->to)) {
         const bool queued = sendJenCoreDirectText(p);
         // Delivery is reported when the contact's ACK arrives (or times out); only a refusal is answered now.
@@ -481,7 +481,8 @@ ErrorCode MeshService::sendToMesh(meshtastic_MeshPacket *p, RxSource src, bool c
         return queued ? ERRNO_OK : ERRNO_UNKNOWN;
     }
 
-    if (p->which_payload_variant == meshtastic_MeshPacket_decoded_tag && channels.isJenCoreChannel(p->channel) && !isToUs(p)) {
+    if (p->which_payload_variant == meshtastic_MeshPacket_decoded_tag && JenCoreRepeater::isJenCoreEnabled() &&
+        channels.isJenCoreChannel(p->channel) && !isToUs(p)) {
         const bool isGroupText = p->decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP && isBroadcast(p->to);
         bool queued = false;
         if (!isGroupText) {

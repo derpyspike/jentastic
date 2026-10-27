@@ -385,6 +385,15 @@ def _nexus_gate_state(name: str) -> str:
 
 print("-DNEXUS_ENABLE_JENCORE=" + _nexus_gate_state("NEXUS_ENABLE_JENCORE"))
 print("-DNEXUS_ENABLE_RNODE=" + _nexus_gate_state("NEXUS_ENABLE_RNODE"))
+print("-DNEXUS_ENABLE_STATSBOT=" + _nexus_gate_state("NEXUS_ENABLE_STATSBOT"))
+print("-DNEXUS_ENABLE_REPLYBOT=" + _nexus_gate_state("NEXUS_ENABLE_REPLYBOT"))
+
+if _nexus_gate_state("NEXUS_ENABLE_JENCORE") == "1":
+    flags.append("-UCRYPTO_AES_NO_DECRYPT")
+    for lb in env.GetLibBuilders():
+        if lb.name == "Crypto":
+            lb.env.Append(CCFLAGS=["-UCRYPTO_AES_NO_DECRYPT"])
+            break
 
 projenv.Append(
     CCFLAGS=flags,

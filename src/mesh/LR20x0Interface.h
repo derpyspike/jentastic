@@ -88,6 +88,13 @@ template <class T> class LR20x0Interface : public RadioLibInterface
     virtual int16_t setOutputPowerLive(int8_t powerDb) override;
     virtual int16_t setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr = 0x7F) override;
     virtual uint8_t getLastRxSF() override;
+    virtual int16_t setSyncWordLive(uint8_t syncword) override;
+    virtual uint8_t getSyncWord() override;
+    virtual uint8_t readRxTierProtocol() override;
+
+    /// Main-detector syncword: the multi-SF main tier when enabled, else the
+    /// normal Meshtastic/operator syncword.
+    uint8_t effectiveMainSyncword() const;
 
     uint8_t getLastRxDetector() const { return lastRxDetector; }
 

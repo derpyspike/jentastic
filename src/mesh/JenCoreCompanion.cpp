@@ -7,7 +7,7 @@
 
 #include "JenCoreCompanion.h"
 
-#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+#if NEXUS_ENABLE_JENCORE_COMPANION
 
 #ifdef CRYPTO_AES_NO_DECRYPT
 #error "JenCore needs AES decryption: add -UCRYPTO_AES_NO_DECRYPT to this env (the nRF52 base defines it)"
@@ -157,7 +157,7 @@ size_t JenCoreCompanion::encodeGroupText(const uint8_t *key, size_t keyLen, cons
         return 0;
 
     out[0] = (0x05 << 2) | 0x01;                        // GRP_TXT, ROUTE_FLOOD
-    out[1] = JenCoreRepeater::OWN_FLOOD_PATH_LEN_BYTE; // zero hops, 2-byte hashes
+    out[1] = JenCoreRepeater::ownPathLenByte(); // zero hops, 2-byte hashes
     out[2] = hash;
 
     SHA256 hmac;
@@ -266,7 +266,7 @@ static size_t sealDatagram(const uint8_t secret[32], uint8_t payloadType, uint8_
         return 0;
 
     out[0] = (payloadType << 2) | 0x01;                 // ROUTE_FLOOD
-    out[1] = JenCoreRepeater::OWN_FLOOD_PATH_LEN_BYTE; // zero hops, 2-byte hashes
+    out[1] = JenCoreRepeater::ownPathLenByte(); // zero hops, 2-byte hashes
     out[2] = destHash;
     out[3] = srcHash;
 
@@ -402,7 +402,7 @@ size_t JenCoreCompanion::encodeAck(uint32_t hash, uint8_t *out, size_t outCap)
     if (!out || outCap < 6)
         return 0;
     out[0] = (0x03 << 2) | 0x01; // ACK, ROUTE_FLOOD
-    out[1] = JenCoreRepeater::OWN_FLOOD_PATH_LEN_BYTE;
+    out[1] = JenCoreRepeater::ownPathLenByte();
     writeLe32(&out[2], hash);
     return 6;
 }
@@ -645,13 +645,14 @@ size_t JenCoreCompanion::prepareGroupText(const char *text, uint32_t replyId, ch
             contacts.forEach([&](JenCoreContact &c) { consider(c.name, strlen(c.name)); });
             for (const RecentText &r : recent)
                 consider(r.sender, strlen(r.sender));
-            // Nodes of JenCore people kept in the node DB (shown as "name (MC)") outlive the recent-senders list.
+            // Nodes of JenCore people kept in the node DB (shown as "name (JC)" or legacy "name (MC)") outlive the recent-senders list.
             for (size_t n = 0; nodeDB && n < nodeDB->getNumMeshNodes(); n++) {
                 const meshtastic_NodeInfoLite *lite = nodeDB->getMeshNodeByIndex(n);
                 if ((lite->num >> 24) != 0x4D)
                     continue;
                 const size_t len = strlen(lite->long_name);
-                if (len > 5 && strcmp(&lite->long_name[len - 5], " (MC)") == 0)
+                if (len > 5 && (strcmp(&lite->long_name[len - 5], " (JC)") == 0 ||
+                                strcmp(&lite->long_name[len - 5], " (MC)") == 0))
                     consider(lite->long_name, len - 5);
             }
             if (bestLen > 0) {
@@ -1263,4 +1264,4 @@ void JenCoreCompanion::noteTransmitted(const uint8_t *raw, size_t len)
         rememberFrame(JenCoreRepeater::hashFrame(raw, len, info));
 }
 
-#endif // MESHTASTIC_ENABLE_JENCORE_COMPANION
+#endif // NEXUS_ENABLE_JENCORE_COMPANION

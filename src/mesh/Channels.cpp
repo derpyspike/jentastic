@@ -7,11 +7,9 @@
 #include "RadioInterface.h"
 #include "configuration.h"
 #include "FSCommon.h"
-#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+#if NEXUS_ENABLE_JENCORE_COMPANION
 #include "JenCoreCompanion.h"
-#include "SPILock.h"
-#include "SafeFile.h"
-#include "concurrency/LockGuard.h"
+#include <SHA256.h>
 #endif
 
 #include <assert.h>
@@ -319,7 +317,7 @@ int16_t Channels::setCrypto(ChannelIndex chIndex)
     }
 }
 
-#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+#if NEXUS_ENABLE_JENCORE_COMPANION
 static const uint8_t jencorePublicPsk[16] = {0x8b, 0x33, 0x87, 0xe9, 0xc5, 0xcd, 0xea, 0x6a,
                                               0xc9, 0xe5, 0xed, 0xba, 0xa1, 0x15, 0xcd, 0x72};
 static const uint8_t jencoreTestPsk[16] = {0x9c, 0xd8, 0xfc, 0xf2, 0x2a, 0x47, 0x33, 0x3b,
@@ -327,67 +325,93 @@ static const uint8_t jencoreTestPsk[16] = {0x9c, 0xd8, 0xfc, 0xf2, 0x2a, 0x47, 0
 static const uint8_t jencoreBotPsk[16] = {0xeb, 0x50, 0xa1, 0xbc, 0xb3, 0xe4, 0xe5, 0xd7,
                                            0xbf, 0x69, 0xa5, 0x7c, 0x9d, 0xad, 0xa2, 0x11};
 
-/// Installs the default JenCore channels that no slot carries yet (by name). Returns true if any was added.
-static bool seedJenCoreChannels()
+/// True when a slot already carries this JC name, including its legacy MC: spelling.
+static bool hasJenCoreChannelName(const char *chName, const char *name)
+{
+    if (strncmp(chName, name, strlen(name) + 1) == 0)
+        return true;
+    return strlen(name) > 3 && strncmp(chName, "MC:", 3) == 0 && strncmp(name, "JC:", 3) == 0 &&
+           strcmp(chName + 3, name + 3) == 0;
+}
+
+int8_t Channels::addJenCoreChannel(const char *name, const uint8_t *psk, size_t pskLen)
+{
+    constexpr size_t NAME_CAP = sizeof(((meshtastic_ChannelSettings *)nullptr)->name);
+    if (!name || strncmp(name, "JC:", 3) != 0 || strlen(name) >= NAME_CAP)
+        return -3;
+
+    uint8_t derived[16];
+    if (!psk) {
+        const char *hashtag = name + 3; // past "JC:"
+        if (hashtag[0] == '#') {
+            // MeshCore hashtag channels: key = SHA256("#name")[:16], over the bare hashtag.
+            SHA256 sha;
+            uint8_t digest[32];
+            sha.reset();
+            sha.update((const uint8_t *)hashtag, strlen(hashtag));
+            sha.finalize(digest, sizeof(digest));
+            memcpy(derived, digest, sizeof(derived));
+            psk = derived;
+            pskLen = sizeof(derived);
+        } else {
+            psk = jencorePublicPsk;
+            pskLen = sizeof(jencorePublicPsk);
+        }
+    }
+    if (pskLen != 16 && pskLen != 32)
+        return -3;
+
+    for (ChannelIndex k = 0; k < MAX_NUM_CHANNELS; k++) {
+        if (hasJenCoreChannelName(channels.getByIndex(k).settings.name, name))
+            return -2;
+    }
+
+    // First free slot after the primary: DISABLED and unnamed, so a userPrefs channel is never overwritten.
+    ChannelIndex idx = 1;
+    while (idx < MAX_NUM_CHANNELS &&
+           (channels.getByIndex(idx).role != meshtastic_Channel_Role_DISABLED || channels.getByIndex(idx).settings.name[0]))
+        idx++;
+    if (idx >= MAX_NUM_CHANNELS)
+        return -1;
+
+    meshtastic_Channel &ch = channels.getByIndex(idx);
+    memset(&ch.settings, 0, sizeof(ch.settings));
+    strncpy(ch.settings.name, name, NAME_CAP - 1);
+    memcpy(ch.settings.psk.bytes, psk, pskLen);
+    ch.settings.psk.size = pskLen;
+    ch.settings.has_module_settings = true;
+    ch.settings.module_settings.position_precision = 0;
+    ch.has_settings = true;
+    ch.role = meshtastic_Channel_Role_SECONDARY;
+    channels.fixupChannel(idx);
+    return (int8_t)idx;
+}
+
+uint8_t Channels::addJenCoreChannels()
 {
     static const struct {
         const char *name;
         const uint8_t *psk;
     } defs[] = {{"JC:Public", jencorePublicPsk}, {"JC:#test", jencoreTestPsk}, {"JC:#bot", jencoreBotPsk}};
 
-    bool added = false;
+    uint8_t added = 0;
     for (size_t i = 0; i < sizeof(defs) / sizeof(defs[0]); i++) {
-        bool present = false;
-        for (ChannelIndex k = 0; k < MAX_NUM_CHANNELS && !present; k++) {
-            const char *chName = channels.getByIndex(k).settings.name;
-            present = (strncmp(chName, defs[i].name, strlen(defs[i].name) + 1) == 0) ||
-                      (chName[0] == 'M' && chName[1] == 'C' && chName[2] == ':' &&
-                       strcmp(chName + 3, defs[i].name + 3) == 0);
-        }
-        if (present)
-            continue;
-
-        // First free slot after the primary: DISABLED and unnamed, so a userPrefs channel is never overwritten.
-        ChannelIndex idx = 1;
-        while (idx < MAX_NUM_CHANNELS &&
-               (channels.getByIndex(idx).role != meshtastic_Channel_Role_DISABLED || channels.getByIndex(idx).settings.name[0]))
-            idx++;
-        if (idx >= MAX_NUM_CHANNELS)
-            break;
-
-        meshtastic_Channel &ch = channels.getByIndex(idx);
-        memset(&ch.settings, 0, sizeof(ch.settings));
-        strncpy(ch.settings.name, defs[i].name, sizeof(ch.settings.name) - 1);
-        memcpy(ch.settings.psk.bytes, defs[i].psk, 16);
-        ch.settings.psk.size = 16;
-        ch.settings.has_module_settings = true;
-        ch.settings.module_settings.position_precision = 0;
-        ch.has_settings = true;
-        ch.role = meshtastic_Channel_Role_SECONDARY;
-        channels.fixupChannel(idx);
-        added = true;
+        const int8_t idx = addJenCoreChannel(defs[i].name, defs[i].psk, 16);
+        if (idx >= 0)
+            added++;
+        else if (idx == -1)
+            break; // table full: the remaining defaults cannot fit either
     }
     return added;
 }
-
-bool Channels::seedJenCoreChannelsOnce()
-{
-#ifdef FSCom
-    static const char *marker = "/prefs/meshcore_channels_seeded";
-    {
-        concurrency::LockGuard g(spiLock);
-        if (FSCom.exists(marker))
-            return false;
-    }
-    // A node updated from plain Meshtastic has none of them. Once only: a user who deletes them keeps them deleted.
-    const bool added = seedJenCoreChannels();
-    SafeFile out(marker, true);
-    out.write((const uint8_t *)"1", 1);
-    out.close();
-    return added;
 #else
-    return false;
-#endif
+int8_t Channels::addJenCoreChannel(const char *, const uint8_t *, size_t)
+{
+    return -3;
+}
+uint8_t Channels::addJenCoreChannels()
+{
+    return 0;
 }
 #endif
 
@@ -406,9 +430,6 @@ void Channels::initDefaults()
     initDefaultChannel(0);
 #endif
 
-#if MESHTASTIC_ENABLE_JENCORE_COMPANION
-    seedJenCoreChannels();
-#endif
 }
 
 void Channels::onConfigChanged()
@@ -534,7 +555,7 @@ bool Channels::isJenCoreChannel(ChannelIndex chIndex)
 
 size_t Channels::getJenCoreKey(ChannelIndex chIndex, uint8_t key[32])
 {
-#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+#if NEXUS_ENABLE_JENCORE_COMPANION
     if (!isJenCoreChannel(chIndex))
         return 0;
 

@@ -969,7 +969,7 @@ static void adminKeyFallbackRefund()
 }
 #endif
 
-bool decodesOnOurChannels(NodeNum from, PacketId id, ChannelHash channelHash, const uint8_t *encrypted, size_t len)
+bool decodesOnOurChannels(NodeNum from, NodeNum to, PacketId id, ChannelHash channelHash, const uint8_t *encrypted, size_t len)
 {
     if (len == 0 || len > MAX_LORA_PAYLOAD_LEN)
         return false;
@@ -979,10 +979,22 @@ bool decodesOnOurChannels(NodeNum from, PacketId id, ChannelHash channelHash, co
         if (!channels.decryptForHash(chIndex, channelHash))
             continue;
         memcpy(bytes, encrypted, len);
-        crypto->decrypt(from, id, len, bytes);
+
+        size_t decryptedSize = len;
+        if (channels.isAEADEnabled(chIndex)) {
+            if (len <= MESHTASTIC_AEAD_OVERHEAD)
+                continue;
+            CryptoKey k = channels.getKey(chIndex);
+            if (!crypto->decryptPacketCCM(k, from, to, id, len, encrypted, bytes))
+                continue;
+            decryptedSize = len - MESHTASTIC_AEAD_OVERHEAD;
+        } else {
+            crypto->decrypt(from, id, len, bytes);
+        }
 
         meshtastic_Data decoded = meshtastic_Data_init_zero;
-        if (pb_decode_from_bytes(bytes, len, &meshtastic_Data_msg, &decoded) && decoded.portnum != meshtastic_PortNum_UNKNOWN_APP)
+        if (pb_decode_from_bytes(bytes, decryptedSize, &meshtastic_Data_msg, &decoded) &&
+            decoded.portnum != meshtastic_PortNum_UNKNOWN_APP)
             return true;
     }
     return false;

@@ -4,10 +4,10 @@
 #include "modules/SystemCommandsModule.h"
 #endif
 #include "modules/StatusLEDModule.h"
-#if !MESHTASTIC_EXCLUDE_REPLYBOT
+#if NEXUS_ENABLE_REPLYBOT && !MESHTASTIC_EXCLUDE_REPLYBOT
 #include "ReplyBotModule.h"
 #endif
-#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#if NEXUS_ENABLE_STATSBOT && NEXUS_ENABLE_JENCORE_SNIFFER
 #include "StatsCommandModule.h"
 #endif
 #if !MESHTASTIC_EXCLUDE_PKI
@@ -139,10 +139,10 @@ void setupModules()
     }
 #endif
     statusLEDModule = new StatusLEDModule();
-#if !MESHTASTIC_EXCLUDE_REPLYBOT
+#if NEXUS_ENABLE_REPLYBOT && !MESHTASTIC_EXCLUDE_REPLYBOT
     new ReplyBotModule();
 #endif
-#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#if NEXUS_ENABLE_STATSBOT && NEXUS_ENABLE_JENCORE_SNIFFER
     new StatsCommandModule();
 #endif
 

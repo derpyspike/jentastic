@@ -6,6 +6,9 @@
 #include "main.h"
 #include "mesh/NodeDB.h"
 #include "modules/NexusModule.h" // Nexus SETFSK/SETFLRC: altModem state (Phase 2: SX128x)
+#if NEXUS_ENABLE_RNODE
+#include "mesh/RNodeEngine.h"
+#endif
 
 #if ARCH_PORTDUINO
 #include "PortduinoGlue.h"
@@ -493,11 +496,50 @@ template <typename T> void SX128xInterface<T>::configHardwareForSend()
 #endif
 #endif
 
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+    if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
+        // TX uses the frame's protocol syncword; RX uses the 0x14B4 hybrid.
+        int16_t syncErr = lora.setSyncWord(isRawSending() ? jencoreSyncWord : syncWord);
+        if (syncErr != RADIOLIB_ERR_NONE)
+            LOG_ERROR("SX128X setSyncWord %s%d", radioLibErr, syncErr);
+    }
+#endif
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+    if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
+        const uint16_t jencorePreamble = sf <= 8 ? 32 : 16;
+        if (isRawSending() && jencorePreamble != preambleLength) {
+            if (lora.setPreambleLength(jencorePreamble) == RADIOLIB_ERR_NONE)
+                jencorePreambleSet = true;
+        }
+    }
+#endif
+#if NEXUS_ENABLE_RNODE
+    if (getRawSendingType() == RAW_SEND_RNODE && (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0)) {
+        lora.setSyncWord(0x12);
+        if (rnodeEngine.getSf() != this->sf) {
+            lora.setSpreadingFactor(rnodeEngine.getSf());
+        }
+    }
+#endif
+
     RadioLibInterface::configHardwareForSend();
 }
 
 // For power draw measurements, helpful to force radio to stay sleeping
 // #define SLEEP_ONLY
+
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+template <typename T> void SX128xInterface<T>::setSyncWordRegister(uint16_t registerValue)
+{
+    const uint8_t msb = registerValue >> 8;
+    const uint8_t lsb = registerValue & 0xFF;
+    const uint8_t sw = (msb & 0xF0) | (lsb >> 4);
+    const uint8_t controlBits = ((msb & 0x0F) << 4) | (lsb & 0x0F);
+    int16_t err = lora.setSyncWord(sw, controlBits);
+    if (err != RADIOLIB_ERR_NONE)
+        LOG_ERROR("SX128X setSyncWord 0x%04x %s%d", registerValue, radioLibErr, err);
+}
+#endif
 
 template <typename T> void SX128xInterface<T>::startReceive()
 {
@@ -526,6 +568,35 @@ template <typename T> void SX128xInterface<T>::startReceive()
     if (err == RADIOLIB_ERR_NONE) {
         if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
             (void)lora.variablePacketLengthMode(maxFrameLen());
+        } else {
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+            if (this->hybridSyncEnabled) {
+                setSyncWordRegister(NEXUS_JENCORE_RX_SYNCWORD);
+            } else {
+                lora.setSyncWord(this->syncWord);
+            }
+#endif
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+            if (jencorePreambleSet) {
+                lora.setPreambleLength(preambleLength);
+                jencorePreambleSet = false;
+            }
+#endif
+#if NEXUS_ENABLE_RNODE
+            if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
+                lora.setSyncWord(0x12);
+                lora.setSpreadingFactor(rnodeEngine.getSf());
+                rnodeRadioDirty = false;
+                rnodeWasStandalone = true;
+            } else if (rnodeRadioDirty || rnodeWasStandalone) {
+#if !NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+                lora.setSyncWord(this->syncWord);
+#endif
+                lora.setSpreadingFactor(this->sf);
+                rnodeRadioDirty = false;
+                rnodeWasStandalone = false;
+            }
+#endif
         }
         err = lora.startReceive(RADIOLIB_SX128X_RX_TIMEOUT_INF, MESHTASTIC_RADIOLIB_IRQ_RX_FLAGS);
     }
@@ -535,6 +606,19 @@ template <typename T> void SX128xInterface<T>::startReceive()
         if (maybeRecoverChipStateLoss()) {
             if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
                 (void)lora.variablePacketLengthMode(maxFrameLen());
+            } else {
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+                if (this->hybridSyncEnabled)
+                    setSyncWordRegister(NEXUS_JENCORE_RX_SYNCWORD);
+                else
+                    lora.setSyncWord(this->syncWord);
+#endif
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+                if (jencorePreambleSet) {
+                    lora.setPreambleLength(preambleLength);
+                    jencorePreambleSet = false;
+                }
+#endif
             }
             err = lora.startReceive(RADIOLIB_SX128X_RX_TIMEOUT_INF, MESHTASTIC_RADIOLIB_IRQ_RX_FLAGS);
         }

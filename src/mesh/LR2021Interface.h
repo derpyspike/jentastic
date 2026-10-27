@@ -48,6 +48,16 @@ class LR2021Interface : public LR20x0Interface<LR2021>
     // re-apply a phantom entry on every subsequent reconfigure.
     void applyStoredSideDetectors();
 
+    /// Apply the v70 multi-SF tier table (main syncword is handled by the
+    /// driver; this programs the side detectors). Returns false on a hard
+    /// validation/chip reject; a parked table (main SF temporarily above a
+    /// side SF) returns true without touching the chip.
+    bool applyMultiSFTiers();
+
+    /// Disable the side detectors on the chip and clear the stored table.
+    /// Used by TIER OFF.
+    void clearMultiSFTiers();
+
   private:
     uint8_t sideSFs_[MAX_SF_TABLE] = {0};
     uint8_t sideSyncWords_[MAX_SF_TABLE] = {0};

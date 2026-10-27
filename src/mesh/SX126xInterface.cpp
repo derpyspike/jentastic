@@ -4,7 +4,7 @@
 #include "error.h"
 #include "mesh/NodeDB.h"
 #include "modules/NexusModule.h" // Nexus SETFSK: altModem state + pseudo-SNR helper
-#if MESHTASTIC_ENABLE_RNODE
+#if NEXUS_ENABLE_RNODE
 #include "mesh/RNodeEngine.h"
 #endif
 #ifdef ARCH_PORTDUINO
@@ -612,13 +612,13 @@ template <typename T> void SX126xInterface<T>::addReceiveMetadata(meshtastic_Mes
  */
 template <typename T> void SX126xInterface<T>::configHardwareForSend()
 {
-#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
-    // Use the packet's own sync word: JenCore frames go out with 0x12, Meshtastic with our normal sync word (0x2B or override).
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+    // Use the packet's own sync word: JenCore frames go out with 0x12, normal frames with our sync word (0x2B or override).
     int err = lora.setSyncWord(isRawSending() ? jencoreSyncWord : syncWord);
     if (err != RADIOLIB_ERR_NONE)
         LOG_ERROR("SX126X setSyncWord %s%d", radioLibErr, err);
 #endif
-#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#if NEXUS_ENABLE_JENCORE_SNIFFER
     // JenCore listens for a longer preamble at low SF (RadioLibWrapper::preambleLengthForSF: 32 at SF<=8, else 16).
     // Ours is restored in startReceive().
     const uint16_t jencorePreamble = sf <= 8 ? 32 : 16;
@@ -627,7 +627,7 @@ template <typename T> void SX126xInterface<T>::configHardwareForSend()
             jencorePreambleSet = true;
     }
 #endif
-#if MESHTASTIC_ENABLE_RNODE
+#if NEXUS_ENABLE_RNODE
     if (getRawSendingType() == RAW_SEND_RNODE) {
         lora.setSyncWord(0x12);
         if (rnodeEngine.getSf() != this->sf) {
@@ -639,7 +639,7 @@ template <typename T> void SX126xInterface<T>::configHardwareForSend()
     RadioLibInterface::configHardwareForSend();
 }
 
-#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
 template <typename T> void SX126xInterface<T>::setSyncWordRegister(uint16_t registerValue)
 {
     // RadioLib packs (syncWord, controlBits) nibble-wise into the register: MSB = sw.hi|cb.hi, LSB = sw.lo|cb.lo
@@ -664,23 +664,33 @@ template <typename T> void SX126xInterface<T>::startReceive()
 
     setTransmitEnable(false);
 
-#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
     if (this->hybridSyncEnabled) {
-        setSyncWordRegister(MESHTASTIC_JENCORE_RX_SYNCWORD);
+        setSyncWordRegister(NEXUS_JENCORE_RX_SYNCWORD);
     } else {
         lora.setSyncWord(this->syncWord);
     }
 #endif
-#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
-    // Back to our preamble after a JenCore frame: the RX duty cycle below is sized from it, and Meshtastic TX uses it.
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+    // Back to our preamble after a JenCore frame: the RX duty cycle below is sized from it, and normal TX uses it.
     if (jencorePreambleSet) {
         lora.setPreambleLength(preambleLength);
         jencorePreambleSet = false;
     }
 #endif
-#if MESHTASTIC_ENABLE_RNODE
-    if (rnodeEngine.getSf() != this->sf) {
+#if NEXUS_ENABLE_RNODE
+    if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
+        lora.setSyncWord(0x12);
+        lora.setSpreadingFactor(rnodeEngine.getSf());
+        rnodeRadioDirty = false;
+        rnodeWasStandalone = true;
+    } else if (rnodeRadioDirty || rnodeWasStandalone) {
+#if !NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+        lora.setSyncWord(this->syncWord);
+#endif
         lora.setSpreadingFactor(this->sf);
+        rnodeRadioDirty = false;
+        rnodeWasStandalone = false;
     }
 #endif
 

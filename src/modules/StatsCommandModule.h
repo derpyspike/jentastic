@@ -7,7 +7,7 @@
 
 #pragma once
 #include "configuration.h"
-#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#if NEXUS_ENABLE_STATSBOT && NEXUS_ENABLE_JENCORE_SNIFFER
 #include "SinglePortModule.h"
 
 /**

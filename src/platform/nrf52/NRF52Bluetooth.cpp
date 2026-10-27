@@ -31,15 +31,41 @@ static BLEDis bledis;             // DIS (Device Information Service) helper cla
 static BLEBas blebas;             // BAS (Battery Service) helper class instance
 static int lastBatteryLevel = -1; // last value written to BAS, to skip redundant writes/notifies
 
-#if MESHTASTIC_ENABLE_RNODE_BLE
+#if NEXUS_ENABLE_RNODE_BLE
 #include "mesh/RNodeEngine.h"
 #include <services/BLEUart.h>
 static BLEUart rnodeBleUart;
+static uint16_t rnodeConnHandle = BLE_CONN_HANDLE_INVALID;
+
+/// RNode clients (Columba) only list scan results whose name starts "RNode "; the Meshtastic app only
+/// lists bonded devices whose name ends "_XXXX". "RNode _XXXX" satisfies both, and at 11 chars still fits
+/// next to the 128-bit NUS UUID in the 31-byte scan response.
+static void makeRNodeBleName(char *out, size_t cap)
+{
+    uint8_t dmac[6] = {0};
+    Bluefruit.getAddr(dmac);
+    snprintf(out, cap, "RNode _%02X%02X", dmac[4], dmac[5]);
+}
+
 static void rnode_nrf52_ble_write(const uint8_t *data, size_t len)
 {
-    if (rnodeBleUart.notifyEnabled()) {
-        rnodeBleUart.write(data, len);
-        rnodeBleUart.flushTXD();
+    const uint16_t target = rnodeConnHandle != BLE_CONN_HANDLE_INVALID ? rnodeConnHandle : Bluefruit.connHandle();
+    if (!data || len == 0 || !rnodeBleUart.notifyEnabled(target))
+        return;
+    BLEConnection *conn = Bluefruit.Connection(target);
+    if (!conn)
+        return;
+    const uint16_t mtu = conn->getMtu();
+    const size_t chunk = mtu > 3 ? (size_t)(mtu - 3) : 20;
+    for (size_t offset = 0; offset < len;) {
+        const size_t n = (len - offset > chunk) ? chunk : (len - offset);
+        // Address the connection explicitly: with the Meshtastic phone and Columba connected at the
+        // same time, BLEUart's default uses Bluefruit.connHandle() (whichever connected last) and
+        // would notify the wrong link.
+        const size_t written = rnodeBleUart.write(target, data + offset, n);
+        if (written == 0)
+            break;
+        offset += written;
     }
 }
 #endif
@@ -95,7 +121,8 @@ static uint8_t toRadioBytes[meshtastic_ToRadio_size];
 // Last ToRadio value received from the phone
 static uint8_t lastToRadio[MAX_TO_FROM_RADIO_SIZE];
 
-static uint16_t connectionHandle;
+static uint16_t connectionHandle = BLE_CONN_HANDLE_INVALID;
+
 static bool passkeyShowing;
 
 class BluetoothPhoneAPI : public PhoneAPI
@@ -120,31 +147,36 @@ class BluetoothPhoneAPI : public PhoneAPI
 
 static BluetoothPhoneAPI *bluetoothPhoneAPI;
 
-void onConnect(uint16_t conn_handle)
+/// A connection only becomes "the phone" when it actually speaks the Meshtastic API; the RNode/NUS
+/// client shares the same peripheral and must not make the phone API think it is connected.
+static void markPhoneConnection(uint16_t conn_hdl)
 {
-    // Get the reference to current connection
-    BLEConnection *connection = Bluefruit.Connection(conn_handle);
-    connectionHandle = conn_handle;
-    char central_name[32] = {0};
-    connection->getPeerName(central_name, sizeof(central_name));
-    LOG_INFO("BLE Connected to %s", central_name);
-
-    // A new physical link must start unauthenticated. The auth slot is keyed by
-    // the (single, reused) bluetoothPhoneAPI instance, so a prior session's
-    // authorization can otherwise survive a quick reconnect. handleStartConfig()
-    // re-locks on every want_config too; this closes the window before that.
+    if (connectionHandle == conn_hdl)
+        return;
+    connectionHandle = conn_hdl;
+    // A new physical link must start unauthenticated (single admin auth slot).
 #ifdef MESHTASTIC_PHONEAPI_ACCESS_CONTROL
     if (bluetoothPhoneAPI) {
         bluetoothPhoneAPI->setAdminAuthorized(false);
     }
 #endif
-
-    // Notify UI (or any other interested firmware components)
     meshtastic::BluetoothStatus newStatus(meshtastic::BluetoothStatus::ConnectionState::CONNECTED);
     bluetoothStatus->updateStatus(&newStatus);
-#if MESHTASTIC_ENABLE_RNODE_BLE
-    rnodeEngine.setBleConnected(true);
-#endif
+}
+
+void onConnect(uint16_t conn_handle)
+{
+    // Get the reference to current connection
+    BLEConnection *connection = Bluefruit.Connection(conn_handle);
+    char central_name[32] = {0};
+    connection->getPeerName(central_name, sizeof(central_name));
+    LOG_INFO("BLE Connected to %s (handle=%u)", central_name, (unsigned)conn_handle);
+
+    // A connection stops advertising by default. Keep it running while a second slot is free so the
+    // Meshtastic phone and the RNode/NUS client can be connected at the same time.
+    if (Bluefruit.Periph.connected() < 2)
+        Bluefruit.Advertising.start(0);
+
 }
 /**
  * Callback invoked when a connection is dropped
@@ -153,20 +185,30 @@ void onConnect(uint16_t conn_handle)
  */
 void onDisconnect(uint16_t conn_handle, uint8_t reason)
 {
-    LOG_INFO("BLE Disconnected, reason = 0x%x", reason);
-    if (bluetoothPhoneAPI) {
-        bluetoothPhoneAPI->close();
+    LOG_INFO("BLE Disconnected, reason = 0x%x (handle=%u)", reason, (unsigned)conn_handle);
+#if NEXUS_ENABLE_RNODE_BLE
+    if (conn_handle == rnodeConnHandle) {
+        rnodeConnHandle = BLE_CONN_HANDLE_INVALID;
+        rnodeEngine.setBleConnected(false);
+    }
+#endif
+    if (conn_handle == connectionHandle) {
+        connectionHandle = BLE_CONN_HANDLE_INVALID;
+        if (bluetoothPhoneAPI) {
+            bluetoothPhoneAPI->close();
+        }
+
+        // Clear the last ToRadio packet buffer to avoid rejecting first packet from new connection
+        memset(lastToRadio, 0, sizeof(lastToRadio));
+
+        // Notify UI (or any other interested firmware components)
+        meshtastic::BluetoothStatus newStatus(meshtastic::BluetoothStatus::ConnectionState::DISCONNECTED);
+        bluetoothStatus->updateStatus(&newStatus);
     }
 
-    // Clear the last ToRadio packet buffer to avoid rejecting first packet from new connection
-    memset(lastToRadio, 0, sizeof(lastToRadio));
-
-    // Notify UI (or any other interested firmware components)
-    meshtastic::BluetoothStatus newStatus(meshtastic::BluetoothStatus::ConnectionState::DISCONNECTED);
-    bluetoothStatus->updateStatus(&newStatus);
-#if MESHTASTIC_ENABLE_RNODE_BLE
-    rnodeEngine.setBleConnected(false);
-#endif
+    // Free a slot again: let the other persona (re)connect without waiting for a full advertising cycle.
+    if (Bluefruit.Periph.connected() < 2)
+        Bluefruit.Advertising.start(0);
 
 #if HAS_SCREEN
     // If a pairing prompt is active, make sure we dismiss it on disconnect/cancel/failure paths.
@@ -189,6 +231,7 @@ void onCccd(uint16_t conn_hdl, BLECharacteristic *chr, uint16_t cccd_value)
     // and cccd value = 0x0002 means indications are enabled
 
     if (chr->uuid == fromNum.uuid || chr->uuid == logRadio.uuid) {
+        markPhoneConnection(conn_hdl);
         auto result = cccd_value == 2 ? chr->indicateEnabled(conn_hdl) : chr->notifyEnabled(conn_hdl);
         if (result) {
             LOG_INFO("Notify/Indicate enabled");
@@ -238,15 +281,25 @@ void startAdv(void)
     Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
     // IncludeService UUID
     // Bluefruit.ScanResponse.addService(meshBleService);
-    Bluefruit.ScanResponse.addTxPower();
+#if NEXUS_ENABLE_RNODE_BLE
+    const bool rnodeBle = rnodeEngine.isEnabled() && rnodeEngine.isBleEnabled();
+#else
+    const bool rnodeBle = false;
+#endif
+    // RNode NUS is 128-bit. Advertising it next to the 128-bit Meshtastic service exceeds the
+    // 31-byte legacy limit, so with RNode BLE on we split the payload: adv = flags + mesh UUID +
+    // TxPower, scan response = "RNode xx" name + NUS UUID. That is 24 and 30 bytes respectively.
+    if (rnodeBle)
+        Bluefruit.Advertising.addTxPower();
+    else
+        Bluefruit.ScanResponse.addTxPower();
     Bluefruit.ScanResponse.addName();
     // Include Name
     // Bluefruit.Advertising.addName();
     Bluefruit.Advertising.addService(meshBleService);
-#if MESHTASTIC_ENABLE_RNODE_BLE
-    if (rnodeEngine.isBleEnabled()) {
+#if NEXUS_ENABLE_RNODE_BLE
+    if (rnodeBle)
         Bluefruit.ScanResponse.addService(rnodeBleUart);
-    }
 #endif
     /* Start Advertising
      * - Enable auto advertising if disconnected
@@ -274,6 +327,7 @@ static void authorizeRead(uint16_t conn_hdl)
  */
 void onFromRadioAuthorize(uint16_t conn_hdl, BLECharacteristic *chr, ble_gatts_evt_read_t *request)
 {
+    markPhoneConnection(conn_hdl);
     if (request->offset == 0) {
         // If the read is long, we will get multiple authorize invocations - we only populate data on the first
         size_t numBytes = bluetoothPhoneAPI->getFromRadio(fromRadioBytes);
@@ -288,6 +342,7 @@ void onFromRadioAuthorize(uint16_t conn_hdl, BLECharacteristic *chr, ble_gatts_e
 
 void onToRadioWrite(uint16_t conn_hdl, BLECharacteristic *chr, uint8_t *data, uint16_t len)
 {
+    markPhoneConnection(conn_hdl);
     LOG_INFO("toRadioWriteCb data %p, len %u", data, len);
     if (memcmp(lastToRadio, data, len) != 0) {
         LOG_DEBUG("New ToRadio packet");
@@ -345,11 +400,23 @@ void setupMeshService(void)
     logRadio.write32(0);
     logRadio.begin();
 
-#if MESHTASTIC_ENABLE_RNODE_BLE
+#if NEXUS_ENABLE_RNODE_BLE
     if (rnodeEngine.isBleEnabled()) {
         rnodeBleUart.begin();
+        rnodeBleUart.setNotifyCallback([](uint16_t conn_hdl, bool enabled) {
+            if (enabled) {
+                rnodeConnHandle = conn_hdl;
+                rnodeEngine.setBleConnected(true);
+                LOG_INFO("RNode BLE client subscribed (handle=%u)", (unsigned)conn_hdl);
+            } else if (conn_hdl == rnodeConnHandle) {
+                rnodeConnHandle = BLE_CONN_HANDLE_INVALID;
+                rnodeEngine.setBleConnected(false);
+                LOG_INFO("RNode BLE client unsubscribed (handle=%u)", (unsigned)conn_hdl);
+            }
+        });
         rnodeBleUart.setRxCallback([](uint16_t conn_hdl) {
-            (void)conn_hdl;
+            rnodeConnHandle = conn_hdl;
+            rnodeEngine.setBleConnected(true);
             while (rnodeBleUart.available()) {
                 uint8_t buf[64];
                 int n = rnodeBleUart.read(buf, sizeof(buf));
@@ -403,14 +470,17 @@ void NRF52Bluetooth::setup()
     // Initialise the Bluefruit module
     LOG_INFO("Init the Bluefruit nRF52 module");
     Bluefruit.autoConnLed(false);
-    Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);
-    if (!Bluefruit.begin()) {
+    // Two peripheral slots so the Meshtastic app and Columba can be connected at once. HIGH (MTU 128,
+    // short event) rather than MAX, because the MAX event length/queues do not fit two links in the
+    // SoftDevice's RAM budget. Never call begin() twice: the SoftDevice is already enabled after the
+    // first attempt, and a second call can wedge the stack into a reset loop.
+    Bluefruit.configPrphBandwidth(BANDWIDTH_HIGH);
+    if (!Bluefruit.begin(2, 0)) {
         // sd_ble_enable() rejected our RAM base: the linker RAM ORIGIN
         // (src/platform/nrf52/nrf52840_s140_v*.ld) is below what the SoftDevice needs for the
-        // current Bluefruit config. Without this check the node would silently run without BLE.
-        // Rebuild with -DCFG_DEBUG=1 to get "SoftDevice's RAM requires: 0x..." in the log, then
-        // raise the ORIGIN accordingly.
-        LOG_ERROR("Bluefruit.begin failed: SoftDevice RAM too small");
+        // current Bluefruit config. Rebuild with -DCFG_DEBUG=1 to get "SoftDevice's RAM requires:
+        // 0x..." in the log, then raise the ORIGIN accordingly.
+        LOG_ERROR("Bluefruit.begin(2) failed: SoftDevice RAM too small");
         RECORD_CRITICALERROR(meshtastic_CriticalErrorCode_UNSPECIFIED);
         return;
     }
@@ -441,8 +511,17 @@ void NRF52Bluetooth::setup()
         Bluefruit.Security.setIOCaps(false, false, false);
         meshBleService.setPermission(SECMODE_OPEN, SECMODE_OPEN);
     }
-    // Set the advertised device name (keep it short!)
-    Bluefruit.setName(getDeviceName());
+    // Set the advertised device name (keep it short!). RNode clients (Columba) filter scans on the
+    // "RNode " prefix, so the NUS persona gets that name while Meshtastic apps keep finding us by
+    // the mesh service UUID.
+#if NEXUS_ENABLE_RNODE_BLE
+    if (rnodeEngine.isEnabled() && rnodeEngine.isBleEnabled()) {
+        char rnodeName[12];
+        makeRNodeBleName(rnodeName, sizeof(rnodeName));
+        Bluefruit.setName(rnodeName);
+    } else
+#endif
+        Bluefruit.setName(getDeviceName());
     // Set the connect/disconnect callback handlers
     Bluefruit.Periph.setConnectCallback(onConnect);
     Bluefruit.Periph.setDisconnectCallback(onDisconnect);
@@ -646,6 +725,23 @@ void NRF52Bluetooth::sendLog(const uint8_t *logMessage, size_t length)
 
 void NRF52Bluetooth::tick()
 {
+#if NEXUS_ENABLE_RNODE_BLE
+    // A connection stops advertising. Restarting inside onConnect() can be rejected while the
+    // SoftDevice is still processing the connect event, so re-arm here once the event has settled.
+    // That is what lets a second central (the Meshtastic phone and Columba) connect at the same time.
+    if (rnodeEngine.isEnabled() && rnodeEngine.isBleEnabled() && Bluefruit.Periph.connected() < 2 &&
+        !Bluefruit.Advertising.isRunning()) {
+        static uint32_t lastAdvKick = 0;
+        if (Throttle::hasElapsed(lastAdvKick, 1000)) {
+            lastAdvKick = millis();
+            Bluefruit.Advertising.start(0);
+            if (Bluefruit.Advertising.isRunning())
+                LOG_INFO("BLE: advertising re-armed for a second connection");
+            else
+                LOG_WARN("BLE: advertising re-arm failed");
+        }
+    }
+#endif
 #ifdef NEXUS_ENABLE_AIRTAG
     if (!nexus_airtag_enabled) {
         if (inAirtagMode) {
