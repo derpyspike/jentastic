@@ -9,7 +9,7 @@
 
 #include "configuration.h"
 
-#if MESHTASTIC_ENABLE_RNODE_TCP && HAS_WIFI
+#if NEXUS_ENABLE_RNODE_TCP && HAS_WIFI
 
 #include "concurrency/OSThread.h"
 #include <WiFi.h>
@@ -36,4 +36,4 @@ class RNodeTcpServer : public concurrency::OSThread
 
 extern RNodeTcpServer *rnodeTcpServer;
 
-#endif // MESHTASTIC_ENABLE_RNODE_TCP && HAS_WIFI
+#endif // NEXUS_ENABLE_RNODE_TCP && HAS_WIFI

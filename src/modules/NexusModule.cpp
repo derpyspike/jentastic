@@ -21,6 +21,12 @@
 #endif
 #include "Channels.h"
 #include "MeshService.h"
+#if NEXUS_ENABLE_RNODE
+#include "mesh/RNodeEngine.h"
+#endif
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+#include "mesh/JenCoreRepeater.h"
+#endif
 #include "NodeDB.h"
 #include "Power.h"
 #include "PowerFSM.h"
@@ -365,10 +371,13 @@ NexusModule::NexusModule()
 
     // Nexus: Capture boot parameters and restore vault
     loadVault();
+
+    // The module framework never calls MeshModule::setup(), so run the init-time side
+    // effects (TX hook registration, hibernation seed, G3 boot detect) from here.
+    initOnce();
 }
 
-void NexusModule::setup() {
-    MeshModule::setup();
+void NexusModule::initOnce() {
     is_hibernating = rtc_nexus_hibernating;
     if (!nexusTxHook) {
         nexusTxHook = new NexusTxHook();
@@ -377,8 +386,8 @@ void NexusModule::setup() {
 #ifdef STATION_G3
     // Nexus-28005 (2026-09-15): /nexus G3 boot-detect + vault apply.
     //
-    // Runs after initOnce() (which calls loadVault()), so nexusVariantBits is
-    // already populated from disk when we get here. The boot-detect sequence is:
+    // Runs from the constructor after loadVault(), so nexusVariantBits is already
+    // populated from disk when we get here. The boot-detect sequence is:
     //
     //   1. Put each pin into INPUT mode with PULLS DISABLED before reading.
     //      ESP32-S3 cold-boot GPIO default has the internal pull-up enabled
@@ -406,7 +415,7 @@ void NexusModule::setup() {
     //      re-issuing the command.
     //
     // Runtime state (nexus_g3_pa_runtime / nexus_g3_lna_runtime) is the
-    // source of truth after setup() returns. nexusVariantBits is only what
+    // source of truth after initOnce() returns. nexusVariantBits is only what
     // gets persisted on the next SAVE.
     //
     // Hardware constants (B&Q BQ35LORA900V1M PA module, station-g3 variant):
@@ -3267,15 +3276,17 @@ void NexusModule::runVoltageAutomations()
         }
         if (!has_wake_rule) {
             uint16_t hib_mv = 0;
+            uint8_t hib_ch = 0;
             for (int i = 0; i < 4; i++) {
                 if (volt_rules[i].action == NEXUS_VOLT_ACT_HIBERNATE && volt_rules[i].mv > hib_mv) {
                     hib_mv = volt_rules[i].mv;
+                    hib_ch = volt_rules[i].channel;
                 }
             }
-            uint16_t cur = getVoltageReadingMv(0);
+            uint16_t cur = getVoltageReadingMv(hib_ch);
             if (cur >= hib_mv + 100) {
                 setHibernating(false);
-                LOG_INFO("Nexus: Auto-woke from hibernation (cur %u mV >= %u mV)", (unsigned)cur, (unsigned)(hib_mv + 100));
+                LOG_INFO("Nexus: Auto-woke from hibernation (ch %u cur %u mV >= %u mV)", (unsigned)hib_ch, (unsigned)cur, (unsigned)(hib_mv + 100));
                 return;
             }
         }
@@ -3285,13 +3296,66 @@ void NexusModule::runVoltageAutomations()
     }
 }
 
+bool NexusModule::setTierChannelOverride(uint8_t channel, uint8_t sf)
+{
+    if (channel >= MAX_NUM_CHANNELS)
+        return false;
+    for (uint8_t i = 0; i < tierChannelOverrideCount; i++) {
+        if (tierChannelOverrides[i].channel == channel) {
+            tierChannelOverrides[i].sf = sf;
+            return true;
+        }
+    }
+    if (tierChannelOverrideCount >= MAX_TIER_CHANNEL_OVERRIDES)
+        return false;
+    tierChannelOverrides[tierChannelOverrideCount].channel = channel;
+    tierChannelOverrides[tierChannelOverrideCount].sf = sf;
+    tierChannelOverrideCount++;
+    return true;
+}
+
+bool NexusModule::clearTierChannelOverride(uint8_t channel)
+{
+    for (uint8_t i = 0; i < tierChannelOverrideCount; i++) {
+        if (tierChannelOverrides[i].channel != channel)
+            continue;
+        for (uint8_t j = i; j + 1 < tierChannelOverrideCount; j++)
+            tierChannelOverrides[j] = tierChannelOverrides[j + 1];
+        tierChannelOverrideCount--;
+        return true;
+    }
+    return false;
+}
+
+const NexusModule::TierChannelOverride *NexusModule::findTierChannelOverride(ChannelIndex channel) const
+{
+    if (channel >= MAX_NUM_CHANNELS)
+        return nullptr;
+    for (uint8_t i = 0; i < tierChannelOverrideCount; i++)
+        if (tierChannelOverrides[i].channel == channel)
+            return &tierChannelOverrides[i];
+    return nullptr;
+}
+
 void NexusModule::onRebroadcastPacket(const meshtastic_MeshPacket *rxp, meshtastic_MeshPacket *txp)
 {
-    if (!rxp || !txp || !isSplitEnabled())
+    if (!rxp || !txp)
         return;
 
     RadioInterface *rif = router ? router->getInterface() : nullptr;
     if (!rif)
+        return;
+
+    if (multiSFConfig.enabled) {
+        // Multi-SF tiers are a same-carrier protocol system, not the frequency
+        // split bridge. Meshtastic traffic uses the configured Meshtastic tier.
+        const nexus::TierConfig *tier = multiSFTxTierForChannel(txp->channel);
+        if (tier && (tier->sf != rif->getSF() || tier->syncword != rif->getSyncWord()))
+            NexusTxHook::setOverride(txp->id, tier->sf, tier->tx_power, tier->syncword);
+        return;
+    }
+
+    if (!isSplitEnabled())
         return;
 
     if (splitConfig.mode == NEXUS_SPLIT_ROOF_MSF) {
@@ -3372,11 +3436,21 @@ void NexusModule::onRebroadcastPacket(const meshtastic_MeshPacket *rxp, meshtast
 
 void NexusModule::onClientSendPacket(meshtastic_MeshPacket *p)
 {
-    if (!p || !isSplitEnabled())
+    if (!p)
         return;
 
     RadioInterface *rif = router ? router->getInterface() : nullptr;
     if (!rif)
+        return;
+
+    if (multiSFConfig.enabled) {
+        const nexus::TierConfig *tier = multiSFTxTierForChannel(p->channel);
+        if (tier && (tier->sf != rif->getSF() || tier->syncword != rif->getSyncWord()))
+            NexusTxHook::setOverride(p->id, tier->sf, tier->tx_power, tier->syncword);
+        return;
+    }
+
+    if (!isSplitEnabled())
         return;
 
     if (splitConfig.mode == NEXUS_SPLIT_CLIENT_SPLIT) {
@@ -4993,7 +5067,8 @@ bool NexusModule::saveVault()
     }
     memset(v, 0, sizeof(NexusVault));
     memcpy(v->magic, "JenT", 4);
-    v->version = 69; // v69: split_config (dual-preset split-tier and APC)
+    v->version = 73; // v73: tier_channels (per-channel Meshtastic TX tier overrides)
+    // - v69 was: split_config (dual-preset split-tier and APC)
     // - v68 was: volt_rules (4-voltage threshold power automation)
     // - v67 was: nexusVariantBits (generic variant-bitmask pool — station-g3 PA/LNA)
     // - v66 was: features_mask + secondary_keys[4] (4 slots)
@@ -5103,6 +5178,36 @@ bool NexusModule::saveVault()
 
     // Split tier config (v69)
     v->split_config = splitConfig;
+
+    // Multi-SF protocol tiers (v70)
+    v->multi_sf = multiSFConfig;
+
+    // JenRNode + JenCore persona state (v71)
+#if NEXUS_ENABLE_RNODE
+    v->jen_config.rnode_mode = (uint8_t)rnodeEngine.getMode();
+    v->jen_config.rnode_tcp = rnodeEngine.isTcpEnabled() ? 1 : 0;
+    v->jen_config.rnode_ble = rnodeEngine.isBleEnabled() ? 1 : 0;
+    v->jen_config.rnode_sf = rnodeEngine.getSf();
+#endif
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+    v->jen_config.jencore_enabled = JenCoreRepeater::isJenCoreEnabled() ? 1 : 0;
+    v->jen_config.jencore_relay = JenCoreRepeater::isRelayEnabled() ? 1 : 0;
+    v->jen_config.jencore_path_hash = JenCoreRepeater::getPathHashSize();
+
+    // JenCore region scoping (v72)
+    v->jen_regions.count = JenCoreRepeater::getRegionCount();
+    v->jen_regions.home = JenCoreRepeater::getHomeRegionIndex();
+    v->jen_regions.allow_unscoped = JenCoreRepeater::getAllowUnscoped() ? 1 : 0;
+    for (uint8_t i = 0; i < v->jen_regions.count && i < 4; i++)
+        strncpy(v->jen_regions.names[i], JenCoreRepeater::getRegionName(i), sizeof(v->jen_regions.names[i]) - 1);
+#endif
+
+    // Per-channel Meshtastic TX tier overrides (v73)
+    v->tier_channels.count = tierChannelOverrideCount;
+    for (uint8_t i = 0; i < tierChannelOverrideCount && i < 8; i++) {
+        v->tier_channels.entries[i].channel = tierChannelOverrides[i].channel;
+        v->tier_channels.entries[i].sf = tierChannelOverrides[i].sf;
+    }
 
     // Nexus Ignores (v21)
     v->nexus_ignore_count = nexus_ignore_count;
@@ -5305,6 +5410,74 @@ bool NexusModule::loadVault()
         splitConfig = v->split_config;
         if (splitConfig.mode > NEXUS_SPLIT_ROOF_MSF) {
             splitConfig.mode = NEXUS_SPLIT_OFF;
+        }
+
+        // Multi-SF protocol tiers (v70). Structural validation only; the radio
+        // applies/validates the detector table once it exists.
+        multiSFConfig = v->multi_sf;
+        if (multiSFConfig.enabled) {
+            // The two systems own the same per-packet TX hook; the same-carrier
+            // tier table wins and the frequency split stays off.
+            splitConfig.mode = NEXUS_SPLIT_OFF;
+            const char *reason = nullptr;
+            if (!nexus::validateMultiSF(multiSFConfig, config.lora.spread_factor,
+                                        bwCodeToKHz(config.lora.bandwidth), &reason)) {
+                LOG_WARN("Nexus: MultiSF disabled at load: %s", reason ? reason : "invalid");
+                multiSFConfig.enabled = 0;
+            }
+        }
+
+        // JenRNode + JenCore persona state (v71). Older vaults have jen_config zeroed by decodeVault:
+        // keep the radio persona OFF and default the relay/path width to MeshCore's 3-byte norm.
+        {
+            const bool legacyJen = v->version < 71;
+#if NEXUS_ENABLE_RNODE
+            const uint8_t rmode = v->jen_config.rnode_mode;
+            rnodeEngine.setMode(rmode <= 2 ? (RNodeMode)rmode : RNODE_MODE_OFF);
+            rnodeEngine.setTcpEnabled(legacyJen ? true : (v->jen_config.rnode_tcp != 0));
+            rnodeEngine.setBleEnabled(legacyJen ? true : (v->jen_config.rnode_ble != 0));
+            if (v->jen_config.rnode_sf >= 5 && v->jen_config.rnode_sf <= 12)
+                rnodeEngine.setSf(v->jen_config.rnode_sf);
+#endif
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+            JenCoreRepeater::setJenCoreEnabled(v->jen_config.jencore_enabled != 0);
+            JenCoreRepeater::setRelayEnabled(legacyJen ? true : (v->jen_config.jencore_relay != 0));
+            JenCoreRepeater::setPathHashSize(legacyJen ? 3 : v->jen_config.jencore_path_hash);
+
+            // Region scoping (v72). Older vaults keep the previous unscoped behaviour.
+            JenCoreRepeater::clearRegions();
+            if (v->version >= 72) {
+                const uint8_t count = v->jen_regions.count <= 4 ? v->jen_regions.count : 4;
+                for (uint8_t i = 0; i < count; i++) {
+                    char name[25];
+                    memcpy(name, v->jen_regions.names[i], sizeof(v->jen_regions.names[i]));
+                    name[24] = '\0';
+                    if (name[0])
+                        JenCoreRepeater::addRegion(name);
+                }
+                if (v->jen_regions.home < count) {
+                    char homeName[25];
+                    memcpy(homeName, v->jen_regions.names[v->jen_regions.home], sizeof(v->jen_regions.names[0]));
+                    homeName[24] = '\0';
+                    if (homeName[0])
+                        JenCoreRepeater::setHomeRegion(homeName);
+                }
+                JenCoreRepeater::setAllowUnscoped(v->jen_regions.allow_unscoped != 0);
+            }
+#endif
+
+            // Per-channel Meshtastic TX tier overrides (v73).
+            tierChannelOverrideCount = 0;
+            memset(tierChannelOverrides, 0, sizeof(tierChannelOverrides));
+            if (v->version >= 73) {
+                const uint8_t count = v->tier_channels.count <= MAX_TIER_CHANNEL_OVERRIDES ? v->tier_channels.count : MAX_TIER_CHANNEL_OVERRIDES;
+                for (uint8_t i = 0; i < count; i++) {
+                    const uint8_t channel = v->tier_channels.entries[i].channel;
+                    const uint8_t sf = v->tier_channels.entries[i].sf;
+                    if (channel < MAX_NUM_CHANNELS && sf >= 5 && sf <= 12)
+                        setTierChannelOverride(channel, sf);
+                }
+            }
         }
 
         nexus_ignore_count = (v->nexus_ignore_count <= 64) ? v->nexus_ignore_count : 64;

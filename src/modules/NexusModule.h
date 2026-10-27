@@ -14,6 +14,7 @@
 #include "input/InputBroker.h"
 #include "mesh/MeshModule.h"
 #include "mesh/generated/meshtastic/mesh.pb.h"
+#include "modules/NexusMultiSF.h"
 #include "modules/NexusRuntime.h"
 #include <vector>
 
@@ -89,8 +90,11 @@ public:
     virtual bool wantPacket(const meshtastic_MeshPacket *p) override;
     virtual ProcessMessage handleReceived(const meshtastic_MeshPacket &mp) override;
     ProcessMessage handleLocal(const meshtastic_MeshPacket &mp);
-    virtual void setup() override;
     virtual int32_t runOnce() override;
+
+    /// Init-time side effects that the module framework does not reach: the framework never
+    /// calls MeshModule::setup(), so the constructor calls this after loadVault().
+    void initOnce();
 
     // Firewall/Drop Logic
     bool shouldDropPacket(const meshtastic_MeshPacket &mp);
@@ -525,6 +529,27 @@ public:
         int8_t apc_min_power;    // Minimum TX power (dBm) for APC step-down (default 0)
     }; // Total: 12 bytes
 
+    // v71: JenRNode (RNode) and JenCore/MeshCore persona state.
+    struct __attribute__((packed)) NexusJenConfig {
+        uint8_t rnode_mode;        // RNodeMode: 0 OFF, 1 BRIDGE, 2 STANDALONE
+        uint8_t rnode_tcp;         // TCP KISS server enabled
+        uint8_t rnode_ble;         // NUS BLE persona enabled
+        uint8_t rnode_sf;          // Reticulum tier SF (5..12)
+        uint8_t jencore_enabled;   // master JenCore switch
+        uint8_t jencore_relay;     // flood relay
+        uint8_t jencore_path_hash; // 1..3 bytes
+        uint8_t reserved;
+    }; // 8 bytes
+
+    // v72: MeshCore/JenCore region scoping.
+    struct __attribute__((packed)) NexusJenRegions {
+        uint8_t count;         // 0..4
+        uint8_t home;          // index used for TX scope
+        uint8_t allow_unscoped; // accept plain ROUTE_FLOOD
+        uint8_t reserved;
+        char names[4][24];     // stored without leading '#'
+    }; // 100 bytes
+
     // Nexus Storage Vault structure (Fixed-length for simplicity and speed)
     struct __attribute__((packed)) NexusVault {
         char magic[4];       // "JenT"
@@ -599,6 +624,18 @@ public:
         uint64_t nexusVariantBits;        // v67: generic variant-bitmask pool. Each variant carves its own bit range from this 64-bit field. Additive; defaults to 0 (all variant-extensions off) when loaded from a v66 vault (fileSize clamp leaves the trailing 8 B as zero-init).
         NexusVoltRule volt_rules[4];      // v68: 4-voltage threshold rules
         NexusSplitConfig split_config;    // v69: Dual-preset split-tier and APC configuration (12 bytes)
+        nexus::MultiSFConfig multi_sf;    // v70: same-carrier protocol tiers (LR2021)
+        NexusJenConfig jen_config;        // v71: JenRNode + JenCore persona state
+        NexusJenRegions jen_regions;      // v72: MeshCore/JenCore region scoping
+        struct __attribute__((packed)) NexusTierChannelMap {
+            uint8_t count;
+            uint8_t reserved[3];
+            struct __attribute__((packed)) {
+                uint8_t channel;
+                uint8_t sf;
+                uint8_t reserved[2];
+            } entries[8];
+        } tier_channels;                  // v73: per-channel Meshtastic TX tier overrides
         uint32_t crc32;
     };
 
@@ -650,8 +687,8 @@ public:
         G3_OFF      = 1,   // default on jumper-less boot
         G3_ON       = 2    // firmware actively drives the pin
     };
-    NexusG3PinState nexus_g3_pa_runtime  = G3_DISABLED; // set by boot-detect in setup()
-    NexusG3PinState nexus_g3_lna_runtime = G3_DISABLED; // set by boot-detect in setup()
+    NexusG3PinState nexus_g3_pa_runtime  = G3_DISABLED; // set by boot-detect in initOnce()
+    NexusG3PinState nexus_g3_lna_runtime = G3_DISABLED; // set by boot-detect in initOnce()
 
     // Dispatcher entry — called from NexusCommands.cpp when the operator types
     //   /nexus G3                  (bare, same as STATUS)
@@ -712,6 +749,56 @@ public:
     bool isSplitEnabled() const { return splitConfig.mode != NEXUS_SPLIT_OFF; }
     bool isApcEnabled() const { return (splitConfig.flags & NEXUS_SPLIT_FLAG_APC_EN) != 0; }
     int8_t getApcMinPower() const { return splitConfig.apc_min_power; }
+
+    // Same-carrier protocol tiers (v70). Independent of the frequency SPLIT.
+    nexus::MultiSFConfig multiSFConfig = {};
+
+    // v73: per-Meshtastic-channel TX tier overrides (channel index -> tier SF).
+    struct TierChannelOverride {
+        uint8_t channel = 0;
+        uint8_t sf = 0;
+    };
+    static constexpr size_t MAX_TIER_CHANNEL_OVERRIDES = 8;
+    TierChannelOverride tierChannelOverrides[MAX_TIER_CHANNEL_OVERRIDES] = {};
+    uint8_t tierChannelOverrideCount = 0;
+    bool setTierChannelOverride(uint8_t channel, uint8_t sf);
+    bool clearTierChannelOverride(uint8_t channel);
+    const TierChannelOverride *findTierChannelOverride(ChannelIndex channel) const;
+    bool isMultiSFEnabled() const { return multiSFConfig.enabled != 0; }
+    uint8_t multiSFProtocolForDetector(uint8_t detector) const
+    {
+        if (!multiSFConfig.enabled)
+            return nexus::TIER_MESHTASTIC;
+        if (detector == 0)
+            return multiSFConfig.main_protocol;
+        const uint8_t idx = static_cast<uint8_t>(detector - 1);
+        return idx < multiSFConfig.side_count ? multiSFConfig.side[idx].protocol : nexus::TIER_NONE;
+    }
+    const nexus::TierConfig *multiSFTxTierForChannel(ChannelIndex ch) const
+    {
+        if (!multiSFConfig.enabled)
+            return nullptr;
+        if (const TierChannelOverride *override = findTierChannelOverride(ch)) {
+            for (uint8_t i = 0; i < multiSFConfig.side_count; ++i)
+                if (multiSFConfig.side[i].enabled && multiSFConfig.side[i].protocol == nexus::TIER_MESHTASTIC &&
+                    multiSFConfig.side[i].sf == override->sf)
+                    return &multiSFConfig.side[i];
+        }
+        return multiSFTxTier();
+    }
+    const nexus::TierConfig *multiSFTxTier() const
+    {
+        if (!multiSFConfig.enabled)
+            return nullptr;
+        const uint8_t slot = multiSFConfig.meshtastic_tx_slot;
+        if (slot != nexus::MULTISF_NO_TX_SLOT && slot < multiSFConfig.side_count &&
+            multiSFConfig.side[slot].enabled && multiSFConfig.side[slot].protocol == nexus::TIER_MESHTASTIC)
+            return &multiSFConfig.side[slot];
+        for (uint8_t i = 0; i < multiSFConfig.side_count; ++i)
+            if (multiSFConfig.side[i].enabled && multiSFConfig.side[i].protocol == nexus::TIER_MESHTASTIC)
+                return &multiSFConfig.side[i];
+        return nullptr;
+    }
     void onRebroadcastPacket(const meshtastic_MeshPacket *rxp, meshtastic_MeshPacket *txp);
     void onClientSendPacket(meshtastic_MeshPacket *p);
 

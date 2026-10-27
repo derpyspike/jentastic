@@ -6,7 +6,7 @@
 //
 
 #include "StatsCommandModule.h"
-#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#if NEXUS_ENABLE_STATSBOT && NEXUS_ENABLE_JENCORE_SNIFFER
 #include "ContentionStats.h"
 #include "MeshService.h"
 #include "NodeDB.h"

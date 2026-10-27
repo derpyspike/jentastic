@@ -17,7 +17,8 @@
 #   ./build-nexus.sh jenny                           # 4 default keys + jenny-firmware
 #   ./build-nexus.sh admins                          # NO keys + jt-firmware
 #   ./build-nexus.sh javi                            # NO keys + nexus-firmware
-#   ./build-nexus.sh all                             # jenny + admins + javi sequentially
+#   ./build-nexus.sh default                         # NO keys + jt-firmware (same as admins for now)
+#   ./build-nexus.sh all                             # jenny + admins + javi + default sequentially
 #   ./build-nexus.sh jenny --no-default-keys         # jenny without keys
 #   ./build-nexus.sh admins --default-keys           # admins WITH the 4 default keys
 #   ./build-nexus.sh jenny --master-key-1 eevee \
@@ -69,6 +70,7 @@ source "$LIB_FILE"
 BUILDER_JENNY="jenny|jenny-firmware|default|Jenny|Jenny2|yes|no"
 BUILDER_ADMINS="admins|jt-firmware|none|Nexus|JenT|no|no"           # Nexus-28006 (2026-09-16): APP_REPO for admins is `jt-firmware` (short for jentastic-firmware), NOT `jentastic-firmware`.
 BUILDER_JAVI="javi|nexus-firmware|none|Nexus|Nexus2|yes|no"
+BUILDER_DEFAULT="default|jt-firmware|none|Nexus|JenT|no|no"        # Placeholder variant: mirrors admins until it gets its own defaults.
 
 # -----------------------------------------------------------------------------
 # Default target lists per builder (mirrors legacy scripts)
@@ -76,6 +78,7 @@ BUILDER_JAVI="javi|nexus-firmware|none|Nexus|Nexus2|yes|no"
 TARGETS_JENNY="heltec-v3 heltec-v4 station-g2 station-g3 tracker-t1000-e rak_wismeshtag seeed-xiao-s3 heltec-vision-master-e290-inkhud seeed_wio_tracker_L1 seeed_xiao_nrf52840_kit seeed_mesh_tracker_X1 rak3401-1watt nrf52_promicro_diy_tcxo nrf52_promicro_diy_sx1262"
 TARGETS_ADMINS="nrf52_promicro_diy_tcxo nrf52_promicro_diy_sx1262-noscreen xiaowa-esp32c3 t-deck-tft heltec-v4 seeed_solar_node rak_wismeshtag tracker-t1000-e seeed_mesh_tracker_X1 rak3401-1watt"
 TARGETS_JAVI="nrf52_promicro_diy_tcxo nrf52_promicro_diy_sx1262-noscreen station-g2 rak3401-1watt"
+TARGETS_DEFAULT="$TARGETS_ADMINS"
 
 # -----------------------------------------------------------------------------
 # State
@@ -88,10 +91,12 @@ TARGETS_OVERRIDE=""
 EVIL_OVERRIDE=-1
 # PRIVATE: 0 = explicit no, 1 = explicit yes, -1 = use builder default
 PRIVATE_OVERRIDE=-1
-# JENCORE / RNODE master gates: 0 = explicit no, 1 = explicit yes, -1 = default (off,
+# JENCORE / RNODE / STATSBOT / REPLYBOT master gates: 0 = explicit no, 1 = explicit yes, -1 = default (off,
 # since 2026-10-24 they are disabled by default; no builder-table defaults)
 JENCORE_OVERRIDE=-1
 RNODE_OVERRIDE=-1
+STATSBOT_OVERRIDE=-1
+REPLYBOT_OVERRIDE=-1
 # Extra PIO target (e.g. "upload", "monitor"); appended to "pio run -e $target"
 PIO_EXTRA_TARGET=""
 
@@ -109,7 +114,8 @@ Builders:
   jenny       jenny-firmware repo, 4 default keys (Eevee, Bloom, Mew, Fennekin)
   admins      jt-firmware repo, NO keys (unless --default-keys)
   javi        nexus-firmware repo, NO keys (unless --default-keys)
-  all         Build all three builders sequentially
+  default     jt-firmware repo, NO keys (unless --default-keys); same config as admins for now
+  all         Build all four builders sequentially
 
 Options:
   --default-keys              Force the 4 default keys for builders that default to none.
@@ -123,17 +129,23 @@ Options:
   --extra-flag "<pio-flag>"   Append extra PLATFORMIO_BUILD_FLAGS string.
   --evil                      Force -DNEXUS_ENABLE_ADV (overrides builder default).
   --no-evil                   Disable -DNEXUS_ENABLE_ADV (overrides builder default).
-                              Builder defaults: jenny=ON, javi=ON, admins=OFF.
+                              Builder defaults: jenny=ON, javi=ON, admins=OFF, default=OFF.
   --private-build             Force -DNEXUS_PRIVATE_BUILD (overrides builder default).
                               Required for private-side commands (see NexusModule_private.*).
   --no-private-build          Disable -DNEXUS_PRIVATE_BUILD (overrides builder default).
-                              Builder defaults: jenny=OFF, admins=OFF, javi=OFF.
+                              Builder defaults: jenny=OFF, admins=OFF, javi=OFF, default=OFF.
   --jencore                   Enable the JenCore bridge (-DNEXUS_ENABLE_JENCORE=1).
                               Disabled by default since 2026-10-24.
   --no-jencore                Explicitly keep JenCore disabled (default; symmetry flag).
   --rnode                     Enable the Reticulum RNode bridge (-DNEXUS_ENABLE_RNODE=1).
                               Disabled by default since 2026-10-24.
   --no-rnode                  Explicitly keep RNode disabled (default; symmetry flag).
+  --statsbot                  Enable StatsCommandModule (-DNEXUS_ENABLE_STATSBOT=1).
+                              Disabled by default; requires --jencore (or -DNEXUS_ENABLE_JENCORE_SNIFFER=1).
+  --no-statsbot               Explicitly keep StatsCommandModule disabled (default).
+  --replybot                  Enable ReplyBotModule (-DNEXUS_ENABLE_REPLYBOT=1).
+                              Disabled by default.
+  --no-replybot               Explicitly keep ReplyBotModule disabled (default).
   -t <pio-target>             Append an extra PlatformIO target to "pio run" (e.g. "upload", "monitor").
                               Example: -t upload -> pio run -e t-deck-tft -t upload
   --dry-run                   Print what would be built without invoking pio.
@@ -149,6 +161,7 @@ Examples:
   $0 admins --default-keys
   $0 jenny --master-key-1 eevee --master-key-2 mew
   $0 all --dry-run
+  $0 default --targets heltec-v4
   $0 javi --targets station-g2 --no-default-keys
   $0 jenny --targets t-deck-tft -t upload   # build + upload to device
   $0 admins --no-evil                       # explicit safety build
@@ -237,6 +250,18 @@ parse_args() {
                 ;;
             --no-rnode)
                 RNODE_OVERRIDE=0
+                ;;
+            --statsbot)
+                STATSBOT_OVERRIDE=1
+                ;;
+            --no-statsbot)
+                STATSBOT_OVERRIDE=0
+                ;;
+            --replybot)
+                REPLYBOT_OVERRIDE=1
+                ;;
+            --no-replybot)
+                REPLYBOT_OVERRIDE=0
                 ;;
             -t)
                 if [[ -z "${2:-}" ]]; then
@@ -474,7 +499,7 @@ run_builder() {
         private_active=0; private_source="builder default"
     fi
 
-    # JENCORE / RNODE: disabled by default; CLI-only enable (Jenny 2026-10-24)
+    # JENCORE / RNODE / STATSBOT / REPLYBOT: disabled by default; CLI-only enable (Jenny 2026-10-24/25)
     local jencore_active=0 jencore_source="default (disabled)"
     if [[ "$JENCORE_OVERRIDE" == "1" ]]; then
         jencore_active=1; jencore_source="CLI --jencore"
@@ -486,6 +511,18 @@ run_builder() {
         rnode_active=1; rnode_source="CLI --rnode"
     elif [[ "$RNODE_OVERRIDE" == "0" ]]; then
         rnode_source="CLI --no-rnode"
+    fi
+    local statsbot_active=0 statsbot_source="default (disabled)"
+    if [[ "$STATSBOT_OVERRIDE" == "1" ]]; then
+        statsbot_active=1; statsbot_source="CLI --statsbot"
+    elif [[ "$STATSBOT_OVERRIDE" == "0" ]]; then
+        statsbot_source="CLI --no-statsbot"
+    fi
+    local replybot_active=0 replybot_source="default (disabled)"
+    if [[ "$REPLYBOT_OVERRIDE" == "1" ]]; then
+        replybot_active=1; replybot_source="CLI --replybot"
+    elif [[ "$REPLYBOT_OVERRIDE" == "0" ]]; then
+        replybot_source="CLI --no-replybot"
     fi
 
     # Compose full PIO flags: base + trusted channels + keys + extra + evil
@@ -509,10 +546,16 @@ run_builder() {
         base_flags+=" -DNEXUS_PRIVATE_BUILD=1"
     fi
     if [[ "$jencore_active" == "1" ]]; then
-        base_flags+=" -DNEXUS_ENABLE_JENCORE=1"
+        base_flags+=" -DNEXUS_ENABLE_JENCORE=1 -UCRYPTO_AES_NO_DECRYPT"
     fi
     if [[ "$rnode_active" == "1" ]]; then
         base_flags+=" -DNEXUS_ENABLE_RNODE=1"
+    fi
+    if [[ "$statsbot_active" == "1" ]]; then
+        base_flags+=" -DNEXUS_ENABLE_STATSBOT=1"
+    fi
+    if [[ "$replybot_active" == "1" ]]; then
+        base_flags+=" -DNEXUS_ENABLE_REPLYBOT=1"
     fi
     local full_flags="$base_flags$KEYS_FLAGS$EXTRA_FLAGS"
 
@@ -542,6 +585,16 @@ run_builder() {
         echo "║  RNODE   : ON  (-DNEXUS_ENABLE_RNODE=1)   source: $rnode_source"
     else
         echo "║  RNODE   : OFF (disabled by default)     source: $rnode_source"
+    fi
+    if [[ "$statsbot_active" == "1" ]]; then
+        echo "║  STATSBOT: ON  (-DNEXUS_ENABLE_STATSBOT=1) source: $statsbot_source"
+    else
+        echo "║  STATSBOT: OFF (disabled by default)      source: $statsbot_source"
+    fi
+    if [[ "$replybot_active" == "1" ]]; then
+        echo "║  REPLYBOT: ON  (-DNEXUS_ENABLE_REPLYBOT=1) source: $replybot_source"
+    else
+        echo "║  REPLYBOT: OFF (disabled by default)      source: $replybot_source"
     fi
     if [[ -n "$PIO_EXTRA_TARGET" ]]; then
         echo "║  PIO -t  : $PIO_EXTRA_TARGET (appended to pio run per target)"
@@ -586,10 +639,12 @@ case "$REQUESTED_BUILDER" in
     jenny)   run_builder "$BUILDER_JENNY" ;;
     admins)  run_builder "$BUILDER_ADMINS" ;;
     javi)    run_builder "$BUILDER_JAVI" ;;
+    default) run_builder "$BUILDER_DEFAULT" ;;
     all)
         run_builder "$BUILDER_JENNY"
         run_builder "$BUILDER_ADMINS"
         run_builder "$BUILDER_JAVI"
+        run_builder "$BUILDER_DEFAULT"
         ;;
     *)
         echo "❌ Error: unknown builder '$REQUESTED_BUILDER'" >&2

@@ -7,7 +7,7 @@
 
 #include "RNodeEngine.h"
 
-#if MESHTASTIC_ENABLE_RNODE
+#if NEXUS_ENABLE_RNODE
 
 #include "RadioLibInterface.h"
 #include <Arduino.h>
@@ -20,7 +20,7 @@ RNodeEngine::RNodeEngine() {}
 
 void RNodeEngine::init()
 {
-    mode = RNODE_MODE_BRIDGE;
+    mode = RNODE_MODE_OFF;
     tcpEnabled = true;
     bleEnabled = true;
     tcpConnected = false;
@@ -244,13 +244,26 @@ void RNodeEngine::queueTxToRadio(const uint8_t *data, size_t len)
         return;
 
     if (!promisc) {
-        // Standard RNode mode: prepend 1-byte radio header (sequence + split flag)
-        uint8_t txBuf[MAX_RADIO_FRAME_LEN];
-        if (len + 1 > MAX_RADIO_FRAME_LEN)
-            return;
-        txBuf[0] = (tx_seq++ << 4) & 0xF0;
-        memcpy(&txBuf[1], data, len);
-        rli->queueRNodeFrame(txBuf, len + 1);
+        // Standard RNode mode: prepend a 1-byte radio header (sequence nibble + FLAG_SPLIT). Packets
+        // over 254 payload bytes are split into frames sharing that sequence nibble, exactly as
+        // RNode_Firmware::transmit does.
+        constexpr size_t MAX_PAYLOAD = MAX_RADIO_FRAME_LEN - 2; // header + 254 stays within 255
+        const uint8_t seq = (tx_seq++ << 4) & 0xF0;
+        if (len <= MAX_PAYLOAD) {
+            uint8_t txBuf[MAX_RADIO_FRAME_LEN];
+            txBuf[0] = seq;
+            memcpy(&txBuf[1], data, len);
+            rli->queueRNodeFrame(txBuf, len + 1);
+        } else {
+            for (size_t off = 0; off < len; off += MAX_PAYLOAD) {
+                const size_t n = (len - off > MAX_PAYLOAD) ? MAX_PAYLOAD : (len - off);
+                uint8_t txBuf[MAX_RADIO_FRAME_LEN];
+                txBuf[0] = seq | 0x01; // FLAG_SPLIT
+                memcpy(&txBuf[1], data + off, n);
+                if (!rli->queueRNodeFrame(txBuf, n + 1))
+                    return;
+            }
+        }
     } else {
         if (len > MAX_RADIO_FRAME_LEN)
             return;
@@ -260,13 +273,34 @@ void RNodeEngine::queueTxToRadio(const uint8_t *data, size_t len)
 
 bool RNodeEngine::handleReceivedRadioPacket(const uint8_t *raw, size_t len, float snr, int32_t rssi)
 {
-    if (!raw || len == 0 || mode == RNODE_MODE_OFF)
+    if (!raw || len == 0 || mode == RNODE_MODE_OFF || radio_state == RNODE_RADIO_STATE_OFF)
         return false;
 
-    if (mode == RNODE_MODE_BRIDGE && !looksLikeReticulumPacket(raw, len)) {
-        return false;
+    if (mode == RNODE_MODE_BRIDGE) {
+        if ((!tcpConnected && !bleConnected) || !looksLikeReticulumPacket(raw, len)) {
+            return false;
+        }
     }
 
+    return deliverReticulumFrame(raw, len, snr, rssi);
+}
+
+bool RNodeEngine::handleReceivedTierPacket(const uint8_t *raw, size_t len, float snr, int32_t rssi)
+{
+    if (!raw || len == 0 || mode == RNODE_MODE_OFF || radio_state == RNODE_RADIO_STATE_OFF)
+        return false;
+
+    // The detector already told us this is the RNode tier; skip the content
+    // heuristic. In bridge mode there is no client to deliver to without a
+    // transport, so drop rather than fall through into the Meshtastic router.
+    if (mode == RNODE_MODE_BRIDGE && !tcpConnected && !bleConnected)
+        return false;
+
+    return deliverReticulumFrame(raw, len, snr, rssi);
+}
+
+void RNodeEngine::deliverCompleteFrame(const uint8_t *payload, size_t len, float snr, int32_t rssi)
+{
     lastSnr = snr;
     lastSnrRaw = (uint8_t)round(snr * 4.0f);
     lastRssi = rssi;
@@ -276,24 +310,66 @@ bool RNodeEngine::handleReceivedRadioPacket(const uint8_t *raw, size_t len, floa
     uint8_t rssiVal = (uint8_t)(lastRssi + RNODE_RSSI_OFFSET);
     sendKissFrame(RNODE_CMD_STAT_RSSI, &rssiVal, 1);
     sendKissFrame(RNODE_CMD_STAT_SNR, &lastSnrRaw, 1);
+    sendKissFrame(RNODE_CMD_DATA, payload, len);
+    LOG_DEBUG("RNode RX complete: len=%u", (unsigned)len);
+}
 
-    if (!promisc && len >= 1) {
-        // Strip the 1-byte radio header
-        sendKissFrame(RNODE_CMD_DATA, &raw[1], len - 1);
-    } else {
-        sendKissFrame(RNODE_CMD_DATA, raw, len);
+bool RNodeEngine::deliverReticulumFrame(const uint8_t *raw, size_t len, float snr, int32_t rssi)
+{
+    if (!promisc) {
+        if (len < 1)
+            return false;
+
+        const uint8_t header = raw[0];
+        const bool split = (header & 0x01) != 0;
+        const uint8_t seq = header >> 4;
+        const uint8_t *payload = raw + 1;
+        const size_t payloadLen = len - 1;
+        LOG_DEBUG("RNode RX hdr=0x%02x split=%u seq=%u len=%u", header, split, seq, (unsigned)len);
+
+        if (!split) {
+            splitActive = false;
+            splitLen = 0;
+            deliverCompleteFrame(payload, payloadLen, snr, rssi);
+            return true;
+        }
+
+        if (!splitActive || seq != splitSeq) {
+            // First (or orphaned second) part: start a new reassembly buffer.
+            if (payloadLen > sizeof(splitBuf)) {
+                splitActive = false;
+                return false;
+            }
+            memcpy(splitBuf, payload, payloadLen);
+            splitLen = payloadLen;
+            splitSeq = seq;
+            splitActive = true;
+            return true;
+        }
+
+        if (splitLen + payloadLen > sizeof(splitBuf)) {
+            splitActive = false;
+            splitLen = 0;
+            return false;
+        }
+        memcpy(splitBuf + splitLen, payload, payloadLen);
+        splitLen += payloadLen;
+        splitActive = false;
+        deliverCompleteFrame(splitBuf, splitLen, snr, rssi);
+        return true;
     }
 
+    deliverCompleteFrame(raw, len, snr, rssi);
     return true;
 }
 
-bool RNodeEngine::looksLikeReticulumPacket(const uint8_t *raw, size_t len)
+bool RNodeEngine::looksLikeReticulumPacket(const uint8_t *raw, size_t len) const
 {
     if (!raw)
         return false;
 
     // Case 1: Standard RNode radio frame with 1-byte header: total len >= 19
-    if (len >= 19) {
+    if (!promisc && len >= 19) {
         uint8_t rnode_hdr = raw[0];
         // Lower nibble: 0x00 (single) or 0x01 (split); bits 1..3 must be 0
         if ((rnode_hdr & 0x0E) == 0) {
@@ -308,7 +384,7 @@ bool RNodeEngine::looksLikeReticulumPacket(const uint8_t *raw, size_t len)
     }
 
     // Case 2: Promiscuous raw Reticulum frame (no RNode 1-byte header): len >= 18
-    if (len >= 18) {
+    if (promisc && len >= 18) {
         uint8_t flags = raw[0];
         uint8_t hops = raw[1];
         uint8_t prop_type = (flags >> 5) & 0x03;
@@ -353,4 +429,4 @@ void RNodeEngine::sendKissFrame(uint8_t cmd, const uint8_t *payload, size_t len,
     }
 }
 
-#endif // MESHTASTIC_ENABLE_RNODE
+#endif // NEXUS_ENABLE_RNODE

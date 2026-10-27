@@ -13,9 +13,11 @@
 #include "Throttle.h"
 #include "UptimeClock.h"
 #include "meshUtils.h"
+#include <SHA256.h>
 #include <string.h>
+#include <strings.h>
 
-#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#if NEXUS_ENABLE_JENCORE_SNIFFER
 
 // JenCore Dispatcher::tryParsePacket payload types (see JenCore src/Packet.h)
 #define MC_PAYLOAD_TYPE_REQ 0x00
@@ -47,9 +49,9 @@
 // JenCore header byte 0: bits 6-7 are the payload version (must be PAYLOAD_VER_1 = 0).
 #define MC_PAYLOAD_VER_SHIFT 6
 
-// A full Meshtastic on-air header (to/from/id/flags/channel/next_hop/relay_node) must fit for a
-// frame to be Meshtastic at all; spelled out to keep this file free of RadioInterface.h.
-#define MC_MESHTASTIC_HEADER_LEN 16
+// A full 16-byte LoRa packet header (to/from/id/flags/channel/next_hop/relay_node) must fit;
+// spelled out to keep this file free of RadioInterface.h.
+#define JC_LORA_HEADER_LEN 16
 
 // JenCore ADVERT encoding (JenCore.h / AdvertDataHelpers.h)
 #define MC_PUB_KEY_SIZE 32
@@ -133,6 +135,246 @@ static bool payloadShapeValid(uint8_t payloadType, size_t payloadLen)
     return payloadLen > fixedLen && (payloadLen - fixedLen) % blockSize == 0;
 }
 
+uint8_t JenCoreRepeater::ownPathLenByte()
+{
+    return static_cast<uint8_t>((getPathHashSize() - 1) << 6);
+}
+
+bool JenCoreRepeater::isJenCoreEnabled()
+{
+    return enabledStorage();
+}
+
+void JenCoreRepeater::setJenCoreEnabled(bool en)
+{
+    enabledStorage() = en;
+}
+
+bool JenCoreRepeater::isRelayEnabled()
+{
+    return relayStorage();
+}
+
+void JenCoreRepeater::setRelayEnabled(bool en)
+{
+    relayStorage() = en;
+}
+
+uint8_t JenCoreRepeater::getPathHashSize()
+{
+    return pathHashStorage();
+}
+
+void JenCoreRepeater::setPathHashSize(uint8_t size)
+{
+    pathHashStorage() = size < 1 ? 1 : (size > 3 ? 3 : size);
+}
+
+static bool normalizeRegionName(const char *input, char *out, size_t cap)
+{
+    if (!input || !out || cap < 2)
+        return false;
+    while (*input == ' ' || *input == '#')
+        input++;
+    size_t n = 0;
+    for (; *input && *input != ' '; input++) {
+        const char c = *input;
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+              c == '.'))
+            return false;
+        if (n + 1 >= cap)
+            return false;
+        out[n++] = c;
+    }
+    out[n] = '\0';
+    return n > 0;
+}
+
+void JenCoreRepeater::regionKey(const char *name, uint8_t key[16])
+{
+    char hashtag[REGION_NAME_LEN + 2];
+    hashtag[0] = '#';
+    strncpy(&hashtag[1], name, REGION_NAME_LEN);
+    hashtag[REGION_NAME_LEN + 1] = '\0';
+
+    SHA256 sha;
+    sha.reset();
+    sha.update((const uint8_t *)hashtag, strlen(hashtag));
+    uint8_t digest[32];
+    sha.finalize(digest, sizeof(digest));
+    memcpy(key, digest, 16);
+}
+
+uint16_t JenCoreRepeater::transportCode(const uint8_t key[16], uint8_t payloadType, const uint8_t *payload, size_t len)
+{
+    SHA256 sha;
+    uint16_t code = 0;
+    sha.resetHMAC(key, 16);
+    sha.update(&payloadType, 1);
+    if (payload && len)
+        sha.update(payload, len);
+    sha.finalizeHMAC(key, 16, &code, sizeof(code));
+    if (code == 0)
+        code = 1;
+    else if (code == 0xFFFF)
+        code = 0xFFFE;
+    return code;
+}
+
+bool JenCoreRepeater::isRegionAllowed(const uint8_t *raw, size_t len, const FrameInfo &info)
+{
+    const RegionStore &store = regionStore();
+    if (store.count == 0)
+        return true;
+
+    if (info.route_type == MC_ROUTE_TRANSPORT_FLOOD) {
+        if (len < 5)
+            return false;
+        const uint16_t code = (uint16_t)raw[1] | ((uint16_t)raw[2] << 8);
+        if (code == 0)
+            return store.allowUnscoped;
+        const uint8_t *payload = raw + info.header_len;
+        for (uint8_t i = 0; i < store.count; i++) {
+            uint8_t key[16];
+            regionKey(store.names[i], key);
+            if (transportCode(key, info.payload_type, payload, info.payload_len) == code)
+                return true;
+        }
+        return false;
+    }
+    if (info.route_type == MC_ROUTE_FLOOD)
+        return store.allowUnscoped;
+    return true; // MeshCore only scopes floods
+}
+
+bool JenCoreRepeater::isFrameRegionAllowed(const uint8_t *raw, size_t len)
+{
+    FrameInfo info;
+    if (!parse(raw, len, &info))
+        return true; // let the normal parser drop malformed frames
+    return isRegionAllowed(raw, len, info);
+}
+
+bool JenCoreRepeater::addRegion(const char *name)
+{
+    RegionStore &store = regionStore();
+    char normalized[REGION_NAME_LEN + 1];
+    if (!normalizeRegionName(name, normalized, sizeof(normalized)))
+        return false;
+    for (uint8_t i = 0; i < store.count; i++)
+        if (strcasecmp(store.names[i], normalized) == 0)
+            return true;
+    if (store.count >= MAX_REGIONS)
+        return false;
+    strncpy(store.names[store.count], normalized, REGION_NAME_LEN);
+    store.names[store.count][REGION_NAME_LEN] = '\0';
+    store.count++;
+    return true;
+}
+
+bool JenCoreRepeater::removeRegion(const char *name)
+{
+    RegionStore &store = regionStore();
+    char normalized[REGION_NAME_LEN + 1];
+    if (!normalizeRegionName(name, normalized, sizeof(normalized)))
+        return false;
+    for (uint8_t i = 0; i < store.count; i++) {
+        if (strcasecmp(store.names[i], normalized) != 0)
+            continue;
+        for (uint8_t j = i; j + 1 < store.count; j++)
+            strncpy(store.names[j], store.names[j + 1], REGION_NAME_LEN + 1);
+        store.count--;
+        if (store.count == 0) {
+            store.home = 0;
+        } else if (store.home == i) {
+            store.home = 0;
+        } else if (store.home > i) {
+            store.home--;
+        }
+        return true;
+    }
+    return false;
+}
+
+bool JenCoreRepeater::setHomeRegion(const char *name)
+{
+    RegionStore &store = regionStore();
+    char normalized[REGION_NAME_LEN + 1];
+    if (!normalizeRegionName(name, normalized, sizeof(normalized)))
+        return false;
+    for (uint8_t i = 0; i < store.count; i++) {
+        if (strcasecmp(store.names[i], normalized) == 0) {
+            store.home = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+void JenCoreRepeater::clearRegions()
+{
+    RegionStore &store = regionStore();
+    store.count = 0;
+    store.home = 0;
+    store.allowUnscoped = true;
+}
+
+void JenCoreRepeater::setAllowUnscoped(bool allow)
+{
+    regionStore().allowUnscoped = allow;
+}
+
+uint8_t JenCoreRepeater::getRegionCount()
+{
+    return regionStore().count;
+}
+
+const char *JenCoreRepeater::getRegionName(uint8_t index)
+{
+    const RegionStore &store = regionStore();
+    return index < store.count ? store.names[index] : "";
+}
+
+uint8_t JenCoreRepeater::getHomeRegionIndex()
+{
+    const RegionStore &store = regionStore();
+    return store.count ? store.home : 0;
+}
+
+bool JenCoreRepeater::getAllowUnscoped()
+{
+    return regionStore().allowUnscoped;
+}
+
+const uint8_t *JenCoreRepeater::scopeOwnFrame(const uint8_t *raw, size_t len, uint8_t *out, size_t outCap, size_t *outLen)
+{
+    *outLen = len;
+    const RegionStore &store = regionStore();
+    if (store.count == 0)
+        return raw;
+
+    FrameInfo info;
+    if (!parse(raw, len, &info))
+        return raw;
+    if (info.route_type != MC_ROUTE_FLOOD)
+        return raw;
+    if (len + 4 > outCap)
+        return nullptr;
+
+    uint8_t key[16];
+    regionKey(store.names[store.home], key);
+    const uint16_t code = transportCode(key, info.payload_type, raw + info.header_len, info.payload_len);
+
+    out[0] = (uint8_t)((raw[0] & ~0x03) | MC_ROUTE_TRANSPORT_FLOOD);
+    out[1] = (uint8_t)(code & 0xFF);
+    out[2] = (uint8_t)(code >> 8);
+    out[3] = 0;
+    out[4] = 0;
+    memcpy(out + 5, raw + 1, len - 1);
+    *outLen = len + 4;
+    return out;
+}
+
 bool JenCoreRepeater::looksLikeJenCoreFrame(const uint8_t *raw, size_t len, uint32_t ourNodeNum, FrameInfo *out)
 {
     if (!raw || len < 2 || len > MAX_FRAME_LEN)
@@ -149,7 +391,7 @@ bool JenCoreRepeater::looksLikeJenCoreFrame(const uint8_t *raw, size_t len, uint
     // crc32 of our public key; a JenCore header colliding with it is a 2^-32 accident), and it
     // must never be swallowed - or worse, flood-relayed - as foreign traffic. Broadcasts
     // (to == 0xffffffff) never reach here: their first byte fails the payload version check.
-    if (ourNodeNum != 0 && len >= MC_MESHTASTIC_HEADER_LEN) {
+    if (ourNodeNum != 0 && len >= JC_LORA_HEADER_LEN) {
         uint32_t to = raw[0] | (raw[1] << 8) | (raw[2] << 16) | ((uint32_t)raw[3] << 24);
         uint32_t from = raw[4] | (raw[5] << 8) | (raw[6] << 16) | ((uint32_t)raw[7] << 24);
         if (to == ourNodeNum || from == ourNodeNum)
@@ -224,8 +466,14 @@ void JenCoreRepeater::handleReceivedFrame(const uint8_t *raw, size_t len, float 
 
     rxSeen++;
 
-#if MESHTASTIC_ENABLE_JENCORE_RELAY
-    if (!relayEnabled) {
+    if (!isRegionAllowed(raw, len, info)) {
+        LOG_DEBUG("JenCore: region scope mismatch, drop");
+        rxDropped++;
+        return;
+    }
+
+#if NEXUS_ENABLE_JENCORE_RELAY
+    if (!isRelayEnabled()) {
         return;
     }
     const bool direct = info.route_type == MC_ROUTE_DIRECT || info.route_type == MC_ROUTE_TRANSPORT_DIRECT;
@@ -310,7 +558,7 @@ void JenCoreRepeater::handleReceivedFrame(const uint8_t *raw, size_t len, float 
 #endif
 }
 
-#if MESHTASTIC_ENABLE_JENCORE_RELAY
+#if NEXUS_ENABLE_JENCORE_RELAY
 bool JenCoreRepeater::isNextHopForUs(const uint8_t *raw, const FrameInfo &info) const
 {
     if (!hasIdentityKey || info.path_hash_count == 0)
@@ -947,7 +1195,7 @@ size_t JenCoreRepeater::buildAdvert(uint8_t *out, size_t outLen, const char *nam
 
     // Header: payload type ADVERT, version 0. Flood, or zero-hop (route DIRECT with an empty path, Mesh::sendZeroHop).
     out[0] = (MC_PAYLOAD_TYPE_ADVERT << 2) | (flood ? MC_ROUTE_FLOOD : MC_ROUTE_DIRECT);
-    out[1] = flood ? OWN_FLOOD_PATH_LEN_BYTE : 0x00;
+    out[1] = flood ? ownPathLenByte() : 0x00;
     size_t i = 2;
     memcpy(&out[i], identityPub, MC_PUB_KEY_SIZE);
     i += MC_PUB_KEY_SIZE;
@@ -979,6 +1227,14 @@ bool JenCoreRepeater::queueOwnFrame(const uint8_t *raw, size_t len, uint32_t del
     FrameInfo info;
     if (!parse(raw, len, &info))
         return false;
+
+    uint8_t scoped[MAX_FRAME_LEN + 4];
+    size_t framedLen = len;
+    const uint8_t *framed = scopeOwnFrame(raw, len, scoped, sizeof(scoped), &framedLen);
+    if (!framed || framedLen > MAX_FRAME_LEN)
+        return false;
+    if (framed != raw)
+        parse(framed, framedLen, &info);
     const uint32_t hash = hashFrame(raw, len, info);
 
     const int slot = claimSlot(PRIORITY_OWN);
@@ -986,8 +1242,8 @@ bool JenCoreRepeater::queueOwnFrame(const uint8_t *raw, size_t len, uint32_t del
         return false;
 
     QueuedFrame &f = queue[slot];
-    memcpy(f.data, raw, len);
-    f.len = (uint8_t)len;
+    memcpy(f.data, framed, framedLen);
+    f.len = (uint8_t)framedLen;
     f.own = true;
     f.needsVerify = false;
     f.priority = PRIORITY_OWN;
@@ -1001,4 +1257,4 @@ bool JenCoreRepeater::queueOwnFrame(const uint8_t *raw, size_t len, uint32_t del
     return true;
 }
 
-#endif // MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#endif // NEXUS_ENABLE_JENCORE_SNIFFER

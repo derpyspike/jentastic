@@ -102,17 +102,29 @@ class Channels
     // Returns true if this channel's effective key matches USERPREFS_CHANNEL_0_PSK.
     bool isEventChannel(ChannelIndex chIndex);
 
-    /** True if the channel name starts with "MC:" and carries a 16- or 32-byte PSK. */
+    /** True if the channel name starts with "JC:" (or legacy "MC:") and carries a 16- or 32-byte PSK. */
     bool isJenCoreChannel(ChannelIndex chIndex);
 
     /**
-     * Copy the effective 16- or 32-byte JenCore key into key; returns its byte length (0 if not an MC channel).
+     * Copy the effective 16- or 32-byte JenCore key into key; returns its byte length (0 if not a JC/MC channel).
      * A 32-byte key whose second half is all zeroes is normalised to 16 bytes.
      */
     size_t getJenCoreKey(ChannelIndex chIndex, uint8_t key[32]);
 
-    /** Seed default MC channels (MC:Public, MC:#test, MC:#bot) once on fresh install or update. */
-    bool seedJenCoreChannelsOnce();
+    /**
+     * Install one JenCore channel (name must start "JC:"). psk may be null: a "#tag" name then derives
+     * MeshCore's hashtag key, SHA256("#tag")[:16]; any other name uses the 16-byte JC public key. An
+     * explicit psk must be 16 or 32 bytes. Returns the slot index, -1 when the table is full, -2 when the
+     * name (or its legacy MC: form) is already present, -3 on an invalid name or key length.
+     * Does not persist or notify — the caller does that.
+     */
+    int8_t addJenCoreChannel(const char *name, const uint8_t *psk = nullptr, size_t pskLen = 0);
+
+    /**
+     * Install the default JenCore channels (JC:Public, JC:#test, JC:#bot) into free slots, skipping any
+     * name already present. Returns the number of channels added. Does not persist or notify.
+     */
+    uint8_t addJenCoreChannels();
 
     // Returns true if we can be reached via a channel with the default settings given a region and modem preset
     bool hasDefaultChannel();

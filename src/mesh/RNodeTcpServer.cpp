@@ -7,7 +7,7 @@
 
 #include "RNodeTcpServer.h"
 
-#if MESHTASTIC_ENABLE_RNODE_TCP && HAS_WIFI
+#if NEXUS_ENABLE_RNODE_TCP && HAS_WIFI
 
 #include "RNodeEngine.h"
 #include <Arduino.h>
@@ -95,4 +95,4 @@ int32_t RNodeTcpServer::runOnce()
     return 20; // Service every 20ms
 }
 
-#endif // MESHTASTIC_ENABLE_RNODE_TCP && HAS_WIFI
+#endif // NEXUS_ENABLE_RNODE_TCP && HAS_WIFI

@@ -1,6 +1,6 @@
 #pragma once
 #include "configuration.h"
-#if !MESHTASTIC_EXCLUDE_REPLYBOT
+#if NEXUS_ENABLE_REPLYBOT && !MESHTASTIC_EXCLUDE_REPLYBOT
 #include "SinglePortModule.h"
 #include "mesh/generated/meshtastic/mesh.pb.h"
 

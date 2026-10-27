@@ -12,10 +12,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#if NEXUS_ENABLE_JENCORE_SNIFFER
 
 /**
- * Minimal, protocol-agnostic relay for JenCore (meshcore-dev/JenCore) LoRa frames.
+ * Minimal, protocol-agnostic relay for JenCore LoRa frames.
  *
  * JenCore frames carry no Meshtastic PacketHeader: the on-air bytes are exactly its own
  * 1-byte packet header (route type in bits 0-1, payload type in bits 2-5, version in bits 6-7),
@@ -29,9 +29,9 @@
  * Meshtastic unicast between two other nodes (a few percent of overheard DMs by length); those
  * are sniffed instead of routed. Broadcasts and DMs to/from this node are never misclassified.
  *
- * Scope note: JenCore's own repeaters also enforce region scoping (transport codes vs
- * REGION_DENY_FLOOD); this relay has no region map, so it forwards scoped floods too - same trust
- * model as a JenCore repeater blind to the MAC. ADVERT signatures are verified before forwarding.
+ * Region note: MeshCore scopes floods with a 16-bit transport code computed over the payload with a
+ * key derived from the region name. We support a small region list (RX filtering + TX scope) and
+ * optionally accept unscoped floods. Direct traffic is never region-filtered, as in MeshCore.
  */
 class JenCoreRepeater
 {
@@ -39,10 +39,36 @@ class JenCoreRepeater
     static constexpr size_t MAX_FRAME_LEN = 255; // JenCore MAX_TRANS_UNIT
 
     /**
-     * path_len byte of a flood we originate: no hops yet, 2-byte path hashes (upper bits = hash size - 1). The sender
-     * picks the size and every repeater appends hashes of that size, so this is what clients show as the path width.
+     * path_len byte of a flood we originate: no hops yet and the configured path-hash size (upper bits = size - 1).
+     * The sender picks the size and every repeater appends hashes of that size, so this is what clients show as the
+     * path width. MeshCore defaults to 3 bytes; 1/2 remain selectable for older networks.
      */
-    static constexpr uint8_t OWN_FLOOD_PATH_LEN_BYTE = (2 - 1) << 6;
+    static uint8_t ownPathLenByte();
+
+    /// Master gate for the whole JenCore/MeshCore persona (sniffing, relay, companion, adverts). Default OFF.
+    static bool isJenCoreEnabled();
+    static void setJenCoreEnabled(bool en);
+
+    /// Path-hash size (1..3) used in frames we originate. Default 3.
+    static uint8_t getPathHashSize();
+    static void setPathHashSize(uint8_t size);
+
+    /// MeshCore-like region scoping. Names are stored without the leading '#', max 4 regions.
+    static constexpr size_t MAX_REGIONS = 4;
+    static constexpr size_t REGION_NAME_LEN = 23;
+
+    static bool addRegion(const char *name);
+    static bool removeRegion(const char *name);
+    static bool setHomeRegion(const char *name);
+    static void clearRegions();
+    static void setAllowUnscoped(bool allow);
+    static uint8_t getRegionCount();
+    static const char *getRegionName(uint8_t index);
+    static uint8_t getHomeRegionIndex();
+    static bool getAllowUnscoped();
+
+    /// RX gate: true when this frame is inside our configured region(s), or scoping is disabled.
+    static bool isFrameRegionAllowed(const uint8_t *raw, size_t len);
 
     /** JenCore MAX_PATH_SIZE: the flood path budget in bytes, shared by every JenCore node. */
     static constexpr size_t MAX_PATH_SIZE = 64;
@@ -147,9 +173,8 @@ class JenCoreRepeater
     const uint8_t *getIdentityPub() const { return identityPub; }
     const uint8_t *getIdentitySeed() const { return identitySeed; }
 
-    bool relayEnabled = true;
-    bool isRelayEnabled() const { return relayEnabled; }
-    void setRelayEnabled(bool en) { relayEnabled = en; }
+    static bool isRelayEnabled();
+    static void setRelayEnabled(bool en);
 
     /** Check an ADVERT payload's Ed25519 signature over pub_key || timestamp || app_data. */
     static bool verifyAdvert(const uint8_t *payload, size_t payloadLen);
@@ -273,6 +298,23 @@ class JenCoreRepeater
     uint32_t discoverWindowStartMs = 0;
     uint8_t discoverRepliesInWindow = 0;
 
+    struct RegionStore {
+        uint8_t count = 0;
+        uint8_t home = 0;
+        bool allowUnscoped = true;
+        char names[MAX_REGIONS][REGION_NAME_LEN + 1] = {};
+    };
+    static RegionStore &regionStore() { static RegionStore store; return store; }
+    static bool isRegionAllowed(const uint8_t *raw, size_t len, const FrameInfo &info);
+    static void regionKey(const char *name, uint8_t key[16]);
+    static uint16_t transportCode(const uint8_t key[16], uint8_t payloadType, const uint8_t *payload, size_t len);
+    /// Rewrite a FLOOD of ours to TRANSPORT_FLOOD with the home region's code; returns the used buffer/length.
+    static const uint8_t *scopeOwnFrame(const uint8_t *raw, size_t len, uint8_t *out, size_t outCap, size_t *outLen);
+
+    static bool &enabledStorage() { static bool enabled = false; return enabled; }
+    static bool &relayStorage() { static bool enabled = true; return enabled; }
+    static uint8_t &pathHashStorage() { static uint8_t size = 3; return size; }
+
     /** Our path hash (prefix of the public key) is the first hop of this direct frame's path. */
     bool isNextHopForUs(const uint8_t *raw, const FrameInfo &info) const;
 
@@ -313,4 +355,4 @@ class JenCoreRepeater
     uint32_t adaptiveDelayMs(uint32_t airtimeMs);
 };
 
-#endif // MESHTASTIC_ENABLE_JENCORE_SNIFFER
+#endif // NEXUS_ENABLE_JENCORE_SNIFFER

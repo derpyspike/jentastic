@@ -9,7 +9,7 @@
 
 #include "configuration.h"
 
-#if MESHTASTIC_ENABLE_RNODE
+#if NEXUS_ENABLE_RNODE
 
 #include <stddef.h>
 #include <stdint.h>
@@ -102,6 +102,8 @@ class RNodeEngine
 
     RNodeMode getMode() const { return mode; }
     void setMode(RNodeMode m) { mode = m; }
+    /// Master switch: false when the RNode/JenRNode persona is not activated.
+    bool isEnabled() const { return mode != RNODE_MODE_OFF; }
 
     uint8_t getSf() const { return lora_sf; }
     void setSf(uint8_t sf) { lora_sf = sf; }
@@ -140,8 +142,11 @@ class RNodeEngine
     /** Handle inbound packet received from LoRa radio */
     bool handleReceivedRadioPacket(const uint8_t *raw, size_t len, float snr, int32_t rssi);
 
+    /** Handle a frame whose LR2021 detector tier is already known to be RNode. */
+    bool handleReceivedTierPacket(const uint8_t *raw, size_t len, float snr, int32_t rssi);
+
     /** Packet inspection: does this raw LoRa payload match Reticulum / RNode? */
-    static bool looksLikeReticulumPacket(const uint8_t *raw, size_t len);
+    bool looksLikeReticulumPacket(const uint8_t *raw, size_t len) const;
 
     /** Encapsulate and send a KISS frame to clients */
     void sendKissFrame(uint8_t cmd, const uint8_t *payload, size_t len, RNodeClientType targetClient = RNODE_CLIENT_NONE);
@@ -158,8 +163,18 @@ class RNodeEngine
   private:
     void dispatchCommand(RNodeClientType client);
     void queueTxToRadio(const uint8_t *data, size_t len);
+    bool deliverReticulumFrame(const uint8_t *raw, size_t len, float snr, int32_t rssi);
+    void deliverCompleteFrame(const uint8_t *payload, size_t len, float snr, int32_t rssi);
 
-    RNodeMode mode = RNODE_MODE_BRIDGE;
+    // RNode splits packets > 254 payload bytes into two frames sharing a sequence nibble and the
+    // FLAG_SPLIT bit; the host only ever sees the reassembled packet (RNode_Firmware receive_callback).
+    uint8_t splitBuf[MAX_KISS_FRAME_LEN];
+    size_t splitLen = 0;
+    uint8_t splitSeq = 0;
+    bool splitActive = false;
+
+    // OFF until activated (vault v71 or /nexus JRNODE ON). TIER MADRID turns it on.
+    RNodeMode mode = RNODE_MODE_OFF;
     bool tcpEnabled = true;
     bool bleEnabled = true;
     bool tcpConnected = false;
@@ -189,13 +204,8 @@ class RNodeEngine
 
     ParserState tcpParser;
     ParserState bleParser;
-
-    // Split packet reassembly buffer
-    uint8_t splitBuf[MAX_KISS_FRAME_LEN] = {0};
-    size_t splitLen = 0;
-    uint8_t splitSeq = 0xFF;
 };
 
 extern RNodeEngine rnodeEngine;
 
-#endif // MESHTASTIC_ENABLE_RNODE
+#endif // NEXUS_ENABLE_RNODE

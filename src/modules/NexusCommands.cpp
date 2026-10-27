@@ -96,10 +96,10 @@
 #include "modules/TraceRouteModule.h"
 #include "modules/ExternalNotificationModule.h"
 #include "RadioLibInterface.h"
-#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+#if NEXUS_ENABLE_JENCORE_COMPANION
 #include "mesh/JenCoreCompanion.h"
 #endif
-#if MESHTASTIC_ENABLE_RNODE
+#if NEXUS_ENABLE_RNODE
 #include "mesh/RNodeEngine.h"
 #endif
 #if (defined(USE_LR2021) || defined(ARCH_PORTDUINO)) && !RADIOLIB_EXCLUDE_LR2021
@@ -2276,54 +2276,254 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         }
     }
 #endif
-#if MESHTASTIC_ENABLE_JENCORE_SNIFFER
-    else if (strcasecmp(cmd, "JENCORE") == 0 || strcasecmp(cmd, "JC") == 0 || strcasecmp(cmd, "JEN_CORE") == 0 ||
-             strcasecmp(cmd, "JENCORE") == 0 || strcasecmp(cmd, "MCORE") == 0 ||
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+    else if (strcasecmp(cmd, "JENCORE") == 0 || strcasecmp(cmd, "JC") == 0 || strcasecmp(cmd, "MC") == 0 ||
+             strcasecmp(cmd, "JEN_CORE") == 0 || strcasecmp(cmd, "MESHCORE") == 0 || strcasecmp(cmd, "MCORE") == 0 ||
              strncasecmp(cmd, "JENCORE ", 8) == 0 || strncasecmp(cmd, "JC ", 3) == 0 ||
-             strncasecmp(cmd, "JEN_CORE ", 9) == 0 || strncasecmp(cmd, "JENCORE ", 9) == 0 ||
-             strncasecmp(cmd, "MCORE ", 6) == 0) {
+             strncasecmp(cmd, "MC ", 3) == 0 || strncasecmp(cmd, "JEN_CORE ", 9) == 0 ||
+             strncasecmp(cmd, "MESHCORE ", 9) == 0 || strncasecmp(cmd, "MCORE ", 6) == 0) {
         RadioLibInterface *rli = static_cast<RadioLibInterface *>(RadioLibInterface::instance);
         const char *sub = skipToken(cmd);
         if (!rli) {
             snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: radio interface unavailable");
         } else if (!*sub || strcasecmp(sub, "STATUS") == 0) {
-            snprintf(replyMsg, sizeof(replyMsg),
-                     "JT JENCORE:\n Relay: %s\n HybridSync: %s\n RxSeen: %u (dup=%u)\n TxRelay: %u\n Contacts: %u",
-                     rli->jencoreRepeater.isRelayEnabled() ? "ON" : "OFF",
-#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
-                     rli->hybridSyncEnabled ? "ON (0x14B4)" : "OFF",
-#else
-                     "N/A",
+            const char *hybridState = "N/A";
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+            if (rli->supportsHybridSync())
+                hybridState = rli->hybridSyncEnabled ? "ON (0x14B4)" : "OFF";
 #endif
+            snprintf(replyMsg, sizeof(replyMsg),
+                     "JT JENCORE:\n Enabled: %s\n Relay: %s\n PathHash: %u byte(s)\n Regions: %u\n HybridSync: %s\n"
+                     " RxSeen: %u (dup=%u)\n TxRelay: %u\n Contacts: %u",
+                     JenCoreRepeater::isJenCoreEnabled() ? "ON" : "OFF",
+                     JenCoreRepeater::isRelayEnabled() ? "ON" : "OFF", JenCoreRepeater::getPathHashSize(),
+                     (unsigned)JenCoreRepeater::getRegionCount(), hybridState,
                      (unsigned)rli->jencoreRepeater.rxSeen, (unsigned)rli->jencoreRepeater.rxDup,
                      (unsigned)rli->jencoreRepeater.txRelayed,
-#if MESHTASTIC_ENABLE_JENCORE_COMPANION
+#if NEXUS_ENABLE_JENCORE_COMPANION
                      (unsigned)jencoreCompanion.contactCount()
 #else
                      0
 #endif
             );
+        } else if (strcasecmp(sub, "ON") == 0) {
+            JenCoreRepeater::setJenCoreEnabled(true);
+            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: ON");
+        } else if (strcasecmp(sub, "OFF") == 0) {
+            JenCoreRepeater::setJenCoreEnabled(false);
+            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: OFF");
+        } else if (strncasecmp(sub, "PATHSIZE", 8) == 0 && (sub[8] == '\0' || sub[8] == ' ')) {
+            const char *arg = sub + 8;
+            while (*arg == ' ')
+                arg++;
+            if (*arg == '\0') {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: PathHash = %u byte(s)",
+                         JenCoreRepeater::getPathHashSize());
+            } else {
+                const int bytes = atoi(arg);
+                if (bytes < 1 || bytes > 3) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: PATHSIZE must be 1, 2 or 3");
+                } else {
+                    JenCoreRepeater::setPathHashSize((uint8_t)bytes);
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: PathHash = %u byte(s)", (unsigned)bytes);
+                }
+            }
+        } else if (strncasecmp(sub, "REGION", 6) == 0 && (sub[6] == '\0' || sub[6] == ' ')) {
+            const char *arg = sub + 6;
+            while (*arg == ' ')
+                arg++;
+            if (*arg == '\0' || strcasecmp(arg, "STATUS") == 0) {
+                char list[120] = "";
+                size_t at = 0;
+                for (uint8_t i = 0; i < JenCoreRepeater::getRegionCount() && at + 2 < sizeof(list); i++) {
+                    const char *name = JenCoreRepeater::getRegionName(i);
+                    const int n = snprintf(list + at, sizeof(list) - at, "%s%s%s", i ? ", " : "",
+                                           i == JenCoreRepeater::getHomeRegionIndex() ? "*" : "", name);
+                    if (n > 0)
+                        at += (size_t)n;
+                }
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: regions=%u home=%s unscoped=%s%s%s",
+                         (unsigned)JenCoreRepeater::getRegionCount(),
+                         JenCoreRepeater::getRegionCount() ? JenCoreRepeater::getRegionName(JenCoreRepeater::getHomeRegionIndex())
+                                                           : "none",
+                         JenCoreRepeater::getAllowUnscoped() ? "ON" : "OFF", list[0] ? " | " : "", list);
+            } else if (strncasecmp(arg, "ADD ", 4) == 0) {
+                const char *name = arg + 4;
+                while (*name == ' ')
+                    name++;
+                if (JenCoreRepeater::addRegion(name))
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: region '%s' added", name);
+                else
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: region add failed (invalid/full)");
+            } else if (strncasecmp(arg, "DEL ", 4) == 0) {
+                const char *name = arg + 4;
+                while (*name == ' ')
+                    name++;
+                if (JenCoreRepeater::removeRegion(name))
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: region '%s' removed", name);
+                else
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: region not found");
+            } else if (strncasecmp(arg, "HOME ", 5) == 0) {
+                const char *name = arg + 5;
+                while (*name == ' ')
+                    name++;
+                if (JenCoreRepeater::setHomeRegion(name))
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: home region '%s'", name);
+                else
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: region not found");
+            } else if (strcasecmp(arg, "UNSCOPED ON") == 0) {
+                JenCoreRepeater::setAllowUnscoped(true);
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: unscoped floods ON");
+            } else if (strcasecmp(arg, "UNSCOPED OFF") == 0) {
+                JenCoreRepeater::setAllowUnscoped(false);
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: unscoped floods OFF");
+            } else if (strcasecmp(arg, "OFF") == 0) {
+                JenCoreRepeater::clearRegions();
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: region scoping OFF");
+            } else {
+                snprintf(replyMsg, sizeof(replyMsg),
+                         "JT JENCORE: usage: REGION [STATUS|ADD <name>|DEL <name>|HOME <name>|UNSCOPED ON/OFF|OFF]");
+            }
+        } else if (strncasecmp(sub, "ADVERT", 6) == 0 && (sub[6] == '\0' || sub[6] == ' ')) {
+            const char *arg = sub + 6;
+            while (*arg == ' ')
+                arg++;
+            const bool flood = !(strcasecmp(arg, "LOCAL") == 0 || strcasecmp(arg, "0") == 0);
+            if (!JenCoreRepeater::isJenCoreEnabled()) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: OFF (use JENCORE ON first)");
+            } else if (rli->sendJenCoreAdvertNow(flood)) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: %s ADVERT queued", flood ? "flood" : "local");
+            } else {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: ADVERT failed (no identity/time or queue full)");
+            }
+        } else if (strcasecmp(sub, "CONTACTS") == 0) {
+#if NEXUS_ENABLE_JENCORE_COMPANION
+            startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "JC Contacts");
+            {
+                char hdr[48];
+                snprintf(hdr, sizeof(hdr), "%u contact(s), path %u byte(s)", (unsigned)jencoreCompanion.contactCount(),
+                         JenCoreRepeater::getPathHashSize());
+                appendPaging(hdr);
+                jencoreCompanion.contacts.forEach([&](JenCoreContact &c) {
+                    char line[72];
+                    snprintf(line, sizeof(line), "!%08x %s [pk:%02x%02x]", (unsigned)c.nodeNum, c.name,
+                             c.pub[0], c.pub[1]);
+                    appendPaging(line);
+                });
+            }
+            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: paging contacts...");
+#else
+            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: companion support not built in");
+#endif
         } else if (strcasecmp(sub, "RELAY ON") == 0 || strcasecmp(sub, "RELAY 1") == 0) {
+            JenCoreRepeater::setJenCoreEnabled(true);
             rli->jencoreRepeater.setRelayEnabled(true);
-            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: Relay ON");
+            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: Relay ON (JenCore enabled)");
         } else if (strcasecmp(sub, "RELAY OFF") == 0 || strcasecmp(sub, "RELAY 0") == 0) {
             rli->jencoreRepeater.setRelayEnabled(false);
             snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: Relay OFF");
         } else if (strcasecmp(sub, "HYBRID ON") == 0 || strcasecmp(sub, "HYBRID 1") == 0) {
-#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
-            rli->hybridSyncEnabled = true;
-            rli->startReceive();
-            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: HybridSync ON (0x14B4)");
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+            if (!rli->supportsHybridSync()) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: HybridSync not supported on this radio");
+            } else {
+                rli->hybridSyncEnabled = true;
+                rli->startReceive();
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: HybridSync ON (0x14B4)");
+            }
 #else
             snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: HybridSync not supported on this radio");
 #endif
         } else if (strcasecmp(sub, "HYBRID OFF") == 0 || strcasecmp(sub, "HYBRID 0") == 0) {
-#if MESHTASTIC_ENABLE_JENCORE_HYBRID_SYNC
-            rli->hybridSyncEnabled = false;
-            rli->startReceive();
-            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: HybridSync OFF (standard 0x2B)");
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+            if (!rli->supportsHybridSync()) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: HybridSync not supported on this radio");
+            } else {
+                rli->hybridSyncEnabled = false;
+                rli->startReceive();
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: HybridSync OFF (standard 0x2B)");
+            }
 #else
             snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: HybridSync not supported on this radio");
+#endif
+        } else if (strncasecmp(sub, "CHANNELS", 8) == 0 && (sub[8] == '\0' || sub[8] == ' ')) {
+#if NEXUS_ENABLE_JENCORE_COMPANION
+            const char *rest = sub + 8;
+            while (*rest == ' ')
+                rest++;
+
+            auto saveChannels = [&]() {
+                channels.onConfigChanged();
+                nodeDB->saveToDisk(SEGMENT_CHANNELS);
+                if (service) service->configChanged.notifyObservers(nullptr);
+            };
+
+            if (*rest == '\0') {
+                const uint8_t added = channels.addJenCoreChannels();
+                if (added) {
+                    saveChannels();
+                    snprintf(replyMsg, sizeof(replyMsg),
+                             "JT JENCORE: added %u channel(s) (JC:Public, JC:#test, JC:#bot); saved", (unsigned)added);
+                } else {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: JC channels already present (or no free slot)");
+                }
+            } else if (strncasecmp(rest, "ADD", 3) == 0 && (rest[3] == '\0' || rest[3] == ' ')) {
+                rest += 3;
+                while (*rest == ' ')
+                    rest++;
+
+                char name[12];
+                size_t n = 0;
+                while (*rest && *rest != ' ' && n < sizeof(name) - 1)
+                    name[n++] = *rest++;
+                bool nameTooLong = (*rest && *rest != ' ');
+                name[n] = '\0';
+                while (*rest == ' ')
+                    rest++;
+
+                const char *bare = name;
+                if (strncasecmp(bare, "JC:", 3) == 0 || strncasecmp(bare, "MC:", 3) == 0)
+                    bare += 3;
+                constexpr size_t NAME_CAP = sizeof(((meshtastic_ChannelSettings *)nullptr)->name);
+
+                uint8_t psk[32];
+                size_t pskLen = 0;
+                const uint8_t *pskPtr = nullptr;
+                bool pskOk = true;
+                if (*rest) {
+                    if (nexus_base64_decode(psk, sizeof(psk), &pskLen, rest) != 0 || (pskLen != 16 && pskLen != 32))
+                        pskOk = false;
+                    else
+                        pskPtr = psk;
+                }
+
+                if (n == 0 || bare[0] == '\0') {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: usage: CHANNELS [ADD <name> [base64-psk]]");
+                } else if (nameTooLong || strlen(bare) + 3 >= NAME_CAP) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: name too long (max %u chars incl. JC:)",
+                             (unsigned)(NAME_CAP - 1));
+                } else if (!pskOk) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: PSK must be base64 for 16 or 32 bytes");
+                } else {
+                    char full[NAME_CAP];
+                    snprintf(full, sizeof(full), "JC:%s", bare);
+                    const int8_t idx = channels.addJenCoreChannel(full, pskPtr, pskLen);
+                    if (idx >= 0) {
+                        saveChannels();
+                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: added channel %d '%s'; saved", idx, full);
+                    } else if (idx == -1) {
+                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: no free channel slot");
+                    } else if (idx == -2) {
+                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: channel '%s' already present", full);
+                    } else {
+                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: invalid channel name or key");
+                    }
+                }
+            } else {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: usage: CHANNELS [ADD <name> [base64-psk]]");
+            }
+#else
+            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: companion support not built in");
 #endif
         } else if (strcasecmp(sub, "STATS") == 0) {
             char statsBuf[161];
@@ -2333,57 +2533,62 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 snprintf(replyMsg, sizeof(replyMsg), "JT JC STATS: stats unavailable");
             }
         } else {
-            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: Usage: JENCORE [STATUS|RELAY ON/OFF|HYBRID ON/OFF|STATS]");
+            snprintf(replyMsg, sizeof(replyMsg),
+                     "JT JENCORE: Usage: JENCORE [ON/OFF|STATUS|RELAY ON/OFF|PATHSIZE <1-3>|REGION ...|ADVERT [LOCAL]|CONTACTS|HYBRID ON/OFF|CHANNELS[ ADD <name|#tag> [psk]]|STATS]");
         }
     }
 #endif
-#if MESHTASTIC_ENABLE_RNODE
-    else if (strcasecmp(cmd, "RNODE") == 0 || strcasecmp(cmd, "RN") == 0 ||
-             strncasecmp(cmd, "RNODE ", 6) == 0 || strncasecmp(cmd, "RN ", 3) == 0) {
+#if NEXUS_ENABLE_RNODE
+    else if (strcasecmp(cmd, "JRNODE") == 0 || strcasecmp(cmd, "RNODE") == 0 || strcasecmp(cmd, "JRN") == 0 ||
+             strcasecmp(cmd, "RN") == 0 || strncasecmp(cmd, "JRNODE ", 7) == 0 || strncasecmp(cmd, "RNODE ", 6) == 0 ||
+             strncasecmp(cmd, "JRN ", 4) == 0 || strncasecmp(cmd, "RN ", 3) == 0) {
         const char *sub = skipToken(cmd);
         if (!*sub || strcasecmp(sub, "STATUS") == 0) {
             const char *modeStr = (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) ? "STANDALONE" :
                                   (rnodeEngine.getMode() == RNODE_MODE_BRIDGE) ? "BRIDGE" : "OFF";
             snprintf(replyMsg, sizeof(replyMsg),
-                     "JT RNODE:\n Mode: %s\n Tier SF: %u\n TCP: %s (%s)\n BLE: %s (%s)\n RxPkts: %u (bytes=%u)\n TxPkts: %u (bytes=%u)\n LastRSSI: %d, SNR: %.1f",
-                     modeStr, rnodeEngine.getSf(),
+                     "JT JRNODE:\n Enabled: %s\n Mode: %s\n Tier SF: %u\n TCP: %s (%s)\n BLE: %s (%s)\n RxPkts: %u (bytes=%u)\n TxPkts: %u (bytes=%u)\n LastRSSI: %d, SNR: %.1f",
+                     rnodeEngine.isEnabled() ? "ON" : "OFF", modeStr, rnodeEngine.getSf(),
                      rnodeEngine.isTcpEnabled() ? "ON" : "OFF", rnodeEngine.isTcpConnected() ? "conn" : "idle",
                      rnodeEngine.isBleEnabled() ? "ON" : "OFF", rnodeEngine.isBleConnected() ? "conn" : "idle",
                      (unsigned)rnodeEngine.rxPackets, (unsigned)rnodeEngine.rxBytes,
                      (unsigned)rnodeEngine.txPackets, (unsigned)rnodeEngine.txBytes,
                      (int)rnodeEngine.lastRssi, (double)rnodeEngine.lastSnr);
+        } else if (strcasecmp(sub, "ON") == 0) {
+            rnodeEngine.setMode(RNODE_MODE_BRIDGE);
+            snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: ON (BRIDGE)");
         } else if (strcasecmp(sub, "MODE OFF") == 0 || strcasecmp(sub, "OFF") == 0) {
             rnodeEngine.setMode(RNODE_MODE_OFF);
-            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: Mode OFF");
+            snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: Mode OFF");
         } else if (strcasecmp(sub, "MODE BRIDGE") == 0 || strcasecmp(sub, "BRIDGE") == 0) {
             rnodeEngine.setMode(RNODE_MODE_BRIDGE);
-            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: Mode BRIDGE (Concurrent Meshtastic + JenCore + Reticulum)");
+            snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: Mode BRIDGE (Concurrent Meshtastic + JenCore + Reticulum)");
         } else if (strcasecmp(sub, "MODE STANDALONE") == 0 || strcasecmp(sub, "STANDALONE") == 0) {
             rnodeEngine.setMode(RNODE_MODE_STANDALONE);
-            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: Mode STANDALONE (Dedicated Reticulum RNode)");
+            snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: Mode STANDALONE (Dedicated Reticulum RNode)");
         } else if (strcasecmp(sub, "TCP ON") == 0 || strcasecmp(sub, "TCP 1") == 0) {
             rnodeEngine.setTcpEnabled(true);
-            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: TCP server ON (port 7633)");
+            snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: TCP server ON (port 7633)");
         } else if (strcasecmp(sub, "TCP OFF") == 0 || strcasecmp(sub, "TCP 0") == 0) {
             rnodeEngine.setTcpEnabled(false);
-            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: TCP server OFF");
+            snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: TCP server OFF");
         } else if (strcasecmp(sub, "BLE ON") == 0 || strcasecmp(sub, "BLE 1") == 0) {
             rnodeEngine.setBleEnabled(true);
-            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: BLE NUS ON");
+            snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: BLE NUS ON");
         } else if (strcasecmp(sub, "BLE OFF") == 0 || strcasecmp(sub, "BLE 0") == 0) {
             rnodeEngine.setBleEnabled(false);
-            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: BLE NUS OFF");
+            snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: BLE NUS OFF");
         } else if (strncasecmp(sub, "TIER ", 5) == 0 || strncasecmp(sub, "SF ", 3) == 0) {
             const char *valStr = skipToken(sub);
             int sfVal = atoi(valStr);
             if (sfVal >= 5 && sfVal <= 12) {
                 rnodeEngine.setSf((uint8_t)sfVal);
-                snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: Reticulum tier SF set to %d", sfVal);
+                snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: Reticulum tier SF set to %d", sfVal);
             } else {
-                snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: Invalid SF %d (must be 5..12)", sfVal);
+                snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: Invalid SF %d (must be 5..12)", sfVal);
             }
         } else {
-            snprintf(replyMsg, sizeof(replyMsg), "JT RNODE: Usage: RNODE [STATUS|MODE BRIDGE/STANDALONE/OFF|TCP ON/OFF|BLE ON/OFF|TIER <5-12>]");
+            snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: Usage: JRNODE [ON/OFF|STATUS|MODE BRIDGE/STANDALONE/OFF|TCP ON/OFF|BLE ON/OFF|TIER <5-12>] (RNODE alias)");
         }
     }
 #endif
@@ -4145,8 +4350,8 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             if (v > 0) targetMv = (uint16_t)(v * 1000.0f + 0.5f);
         } else {
             int v = atoi(tokVolt);
-            if (v > 0 && v <= 24) targetMv = v * 1000;
-            else if (v > 24) targetMv = (uint16_t)v;
+            if (v > 0 && v <= 30) targetMv = v * 1000;
+            else if (v > 30) targetMv = (uint16_t)v;
         }
         if (targetMv < 500 || targetMv > 30000) {
             snprintf(replyMsg, sizeof(replyMsg), "JT VOLT: Invalid voltage '%s' (range 500..30000 mV)", tokVolt);
@@ -4226,6 +4431,8 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         } else if (strcasecmp(p, "OFF") == 0) {
             splitConfig.mode = NEXUS_SPLIT_OFF;
             snprintf(replyMsg, sizeof(replyMsg), "JT SPLIT: OFF (RAM). Run /nexus SAVE to persist.");
+        } else if (multiSFConfig.enabled) {
+            snprintf(replyMsg, sizeof(replyMsg), "JT SPLIT: disable TIER first (/nexus TIER OFF)");
         } else {
             char subMode[16] = {0};
             char targetTok[32] = {0};
@@ -4285,43 +4492,137 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
 
             char *endp = nullptr;
             long numericSf = strtol(targetTok, &endp, 10);
+            bool isCurrent24 = (config.lora.region == meshtastic_Config_LoRaConfig_RegionCode_LORA_24);
             if (endp && *endp == '\0' && numericSf >= 5 && numericSf <= 12) {
                 targetSf = (uint8_t)numericSf;
-            } else if (strncasecmp(targetTok, "SF", 2) == 0 && isdigit((unsigned char)targetTok[2])) {
+            } else if (strncasecmp(targetTok, "SF", 2) == 0 && isdigit((unsigned char)targetTok[2]) &&
+                       strcasecmp(targetTok, "SF24") != 0 && strcasecmp(targetTok, "SF868") != 0) {
                 targetSf = (uint8_t)atoi(targetTok + 2);
+            } else if (strcasecmp(targetTok, "MADRID24") == 0 || strcasecmp(targetTok, "MADRID-24") == 0 || strcasecmp(targetTok, "MADRID_24") == 0) {
+                targetSf = 9; targetBw = 400; targetCr = 5; targetFreq = 2482.0000f;
+            } else if (strcasecmp(targetTok, "LF24") == 0 || strcasecmp(targetTok, "LONGFAST24") == 0 || strcasecmp(targetTok, "LONGFAST_24") == 0) {
+                targetSf = 11; targetBw = 800; targetCr = 5; targetFreq = 2482.0000f;
+            } else if (strcasecmp(targetTok, "MS24") == 0 || strcasecmp(targetTok, "MEDSLOW24") == 0 || strcasecmp(targetTok, "MEDSLOW_24") == 0) {
+                targetSf = 10; targetBw = 800; targetCr = 5; targetFreq = 2482.0000f;
+            } else if (strcasecmp(targetTok, "MF24") == 0 || strcasecmp(targetTok, "MEDFAST24") == 0 || strcasecmp(targetTok, "MEDFAST_24") == 0) {
+                targetSf = 9; targetBw = 800; targetCr = 5; targetFreq = 2482.0000f;
+            } else if (strcasecmp(targetTok, "SS24") == 0 || strcasecmp(targetTok, "SHORTSLOW24") == 0 || strcasecmp(targetTok, "SHORTSLOW_24") == 0) {
+                targetSf = 8; targetBw = 800; targetCr = 5; targetFreq = 2482.0000f;
+            } else if (strcasecmp(targetTok, "SF24") == 0 || strcasecmp(targetTok, "SHORTFAST24") == 0 || strcasecmp(targetTok, "SHORTFAST_24") == 0) {
+                targetSf = 7; targetBw = 800; targetCr = 5; targetFreq = 2482.0000f;
+            } else if (strcasecmp(targetTok, "LM24") == 0 || strcasecmp(targetTok, "LONGMODERATE24") == 0 || strcasecmp(targetTok, "LONGMODERATE_24") == 0) {
+                targetSf = 11; targetBw = 400; targetCr = 8; targetFreq = 2482.0000f;
+            } else if (strcasecmp(targetTok, "LS24") == 0 || strcasecmp(targetTok, "LONGSLOW24") == 0 || strcasecmp(targetTok, "LONGSLOW_24") == 0) {
+                targetSf = 12; targetBw = 400; targetCr = 8; targetFreq = 2482.0000f;
+            } else if (strcasecmp(targetTok, "ST24") == 0 || strcasecmp(targetTok, "SHORTTURBO24") == 0 || strcasecmp(targetTok, "SHORTTURBO_24") == 0) {
+                targetSf = 7; targetBw = 1600; targetCr = 5; targetFreq = 2482.0000f;
+            } else if (strcasecmp(targetTok, "LT24") == 0 || strcasecmp(targetTok, "LONGTURBO24") == 0 || strcasecmp(targetTok, "LONGTURBO_24") == 0) {
+                targetSf = 11; targetBw = 1600; targetCr = 8; targetFreq = 2482.0000f;
+            } else if (strcasecmp(targetTok, "LF868") == 0 || strcasecmp(targetTok, "LONGFAST868") == 0 || strcasecmp(targetTok, "LONGFAST_868") == 0) {
+                targetSf = 11; targetBw = 250; targetCr = 5; targetFreq = 869.5250f;
+            } else if (strcasecmp(targetTok, "MS868") == 0 || strcasecmp(targetTok, "MEDSLOW868") == 0 || strcasecmp(targetTok, "MEDSLOW_868") == 0) {
+                targetSf = 10; targetBw = 250; targetCr = 5; targetFreq = 869.5250f;
+            } else if (strcasecmp(targetTok, "MF868") == 0 || strcasecmp(targetTok, "MEDFAST868") == 0 || strcasecmp(targetTok, "MEDFAST_868") == 0) {
+                targetSf = 9; targetBw = 250; targetCr = 5; targetFreq = 869.5250f;
+            } else if (strcasecmp(targetTok, "SS868") == 0 || strcasecmp(targetTok, "SHORTSLOW868") == 0 || strcasecmp(targetTok, "SHORTSLOW_868") == 0) {
+                targetSf = 8; targetBw = 250; targetCr = 5; targetFreq = 869.5250f;
+            } else if (strcasecmp(targetTok, "SF868") == 0 || strcasecmp(targetTok, "SHORTFAST868") == 0 || strcasecmp(targetTok, "SHORTFAST_868") == 0) {
+                targetSf = 7; targetBw = 250; targetCr = 5; targetFreq = 869.5250f;
+            } else if (strcasecmp(targetTok, "LM868") == 0 || strcasecmp(targetTok, "LONGMODERATE868") == 0 || strcasecmp(targetTok, "LONGMODERATE_868") == 0) {
+                targetSf = 11; targetBw = 125; targetCr = 8; targetFreq = 869.5250f;
+            } else if (strcasecmp(targetTok, "LS868") == 0 || strcasecmp(targetTok, "LONGSLOW868") == 0 || strcasecmp(targetTok, "LONGSLOW_868") == 0) {
+                targetSf = 12; targetBw = 125; targetCr = 8; targetFreq = 869.5250f;
+            } else if (strcasecmp(targetTok, "ST868") == 0 || strcasecmp(targetTok, "SHORTTURBO868") == 0 || strcasecmp(targetTok, "SHORTTURBO_868") == 0) {
+                targetSf = 7; targetBw = 500; targetCr = 5; targetFreq = 869.5250f;
+            } else if (strcasecmp(targetTok, "LT868") == 0 || strcasecmp(targetTok, "LONGTURBO868") == 0 || strcasecmp(targetTok, "LONGTURBO_868") == 0) {
+                targetSf = 11; targetBw = 500; targetCr = 8; targetFreq = 869.5250f;
+            } else if (strcasecmp(targetTok, "LF") == 0 || strcasecmp(targetTok, "LONGFAST") == 0) {
+                targetSf = 11; targetBw = isCurrent24 ? 800 : 250; targetCr = 5; targetFreq = isCurrent24 ? 2482.0000f : 869.5250f;
+            } else if (strcasecmp(targetTok, "LT") == 0 || strcasecmp(targetTok, "LONGTURBO") == 0) {
+                targetSf = 11; targetBw = isCurrent24 ? 1600 : 500; targetCr = 8; targetFreq = isCurrent24 ? 2482.0000f : 869.5250f;
+            } else if (strcasecmp(targetTok, "LM") == 0 || strcasecmp(targetTok, "LONGMODERATE") == 0 || strcasecmp(targetTok, "LONGMOD") == 0) {
+                targetSf = 11; targetBw = isCurrent24 ? 400 : 125; targetCr = 8; targetFreq = isCurrent24 ? 2482.0000f : 869.5250f;
+            } else if (strcasecmp(targetTok, "LS") == 0 || strcasecmp(targetTok, "LONGSLOW") == 0 || strcasecmp(targetTok, "VLS") == 0 || strcasecmp(targetTok, "VERYLONGSLOW") == 0) {
+                targetSf = 12; targetBw = isCurrent24 ? 400 : 125; targetCr = 8; targetFreq = isCurrent24 ? 2482.0000f : 869.5250f;
+            } else if (strcasecmp(targetTok, "MF") == 0 || strcasecmp(targetTok, "MEDFAST") == 0 || strcasecmp(targetTok, "MEDIUMFAST") == 0) {
+                targetSf = 9; targetBw = isCurrent24 ? 800 : 250; targetCr = 5; targetFreq = isCurrent24 ? 2482.0000f : 869.5250f;
+            } else if (strcasecmp(targetTok, "MS") == 0 || strcasecmp(targetTok, "MEDSLOW") == 0 || strcasecmp(targetTok, "MEDIUMSLOW") == 0) {
+                targetSf = 10; targetBw = isCurrent24 ? 800 : 250; targetCr = 5; targetFreq = isCurrent24 ? 2482.0000f : 869.5250f;
+            } else if (strcasecmp(targetTok, "SS") == 0 || strcasecmp(targetTok, "SHORTSLOW") == 0) {
+                targetSf = 8; targetBw = isCurrent24 ? 800 : 250; targetCr = 5; targetFreq = isCurrent24 ? 2482.0000f : 869.5250f;
+            } else if (strcasecmp(targetTok, "SF") == 0 || strcasecmp(targetTok, "SHORTFAST") == 0) {
+                targetSf = 7; targetBw = isCurrent24 ? 800 : 250; targetCr = 5; targetFreq = isCurrent24 ? 2482.0000f : 869.5250f;
+            } else if (strcasecmp(targetTok, "ST") == 0 || strcasecmp(targetTok, "SHORTTURBO") == 0) {
+                targetSf = 7; targetBw = isCurrent24 ? 1600 : 500; targetCr = 5; targetFreq = isCurrent24 ? 2482.0000f : 869.5250f;
             } else if (strcasecmp(targetTok, "P1") == 0 || strcasecmp(targetTok, "SFNARROW") == 0) {
                 targetSf = 7; targetBw = 62; targetCr = 5; targetFreq = 869.6180f;
             } else if (strcasecmp(targetTok, "P7") == 0 || strcasecmp(targetTok, "NARROWPLUS") == 0) {
                 targetSf = 6; targetBw = 62; targetCr = 5; targetFreq = 869.6180f;
             } else if (strcasecmp(targetTok, "NARROWPROMAX") == 0 || strcasecmp(targetTok, "NARROWPREMIUM") == 0) {
                 targetSf = 5; targetBw = 62; targetCr = 5; targetFreq = 869.6180f;
-            } else if (strcasecmp(targetTok, "NF") == 0 || strcasecmp(targetTok, "NARROWFAST") == 0 || strcasecmp(targetTok, "NARF") == 0) {
+            } else if (strcasecmp(targetTok, "SP") == 0 || strcasecmp(targetTok, "SHORTPLUS") == 0 || strcasecmp(targetTok, "SHORTPRO") == 0) {
+                targetSf = 6; targetBw = 250; targetCr = 5; targetFreq = 869.5250f;
+            } else if (strcasecmp(targetTok, "SPM") == 0 || strcasecmp(targetTok, "SHORTPROMAX") == 0) {
+                targetSf = 5; targetBw = 250; targetCr = 5; targetFreq = 869.5250f;
+            } else if (strcasecmp(targetTok, "NF") == 0 || strcasecmp(targetTok, "NARROWFAST") == 0 || strcasecmp(targetTok, "NARF") == 0 ||
+                       strcasecmp(targetTok, "NARROW_FAST") == 0 || strcasecmp(targetTok, "NARROW-FAST") == 0) {
                 targetSf = 7; targetBw = 62; targetCr = 6; targetFreq = 869.4417f;
-            } else if (strcasecmp(targetTok, "NS") == 0 || strcasecmp(targetTok, "NARROWSLOW") == 0 || strcasecmp(targetTok, "NARS") == 0) {
+            } else if (strcasecmp(targetTok, "NS") == 0 || strcasecmp(targetTok, "NARROWSLOW") == 0 || strcasecmp(targetTok, "NARS") == 0 ||
+                       strcasecmp(targetTok, "NARROW_SLOW") == 0 || strcasecmp(targetTok, "NARROW-SLOW") == 0) {
                 targetSf = 8; targetBw = 62; targetCr = 6; targetFreq = 869.4417f;
+            } else if (strcasecmp(targetTok, "LITEFAST") == 0 || strcasecmp(targetTok, "LITEF") == 0 ||
+                       strcasecmp(targetTok, "LITE_FAST") == 0 || strcasecmp(targetTok, "LITE-FAST") == 0) {
+                targetSf = 9; targetBw = 125; targetCr = 5; targetFreq = 866.3000f;
+            } else if (strcasecmp(targetTok, "LITESLOW") == 0 || strcasecmp(targetTok, "LITES") == 0 ||
+                       strcasecmp(targetTok, "LITE_SLOW") == 0 || strcasecmp(targetTok, "LITE-SLOW") == 0) {
+                targetSf = 10; targetBw = 125; targetCr = 5; targetFreq = 865.7000f;
+            } else if (strcasecmp(targetTok, "NAP-1") == 0 || strcasecmp(targetTok, "NAP1") == 0) {
+                targetSf = 7; targetBw = 125; targetCr = 5; targetFreq = 865.7000f;
+            } else if (strcasecmp(targetTok, "NAP-2") == 0 || strcasecmp(targetTok, "NAP2") == 0) {
+                targetSf = 7; targetBw = 125; targetCr = 5; targetFreq = 866.3000f;
+            } else if (strcasecmp(targetTok, "NAP-3") == 0 || strcasecmp(targetTok, "NAP3") == 0) {
+                targetSf = 7; targetBw = 125; targetCr = 5; targetFreq = 866.9000f;
+            } else if (strcasecmp(targetTok, "NAP-4") == 0 || strcasecmp(targetTok, "NAP4") == 0) {
+                targetSf = 7; targetBw = 125; targetCr = 5; targetFreq = 867.5000f;
+            } else if (strcasecmp(targetTok, "NAP-5") == 0 || strcasecmp(targetTok, "NAP5") == 0) {
+                targetSf = 7; targetBw = 125; targetCr = 5; targetFreq = 871.0000f;
+            } else if (strcasecmp(targetTok, "NAPN-1") == 0 || strcasecmp(targetTok, "NAPN1") == 0) {
+                targetSf = 7; targetBw = 62; targetCr = 5; targetFreq = 865.7000f;
+            } else if (strcasecmp(targetTok, "NAPN-2") == 0 || strcasecmp(targetTok, "NAPN2") == 0) {
+                targetSf = 7; targetBw = 62; targetCr = 5; targetFreq = 866.3000f;
+            } else if (strcasecmp(targetTok, "NAPN-3") == 0 || strcasecmp(targetTok, "NAPN3") == 0) {
+                targetSf = 7; targetBw = 62; targetCr = 5; targetFreq = 866.9000f;
+            } else if (strcasecmp(targetTok, "NAPN-4") == 0 || strcasecmp(targetTok, "NAPN4") == 0) {
+                targetSf = 7; targetBw = 62; targetCr = 5; targetFreq = 867.5000f;
+            } else if (strcasecmp(targetTok, "NAPN-5") == 0 || strcasecmp(targetTok, "NAPN5") == 0) {
+                targetSf = 7; targetBw = 62; targetCr = 5; targetFreq = 871.0000f;
             // F4 fix (Jenny 2026-10-23): Mini-1..8 = SF6, matching R4's PRESET MINI table
             // (SF6/BW31/CR5) — these were SF7 here, so a SPLIT tier set to Mini-x never
             // decoded nodes configured via PRESET MINI-x.
-            } else if (strcasecmp(targetTok, "MINI-1") == 0 || strcasecmp(targetTok, "MINI1") == 0) {
+            } else if (strcasecmp(targetTok, "MINI-1") == 0 || strcasecmp(targetTok, "MINI1") == 0 ||
+                       strcasecmp(targetTok, "MICRO-1") == 0 || strcasecmp(targetTok, "MICRO1") == 0) {
                 targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 865.6188f;
-            } else if (strcasecmp(targetTok, "MINI-2") == 0 || strcasecmp(targetTok, "MINI2") == 0) {
+            } else if (strcasecmp(targetTok, "MINI-2") == 0 || strcasecmp(targetTok, "MINI2") == 0 ||
+                       strcasecmp(targetTok, "MICRO-2") == 0 || strcasecmp(targetTok, "MICRO2") == 0) {
                 targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 865.7812f;
-            } else if (strcasecmp(targetTok, "MINI-3") == 0 || strcasecmp(targetTok, "MINI3") == 0) {
+            } else if (strcasecmp(targetTok, "MINI-3") == 0 || strcasecmp(targetTok, "MINI3") == 0 ||
+                       strcasecmp(targetTok, "MICRO-3") == 0 || strcasecmp(targetTok, "MICRO3") == 0) {
                 targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 866.2188f;
-            } else if (strcasecmp(targetTok, "MINI-4") == 0 || strcasecmp(targetTok, "MINI4") == 0) {
+            } else if (strcasecmp(targetTok, "MINI-4") == 0 || strcasecmp(targetTok, "MINI4") == 0 ||
+                       strcasecmp(targetTok, "MICRO-4") == 0 || strcasecmp(targetTok, "MICRO4") == 0) {
                 targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 866.3812f;
-            } else if (strcasecmp(targetTok, "MINI-5") == 0 || strcasecmp(targetTok, "MINI5") == 0) {
+            } else if (strcasecmp(targetTok, "MINI-5") == 0 || strcasecmp(targetTok, "MINI5") == 0 ||
+                       strcasecmp(targetTok, "MICRO-5") == 0 || strcasecmp(targetTok, "MICRO5") == 0) {
                 targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 866.8188f;
-            } else if (strcasecmp(targetTok, "MINI-6") == 0 || strcasecmp(targetTok, "MINI6") == 0) {
+            } else if (strcasecmp(targetTok, "MINI-6") == 0 || strcasecmp(targetTok, "MINI6") == 0 ||
+                       strcasecmp(targetTok, "MICRO-6") == 0 || strcasecmp(targetTok, "MICRO6") == 0) {
                 targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 866.9812f;
-            } else if (strcasecmp(targetTok, "MINI-7") == 0 || strcasecmp(targetTok, "MINI7") == 0) {
+            } else if (strcasecmp(targetTok, "MINI-7") == 0 || strcasecmp(targetTok, "MINI7") == 0 ||
+                       strcasecmp(targetTok, "MICRO-7") == 0 || strcasecmp(targetTok, "MICRO7") == 0) {
                 targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 867.4188f;
-            } else if (strcasecmp(targetTok, "MINI-8") == 0 || strcasecmp(targetTok, "MINI8") == 0) {
+            } else if (strcasecmp(targetTok, "MINI-8") == 0 || strcasecmp(targetTok, "MINI8") == 0 ||
+                       strcasecmp(targetTok, "MICRO-8") == 0 || strcasecmp(targetTok, "MICRO8") == 0) {
                 targetSf = 6; targetBw = 31; targetCr = 5; targetFreq = 867.5812f;
-            } else if (strcasecmp(targetTok, "LF") == 0 || strcasecmp(targetTok, "LONGFAST") == 0) {
-                targetSf = 11; targetBw = 250; targetCr = 5; targetFreq = 869.5250f;
-            } else if (strcasecmp(targetTok, "SF") == 0 || strcasecmp(targetTok, "SHORTFAST") == 0) {
-                targetSf = 7; targetBw = 250; targetCr = 5; targetFreq = 869.5250f;
             } else {
                 snprintf(replyMsg, sizeof(replyMsg), "JT SPLIT: Unknown target preset '%s'", targetTok);
                 return;
@@ -4391,6 +4692,179 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                      subMode, targetSf, (float)targetBw, targetFreq, targetPwr);
         }
     }
+#if (defined(USE_LR2021) || defined(ARCH_PORTDUINO)) && !RADIOLIB_EXCLUDE_LR2021
+    else if (strcasecmp(cmd, "TIER") == 0 || strncasecmp(cmd, "TIER ", 5) == 0) {
+        LR2021Interface *lr2021 = static_cast<LR2021Interface *>(RadioLibInterface::instance);
+        const char *sub = skipToken(cmd);
+        if (!lr2021) {
+            snprintf(replyMsg, sizeof(replyMsg), "JT TIER: LR2021 interface unavailable");
+        } else if (!*sub || strcasecmp(sub, "STATUS") == 0) {
+            const nexus::MultiSFConfig &cfg = multiSFConfig;
+            const int txSlot = (cfg.meshtastic_tx_slot == nexus::MULTISF_NO_TX_SLOT) ? 0 : cfg.meshtastic_tx_slot + 1;
+            int length = snprintf(replyMsg, sizeof(replyMsg), "JT TIER: %s main=SF%u/%s:0x%02X sides=%u tx=%d txch=%u",
+                                  cfg.enabled ? "ON" : "OFF", lr2021->getSF(),
+                                  nexus::tierProtocolName(cfg.main_protocol), cfg.main_syncword, cfg.side_count, txSlot,
+                                  (unsigned)tierChannelOverrideCount);
+            for (uint8_t i = 0; i < cfg.side_count && length >= 0 && length < (int)sizeof(replyMsg); ++i) {
+                length += snprintf(replyMsg + length, sizeof(replyMsg) - length, " | %u:SF%u/%s:0x%02X",
+                                   (unsigned)(i + 1), cfg.side[i].sf,
+                                   nexus::tierProtocolName(cfg.side[i].protocol), cfg.side[i].syncword);
+            }
+            if (length < 0)
+                length = 0;
+            if (length > (int)sizeof(replyMsg) - 1)
+                length = (int)sizeof(replyMsg) - 1;
+            if (cfg.enabled) {
+                const char *reason = nullptr;
+                bool ok = nexus::validateMultiSF(cfg, lr2021->getSF(), lr2021->getBW(), &reason);
+                snprintf(replyMsg + length, sizeof(replyMsg) - length, " [%s]", ok ? "OK" : (reason ? reason : "INVALID"));
+            }
+        } else if (strcasecmp(sub, "MADRID") == 0) {
+            nexus::makeMadridPreset(multiSFConfig);
+            splitConfig.mode = NEXUS_SPLIT_OFF;
+            const char *reason = nullptr;
+            if (!nexus::validateMultiSF(multiSFConfig, 5, 62.5f, &reason)) {
+                multiSFConfig.enabled = 0;
+                snprintf(replyMsg, sizeof(replyMsg), "JT TIER: Madrid rejected: %s", reason ? reason : "invalid");
+            } else {
+#if NEXUS_ENABLE_RNODE
+                rnodeEngine.setMode(RNODE_MODE_BRIDGE);
+#endif
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+                JenCoreRepeater::setJenCoreEnabled(true);
+#endif
+                memset(&pendingConfig, 0, sizeof(pendingConfig));
+                pendingConfig.which_payload_variant = meshtastic_Config_lora_tag;
+                pendingConfig.payload_variant.lora = config.lora;
+                pendingConfig.payload_variant.lora.use_preset = false;
+                pendingConfig.payload_variant.lora.spread_factor = 5;
+                pendingConfig.payload_variant.lora.bandwidth = bwKHzToCode(62.5f);
+                pendingConfig.payload_variant.lora.coding_rate = 5;
+                pendingConfig.payload_variant.lora.override_frequency = 869.618f;
+                pendingLoRaConfig = true;
+                pendingLoRaApplyAt = Time::getMillis() + 5000;
+                snprintf(replyMsg, sizeof(replyMsg),
+                         "JT TIER: Madrid staged (SF5 JenRNode main, SF6/7 Meshtastic, SF8 MeshCore). Applying in 5s. Run /nexus SAVE.");
+            }
+        } else if (strcasecmp(sub, "OFF") == 0) {
+            multiSFConfig.enabled = 0;
+            splitConfig.mode = NEXUS_SPLIT_OFF;
+            lr2021->clearMultiSFTiers();
+            snprintf(replyMsg, sizeof(replyMsg),
+                     "JT TIER: OFF (side detectors cleared; main LoRa config unchanged).");
+        } else if (strcasecmp(sub, "APPLY") == 0) {
+            bool ok = lr2021->applyMultiSFTiers();
+            snprintf(replyMsg, sizeof(replyMsg), "JT TIER: %s", ok ? "applied" : "apply failed");
+        } else if (strcasecmp(sub, "SAVE") == 0) {
+            bool ok = saveVault();
+            snprintf(replyMsg, sizeof(replyMsg), "JT TIER: vault %s", ok ? "saved" : "save failed");
+        } else if (strncasecmp(sub, "TXCHANNEL", 9) == 0 && (sub[9] == '\0' || sub[9] == ' ')) {
+            const char *rest = sub + 9;
+            while (*rest == ' ')
+                rest++;
+            auto resolveTxTarget = [&](const char *arg, int *slotOut, uint8_t *sfOut) -> bool {
+                const int v = atoi(arg);
+                int slot = -1;
+                if (v >= 5 && v <= 12) {
+                    for (uint8_t i = 0; i < multiSFConfig.side_count; i++)
+                        if (multiSFConfig.side[i].enabled && multiSFConfig.side[i].protocol == nexus::TIER_MESHTASTIC &&
+                            multiSFConfig.side[i].sf == v) {
+                            slot = (int)i;
+                            break;
+                        }
+                } else if (v >= 1 && v <= 3) {
+                    slot = v - 1;
+                }
+                if (slot < 0 || slot >= multiSFConfig.side_count ||
+                    !multiSFConfig.side[slot].enabled || multiSFConfig.side[slot].protocol != nexus::TIER_MESHTASTIC)
+                    return false;
+                *slotOut = slot;
+                *sfOut = multiSFConfig.side[slot].sf;
+                return true;
+            };
+
+            if (*rest == '\0' || strcasecmp(rest, "STATUS") == 0) {
+                char list[150] = "";
+                size_t at = 0;
+                for (uint8_t i = 0; i < tierChannelOverrideCount && at + 2 < sizeof(list); i++) {
+                    const uint8_t chId = tierChannelOverrides[i].channel;
+                    const char *chName = chId < MAX_NUM_CHANNELS ? channels.getByIndex(chId).settings.name : "?";
+                    const int n = snprintf(list + at, sizeof(list) - at, "%sch%u(%s)=SF%u", i ? ", " : "", (unsigned)chId,
+                                           chName[0] ? chName : "?", tierChannelOverrides[i].sf);
+                    if (n > 0)
+                        at += (size_t)n;
+                }
+                snprintf(replyMsg, sizeof(replyMsg), "JT TIER: TXCHANNEL %u%s%s",
+                         (unsigned)tierChannelOverrideCount, list[0] ? " | " : "", list);
+            } else {
+                const char *next = nullptr;
+                const int ch = findChannelByNameOrIndex(rest, &next);
+                if (ch < 0 || ch >= MAX_NUM_CHANNELS) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT TIER: unknown channel");
+                } else {
+                    const char *name = channels.getByIndex(ch).settings.name;
+                    if (!name[0]) {
+                        snprintf(replyMsg, sizeof(replyMsg), "JT TIER: channel %d has no name", ch);
+                    } else if (next && strcasecmp(next, "OFF") == 0) {
+                        if (clearTierChannelOverride((uint8_t)ch))
+                            snprintf(replyMsg, sizeof(replyMsg), "JT TIER: TXCHANNEL '%s' cleared", name);
+                        else
+                            snprintf(replyMsg, sizeof(replyMsg), "JT TIER: no override for '%s'", name);
+                    } else {
+                        int slot = -1;
+                        uint8_t sf = 0;
+                        if (!next || !resolveTxTarget(next, &slot, &sf)) {
+                            snprintf(replyMsg, sizeof(replyMsg),
+                                     "JT TIER: target must be a Meshtastic side 1-3 or SF5-12");
+                        } else if (!setTierChannelOverride((uint8_t)ch, sf)) {
+                            snprintf(replyMsg, sizeof(replyMsg), "JT TIER: TXCHANNEL table full");
+                        } else {
+                            snprintf(replyMsg, sizeof(replyMsg), "JT TIER: ch %d '%s' -> tier %d / SF%u", ch, name,
+                                     slot + 1, sf);
+                        }
+                    }
+                }
+            }
+        } else if (strncasecmp(sub, "TX ", 3) == 0) {
+            const char *arg = sub + 3;
+            while (*arg == ' ')
+                arg++;
+            auto resolveTxTarget = [&](const char *value, int *slotOut, uint8_t *sfOut) -> bool {
+                const int v = atoi(value);
+                int slot = -1;
+                if (v >= 5 && v <= 12) {
+                    for (uint8_t i = 0; i < multiSFConfig.side_count; i++)
+                        if (multiSFConfig.side[i].enabled && multiSFConfig.side[i].protocol == nexus::TIER_MESHTASTIC &&
+                            multiSFConfig.side[i].sf == v) {
+                            slot = (int)i;
+                            break;
+                        }
+                } else if (v >= 1 && v <= 3) {
+                    slot = v - 1;
+                }
+                if (slot < 0 || slot >= multiSFConfig.side_count ||
+                    !multiSFConfig.side[slot].enabled || multiSFConfig.side[slot].protocol != nexus::TIER_MESHTASTIC)
+                    return false;
+                *slotOut = slot;
+                *sfOut = multiSFConfig.side[slot].sf;
+                return true;
+            };
+            int slot = -1;
+            uint8_t sf = 0;
+            if (!resolveTxTarget(arg, &slot, &sf)) {
+                snprintf(replyMsg, sizeof(replyMsg),
+                         "JT TIER: TX target must be side 1-%u or an SF5-12 Meshtastic side",
+                         (unsigned)multiSFConfig.side_count);
+            } else {
+                multiSFConfig.meshtastic_tx_slot = static_cast<uint8_t>(slot);
+                snprintf(replyMsg, sizeof(replyMsg), "JT TIER: Meshtastic TX tier = %d / SF%u", slot + 1, sf);
+            }
+        } else {
+            snprintf(replyMsg, sizeof(replyMsg),
+                     "JT TIER: usage: TIER [STATUS|MADRID|OFF|APPLY|SAVE|TX <1-3|SF5-12>|TXCHANNEL <ch> <1-3|SF5-12|OFF>]");
+        }
+    }
+#endif
     else if (strcasecmp(cmd, "APC") == 0 || strncasecmp(cmd, "APC ", 4) == 0) {
         const char *sub = (strlen(cmd) > 3) ? skipToken(cmd) : "";
         if (!*sub || strcasecmp(sub, "STATUS") == 0) {
@@ -5434,13 +5908,19 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             if (splitConfig.mode != v->split_config.mode ||
                 splitConfig.flags != v->split_config.flags ||
                 splitConfig.alt_sf != v->split_config.alt_sf ||
+                splitConfig.alt_bw != v->split_config.alt_bw ||
+                splitConfig.alt_cr != v->split_config.alt_cr ||
+                fabsf(splitConfig.alt_freq - v->split_config.alt_freq) > 0.0001f ||
                 splitConfig.alt_tx_power != v->split_config.alt_tx_power ||
                 splitConfig.apc_min_power != v->split_config.apc_min_power) {
-                char line[96];
+                char line[128];
                 snprintf(line, sizeof(line),
-                         "split_config: RAM=m%u/f0x%02X/SF%u/%ddBm/apc%d Vault=m%u/f0x%02X/SF%u/%ddBm/apc%d",
-                         splitConfig.mode, splitConfig.flags, splitConfig.alt_sf, splitConfig.alt_tx_power, splitConfig.apc_min_power,
-                         v->split_config.mode, v->split_config.flags, v->split_config.alt_sf, v->split_config.alt_tx_power, v->split_config.apc_min_power);
+                         "split_config: RAM=m%u/f0x%02X/SF%u/BW%u/CR%u/%.4fM/%ddBm/apc%d Vault=m%u/f0x%02X/SF%u/BW%u/CR%u/%.4fM/%ddBm/apc%d",
+                         splitConfig.mode, splitConfig.flags, splitConfig.alt_sf, splitConfig.alt_bw, splitConfig.alt_cr,
+                         splitConfig.alt_freq, splitConfig.alt_tx_power, splitConfig.apc_min_power,
+                         v->split_config.mode, v->split_config.flags, v->split_config.alt_sf, v->split_config.alt_bw,
+                         v->split_config.alt_cr, v->split_config.alt_freq, v->split_config.alt_tx_power,
+                         v->split_config.apc_min_power);
                 appendPaging(line);
                 diffs++;
             }
@@ -8354,6 +8834,13 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             appendPaging("  Indoor Client: listens on primary, switches to target preset on TX (uplink to roof).\n");
             appendPaging("Persistence: RAM-only. Run /nexus SAVE to write to /nexus.bin vault.");
             snprintf(replyMsg, sizeof(replyMsg), "JT: Paging SPLIT help...");
+        } else if (strcasecmp(sub, "TIER") == 0) {
+            startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "Help TIER");
+            appendPaging("Usage: TIER [STATUS|MADRID|OFF|APPLY|SAVE|TX <1-3>]\n");
+            appendPaging("  MADRID (LR2021): SF5 RNode main, SF6/7 Meshtastic, SF8 MeshCore, 869.618/BW62.5/CR5.\n");
+            appendPaging("  TX <slot>: choose the Meshtastic TX side (1=SF6, 2=SF7).\n");
+            appendPaging("  No SPLIT frequency required; /nexus SAVE persists vault v70.");
+            snprintf(replyMsg, sizeof(replyMsg), "JT: Paging TIER help...");
         } else if (strcasecmp(sub, "APC") == 0) {
             startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "Help APC");
             appendPaging("Usage: APC [STATUS]                    -> Display APC state & min power\n");

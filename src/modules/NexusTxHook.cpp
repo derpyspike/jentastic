@@ -13,7 +13,7 @@ NexusTxHook::NexusTxHook()
 {
 }
 
-void NexusTxHook::setOverride(PacketId id, uint8_t sf, int8_t power)
+void NexusTxHook::setOverride(PacketId id, uint8_t sf, int8_t power, uint8_t syncword)
 {
     if (id == 0) return;
     NexusTxOverride *slot = nullptr;
@@ -31,10 +31,12 @@ void NexusTxHook::setOverride(PacketId id, uint8_t sf, int8_t power)
     slot->id = id;
     slot->sf = sf;
     slot->power = power;
+    slot->syncword = syncword;
     slot->isFastPath = true;
 }
 
-void NexusTxHook::setOverrideFull(PacketId id, uint8_t sf, uint16_t bw, uint8_t cr, float freq, int8_t power)
+void NexusTxHook::setOverrideFull(PacketId id, uint8_t sf, uint16_t bw, uint8_t cr, float freq, int8_t power,
+                                 uint8_t syncword)
 {
     if (id == 0) return;
     NexusTxOverride *slot = nullptr;
@@ -55,6 +57,7 @@ void NexusTxHook::setOverrideFull(PacketId id, uint8_t sf, uint16_t bw, uint8_t 
     slot->cr = cr;
     slot->freq = freq;
     slot->power = power;
+    slot->syncword = syncword;
     slot->isFastPath = false;
 }
 
@@ -84,6 +87,28 @@ RadioTxHook::PreTxAction NexusTxHook::beforeTransmit(RadioInterface *iface, mesh
     if (!iface || !p)
         return PRETX_SEND;
 
+    // If a higher-priority packet jumped ahead of activeSwitchedId in txQueue while pre-staged or deferred,
+    // restore the baseline radio state first (keeping activeSwitchedId's override entry intact for later).
+    if ((fastSwitched || fullSwitched || powerSwitched) && activeSwitchedId != p->id) {
+        if (fastSwitched) {
+            iface->setSpreadingFactorLive(originalSf, originalPower);
+            if (syncSwitched)
+                iface->setSyncWordLive(originalSyncword);
+            fastSwitched = false;
+            syncSwitched = false;
+        } else if (fullSwitched) {
+            config.lora = originalLora;
+            channels.getByIndex(channels.getPrimaryIndex()).settings = originalPrimaryChannel;
+            channels.fixupChannel(channels.getPrimaryIndex());
+            iface->reconfigure();
+            fullSwitched = false;
+        } else if (powerSwitched) {
+            iface->setOutputPowerLive(originalPower);
+            powerSwitched = false;
+        }
+        activeSwitchedId = 0;
+    }
+
     // Check if an override is registered for this packet
     for (const auto &entry : overrides) {
         if (entry.inUse && entry.id == p->id) {
@@ -91,10 +116,19 @@ RadioTxHook::PreTxAction NexusTxHook::beforeTransmit(RadioInterface *iface, mesh
                 if (!fastSwitched) {
                     originalSf = iface->getSF();
                     originalPower = iface->getPower();
-                    iface->setSpreadingFactorLive(entry.sf, entry.power);
+                    originalSyncword = iface->getSyncWord();
+                    if (entry.sf != originalSf)
+                        iface->setSpreadingFactorLive(entry.sf, entry.power);
+                    else if (entry.power != 0x7F)
+                        iface->setOutputPowerLive(entry.power);
+                    if (entry.syncword != 0 && entry.syncword != originalSyncword) {
+                        iface->setSyncWordLive(entry.syncword);
+                        syncSwitched = true;
+                    }
                     fastSwitched = true;
                     activeSwitchedId = p->id;
-                    LOG_DEBUG("NexusTxHook: fast-path switch for 0x%08x -> SF%u, pwr=%d dBm", p->id, entry.sf, entry.power);
+                    LOG_DEBUG("NexusTxHook: fast-path switch for 0x%08x -> SF%u, pwr=%d dBm, sw=0x%02x", p->id, entry.sf,
+                              entry.power, entry.syncword);
                 }
                 return PRETX_SEND;
             } else {
@@ -117,6 +151,8 @@ RadioTxHook::PreTxAction NexusTxHook::beforeTransmit(RadioInterface *iface, mesh
                     if (entry.power != 0x7F) {
                         iface->setOutputPowerLive(entry.power);
                     }
+                    if (entry.syncword != 0)
+                        iface->setSyncWordLive(entry.syncword);
                     fullSwitched = true;
                     activeSwitchedId = p->id;
                     LOG_INFO("NexusTxHook: full-path switch for 0x%08x -> freq=%.3f, SF%u, pwr=%d dBm",
@@ -165,9 +201,13 @@ void NexusTxHook::packetReleased(RadioInterface *iface, const meshtastic_MeshPac
 
     if (fastSwitched && activeSwitchedId == p->id) {
         iface->setSpreadingFactorLive(originalSf, originalPower);
+        if (syncSwitched)
+            iface->setSyncWordLive(originalSyncword);
         fastSwitched = false;
+        syncSwitched = false;
         activeSwitchedId = 0;
-        LOG_DEBUG("NexusTxHook: fast-path restore to SF%u, pwr=%d dBm", originalSf, originalPower);
+        LOG_DEBUG("NexusTxHook: fast-path restore to SF%u, pwr=%d dBm, sw=0x%02x", originalSf, originalPower,
+                  originalSyncword);
     } else if (fullSwitched && activeSwitchedId == p->id) {
         // F1 fix: whole-struct restore — brings override_frequency back too (it was leaked,
         // leaving the radio on the alt carrier after every full-path packet).

@@ -21,7 +21,7 @@
 
 #include "PowerStatus.h"
 
-#if MESHTASTIC_ENABLE_RNODE_BLE
+#if NEXUS_ENABLE_RNODE_BLE
 #include "mesh/RNodeEngine.h"
 static BLECharacteristic *rnodeNimbleTxChar = nullptr;
 static void rnode_esp32_ble_write(const uint8_t *data, size_t len)
@@ -785,7 +785,7 @@ class NimbleBluetoothServerCallback : public BLEServerCallbacks
 
         LOG_INFO("BLE conn %u peer MTU %u (target %u)", connHandle, pServer->getPeerMTU(connHandle), kPreferredBleMtu);
         pServer->updateConnParams(connHandle, 6, 12, 0, 200);
-#if MESHTASTIC_ENABLE_RNODE_BLE
+#if NEXUS_ENABLE_RNODE_BLE
         rnodeEngine.setBleConnected(true);
 #endif
     }
@@ -796,7 +796,7 @@ class NimbleBluetoothServerCallback : public BLEServerCallbacks
         if (ble->isDeInit)
             return;
 
-#if MESHTASTIC_ENABLE_RNODE_BLE
+#if NEXUS_ENABLE_RNODE_BLE
         rnodeEngine.setBleConnected(false);
 #endif
 
@@ -829,11 +829,8 @@ void NimbleBluetooth::startAdvertising()
 
     BLEAdvertisementData scan = BLEAdvertisementData();
     scan.setName(getDeviceName());
-#if MESHTASTIC_ENABLE_RNODE_BLE
-    if (rnodeEngine.isBleEnabled()) {
-        scan.setCompleteServices(BLEUUID("6e400001-b5a3-f393-e0a9-e50e24dcca9e"));
-    }
-#endif
+    // RNode NUS is 128-bit and would overflow the 31-byte scan response next
+    // to the Meshtastic name; clients discover it over GATT instead.
     pAdvertising->setScanResponseData(scan);
     pAdvertising->setMinPreferred(0x06); // functions that help with iPhone connections issue
     pAdvertising->setMaxPreferred(0x12);
@@ -891,6 +888,10 @@ void NimbleBluetooth::deinit()
     BatteryCharacteristic = nullptr; // freed by deinit; clear so updateBatteryLevel() won't touch it
     fromNumCharacteristic = nullptr; // freed by deinit; a late onNowHasData() must not notify freed memory
     logRadioCharacteristic = nullptr;
+#if NEXUS_ENABLE_RNODE_BLE
+    rnodeNimbleTxChar = nullptr;
+    rnodeEngine.registerBleWriteCallback(nullptr);
+#endif
     lastBatteryLevel = -1;
 
     // The bounded disconnect wait above can expire before onDisconnect runs, leaving the PhoneAPI
@@ -1072,7 +1073,7 @@ void NimbleBluetooth::setupService()
     lastBatteryLevel = initialLevel;
     batteryService->start();
 
-#if MESHTASTIC_ENABLE_RNODE_BLE
+#if NEXUS_ENABLE_RNODE_BLE
     if (rnodeEngine.isBleEnabled()) {
         BLEService *rnodeService = bleServer->createService(BLEUUID("6e400001-b5a3-f393-e0a9-e50e24dcca9e"));
         BLECharacteristic *rnodeRxChar = rnodeService->createCharacteristic(
@@ -1088,9 +1089,10 @@ void NimbleBluetooth::setupService()
         {
             void onWrite(BLECharacteristic *pCharacteristic) override
             {
-                std::string val = pCharacteristic->getValue();
-                if (!val.empty()) {
-                    rnodeEngine.feedBytes((const uint8_t *)val.data(), val.size(), RNODE_CLIENT_BLE);
+                // ESP32's Arduino BLE returns String here; NimBLE on nRF52 returns std::string.
+                auto val = pCharacteristic->getValue();
+                if (val.length() > 0) {
+                    rnodeEngine.feedBytes((const uint8_t *)val.c_str(), val.length(), RNODE_CLIENT_BLE);
                 }
             }
         };
