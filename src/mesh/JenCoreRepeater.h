@@ -53,6 +53,11 @@ class JenCoreRepeater
     static uint8_t getPathHashSize();
     static void setPathHashSize(uint8_t size);
 
+    /// Automatic ADVERT schedule, in minutes. 0 = disabled. Both default OFF.
+    static uint16_t getAdvertLocalMinutes();
+    static uint16_t getAdvertFloodMinutes();
+    static void setAdvertIntervals(uint16_t localMinutes, uint16_t floodMinutes);
+
     /// MeshCore-like region scoping. Names are stored without the leading '#', max 4 regions.
     static constexpr size_t MAX_REGIONS = 4;
     static constexpr size_t REGION_NAME_LEN = 23;
@@ -314,6 +319,8 @@ class JenCoreRepeater
     static bool &enabledStorage() { static bool enabled = false; return enabled; }
     static bool &relayStorage() { static bool enabled = true; return enabled; }
     static uint8_t &pathHashStorage() { static uint8_t size = 3; return size; }
+    static uint16_t &advertLocalStorage() { static uint16_t minutes = 0; return minutes; }
+    static uint16_t &advertFloodStorage() { static uint16_t minutes = 0; return minutes; }
 
     /** Our path hash (prefix of the public key) is the first hop of this direct frame's path. */
     bool isNextHopForUs(const uint8_t *raw, const FrameInfo &info) const;

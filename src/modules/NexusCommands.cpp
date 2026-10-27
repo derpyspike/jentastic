@@ -2293,11 +2293,14 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 hybridState = rli->hybridSyncEnabled ? "ON (0x14B4)" : "OFF";
 #endif
             snprintf(replyMsg, sizeof(replyMsg),
-                     "JT JENCORE:\n Enabled: %s\n Relay: %s\n PathHash: %u byte(s)\n Regions: %u\n HybridSync: %s\n"
+                     "JT JENCORE:\n Enabled: %s\n Relay: %s\n PathHash: %u byte(s)\n Regions: %u\n"
+                     " Advert: local=%umin flood=%umin\n HybridSync: %s\n"
                      " RxSeen: %u (dup=%u)\n TxRelay: %u\n Contacts: %u",
                      JenCoreRepeater::isJenCoreEnabled() ? "ON" : "OFF",
                      JenCoreRepeater::isRelayEnabled() ? "ON" : "OFF", JenCoreRepeater::getPathHashSize(),
-                     (unsigned)JenCoreRepeater::getRegionCount(), hybridState,
+                     (unsigned)JenCoreRepeater::getRegionCount(),
+                     (unsigned)JenCoreRepeater::getAdvertLocalMinutes(), (unsigned)JenCoreRepeater::getAdvertFloodMinutes(),
+                     hybridState,
                      (unsigned)rli->jencoreRepeater.rxSeen, (unsigned)rli->jencoreRepeater.rxDup,
                      (unsigned)rli->jencoreRepeater.txRelayed,
 #if NEXUS_ENABLE_JENCORE_COMPANION
@@ -2388,6 +2391,33 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             const char *arg = sub + 6;
             while (*arg == ' ')
                 arg++;
+            if (strncasecmp(arg, "INTERVAL", 8) == 0 && (arg[8] == '\0' || arg[8] == ' ')) {
+                const char *p = arg + 8;
+                while (*p == ' ')
+                    p++;
+                if (*p == '\0') {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: advert local=%umin flood=%umin (0=off)",
+                             (unsigned)JenCoreRepeater::getAdvertLocalMinutes(),
+                             (unsigned)JenCoreRepeater::getAdvertFloodMinutes());
+                } else {
+                    const char *localTok = p;
+                    p = skipToken(p);
+                    if (*p == '\0') {
+                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: usage: ADVERT INTERVAL <local-min> <flood-min>");
+                    } else {
+                        const int localMin = atoi(localTok);
+                        const int floodMin = atoi(p);
+                        if (localMin < 0 || floodMin < 0 || localMin > 10080 || floodMin > 10080) {
+                            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: intervals must be 0..10080 minutes");
+                        } else {
+                            JenCoreRepeater::setAdvertIntervals((uint16_t)localMin, (uint16_t)floodMin);
+                            rli->refreshJenCoreAdvertSchedule();
+                            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: advert local=%umin flood=%umin",
+                                     (unsigned)localMin, (unsigned)floodMin);
+                        }
+                    }
+                }
+            } else {
             const bool flood = !(strcasecmp(arg, "LOCAL") == 0 || strcasecmp(arg, "0") == 0);
             if (!JenCoreRepeater::isJenCoreEnabled()) {
                 snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: OFF (use JENCORE ON first)");
@@ -2395,6 +2425,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: %s ADVERT queued", flood ? "flood" : "local");
             } else {
                 snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: ADVERT failed (no identity/time or queue full)");
+            }
             }
         } else if (strcasecmp(sub, "CONTACTS") == 0) {
 #if NEXUS_ENABLE_JENCORE_COMPANION
@@ -2534,7 +2565,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             }
         } else {
             snprintf(replyMsg, sizeof(replyMsg),
-                     "JT JENCORE: Usage: JENCORE [ON/OFF|STATUS|RELAY ON/OFF|PATHSIZE <1-3>|REGION ...|ADVERT [LOCAL]|CONTACTS|HYBRID ON/OFF|CHANNELS[ ADD <name|#tag> [psk]]|STATS]");
+                     "JT JENCORE: Usage: JENCORE [ON/OFF|STATUS|RELAY ON/OFF|PATHSIZE <1-3>|REGION ...|ADVERT [LOCAL|INTERVAL <local-min> <flood-min>]|CONTACTS|HYBRID ON/OFF|CHANNELS[ ADD <name|#tag> [psk]]|STATS]");
         }
     }
 #endif

@@ -170,6 +170,23 @@ void JenCoreRepeater::setPathHashSize(uint8_t size)
     pathHashStorage() = size < 1 ? 1 : (size > 3 ? 3 : size);
 }
 
+uint16_t JenCoreRepeater::getAdvertLocalMinutes()
+{
+    return advertLocalStorage();
+}
+
+uint16_t JenCoreRepeater::getAdvertFloodMinutes()
+{
+    return advertFloodStorage();
+}
+
+void JenCoreRepeater::setAdvertIntervals(uint16_t localMinutes, uint16_t floodMinutes)
+{
+    // 0 = disabled. Cap at 7 days to keep the schedule meaningful.
+    advertLocalStorage() = localMinutes > 10080 ? 10080 : localMinutes;
+    advertFloodStorage() = floodMinutes > 10080 ? 10080 : floodMinutes;
+}
+
 static bool normalizeRegionName(const char *input, char *out, size_t cap)
 {
     if (!input || !out || cap < 2)

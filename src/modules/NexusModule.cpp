@@ -5067,7 +5067,7 @@ bool NexusModule::saveVault()
     }
     memset(v, 0, sizeof(NexusVault));
     memcpy(v->magic, "JenT", 4);
-    v->version = 73; // v73: tier_channels (per-channel Meshtastic TX tier overrides)
+    v->version = 74; // v74: jen_advert (automatic ADVERT intervals, default OFF)
     // - v69 was: split_config (dual-preset split-tier and APC)
     // - v68 was: volt_rules (4-voltage threshold power automation)
     // - v67 was: nexusVariantBits (generic variant-bitmask pool — station-g3 PA/LNA)
@@ -5208,6 +5208,12 @@ bool NexusModule::saveVault()
         v->tier_channels.entries[i].channel = tierChannelOverrides[i].channel;
         v->tier_channels.entries[i].sf = tierChannelOverrides[i].sf;
     }
+
+    // Automatic ADVERT intervals (v74); both default OFF.
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+    v->jen_advert.local_min = JenCoreRepeater::getAdvertLocalMinutes();
+    v->jen_advert.flood_min = JenCoreRepeater::getAdvertFloodMinutes();
+#endif
 
     // Nexus Ignores (v21)
     v->nexus_ignore_count = nexus_ignore_count;
@@ -5478,6 +5484,14 @@ bool NexusModule::loadVault()
                         setTierChannelOverride(channel, sf);
                 }
             }
+
+            // Automatic ADVERT intervals (v74); older vaults keep both OFF.
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+            if (v->version >= 74)
+                JenCoreRepeater::setAdvertIntervals(v->jen_advert.local_min, v->jen_advert.flood_min);
+            else
+                JenCoreRepeater::setAdvertIntervals(0, 0);
+#endif
         }
 
         nexus_ignore_count = (v->nexus_ignore_count <= 64) ? v->nexus_ignore_count : 64;

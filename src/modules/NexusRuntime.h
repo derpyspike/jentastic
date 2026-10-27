@@ -60,6 +60,9 @@ template <typename Vault> bool decodeVault(Vault &out, size_t fileSize, size_t b
         payloadSize = offsetof(Vault, tier_channels);
         break;
     case 73:
+        payloadSize = offsetof(Vault, jen_advert);
+        break;
+    case 74:
         payloadSize = offsetof(Vault, crc32);
         break;
     default:
