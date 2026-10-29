@@ -80,3 +80,8 @@ build/wasm/
 build/wasm-obj/
 build/wasm-*.log
 .emsdk/
+
+# Local scratch: serial/build logs, exported text, and assorted untracked notes.
+/logs/
+/untracked/
+/txts/

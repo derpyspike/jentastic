@@ -5067,7 +5067,7 @@ bool NexusModule::saveVault()
     }
     memset(v, 0, sizeof(NexusVault));
     memcpy(v->magic, "JenT", 4);
-    v->version = 74; // v74: jen_advert (automatic ADVERT intervals, default OFF)
+    v->version = 75; // v75: jen_flood (MeshCore flood hop limits)
     // - v69 was: split_config (dual-preset split-tier and APC)
     // - v68 was: volt_rules (4-voltage threshold power automation)
     // - v67 was: nexusVariantBits (generic variant-bitmask pool — station-g3 PA/LNA)
@@ -5213,6 +5213,9 @@ bool NexusModule::saveVault()
 #if NEXUS_ENABLE_JENCORE_SNIFFER
     v->jen_advert.local_min = JenCoreRepeater::getAdvertLocalMinutes();
     v->jen_advert.flood_min = JenCoreRepeater::getAdvertFloodMinutes();
+    v->jen_flood.max_hops = JenCoreRepeater::getFloodMax();
+    v->jen_flood.max_unscoped = JenCoreRepeater::getFloodMaxUnscoped();
+    v->jen_flood.max_advert = JenCoreRepeater::getFloodMaxAdvert();
 #endif
 
     // Nexus Ignores (v21)
@@ -5491,6 +5494,10 @@ bool NexusModule::loadVault()
                 JenCoreRepeater::setAdvertIntervals(v->jen_advert.local_min, v->jen_advert.flood_min);
             else
                 JenCoreRepeater::setAdvertIntervals(0, 0);
+            if (v->version >= 75)
+                JenCoreRepeater::setFloodLimits(v->jen_flood.max_hops, v->jen_flood.max_unscoped, v->jen_flood.max_advert);
+            else
+                JenCoreRepeater::setFloodLimits(64, 64, 8); // MeshCore defaults
 #endif
         }
 

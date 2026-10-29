@@ -13,11 +13,14 @@ NexusTxHook::NexusTxHook()
 {
 }
 
-void NexusTxHook::setOverride(PacketId id, uint8_t sf, int8_t power, uint8_t syncword)
+// Reuses a slot already holding `id`, else the first free slot, else the least-recently-set slot
+// (the oldest `setAt` - previously this always evicted overrides[0], even if that packet was still
+// queued and every newer override was closer to expiry).
+static NexusTxOverride *findOrEvictSlot(NexusTxOverride *overrides, size_t count, PacketId id)
 {
-    if (id == 0) return;
     NexusTxOverride *slot = nullptr;
-    for (auto &entry : overrides) {
+    for (size_t i = 0; i < count; i++) {
+        NexusTxOverride &entry = overrides[i];
         if (entry.inUse && entry.id == id) {
             slot = &entry;
             break;
@@ -25,31 +28,34 @@ void NexusTxHook::setOverride(PacketId id, uint8_t sf, int8_t power, uint8_t syn
         if (!slot && !entry.inUse)
             slot = &entry;
     }
-    if (!slot)
-        slot = &overrides[0]; // evict oldest
+    if (!slot) {
+        slot = &overrides[0];
+        for (size_t i = 1; i < count; i++) {
+            if (overrides[i].setAt < slot->setAt)
+                slot = &overrides[i];
+        }
+    }
+    return slot;
+}
+
+void NexusTxHook::setOverride(PacketId id, uint8_t sf, int8_t power, uint8_t syncword)
+{
+    if (id == 0) return;
+    NexusTxOverride *slot = findOrEvictSlot(overrides, MAX_OVERRIDES, id);
     slot->inUse = true;
     slot->id = id;
     slot->sf = sf;
     slot->power = power;
     slot->syncword = syncword;
     slot->isFastPath = true;
+    slot->setAt = millis();
 }
 
 void NexusTxHook::setOverrideFull(PacketId id, uint8_t sf, uint16_t bw, uint8_t cr, float freq, int8_t power,
                                  uint8_t syncword)
 {
     if (id == 0) return;
-    NexusTxOverride *slot = nullptr;
-    for (auto &entry : overrides) {
-        if (entry.inUse && entry.id == id) {
-            slot = &entry;
-            break;
-        }
-        if (!slot && !entry.inUse)
-            slot = &entry;
-    }
-    if (!slot)
-        slot = &overrides[0];
+    NexusTxOverride *slot = findOrEvictSlot(overrides, MAX_OVERRIDES, id);
     slot->inUse = true;
     slot->id = id;
     slot->sf = sf;
@@ -59,6 +65,7 @@ void NexusTxHook::setOverrideFull(PacketId id, uint8_t sf, uint16_t bw, uint8_t 
     slot->power = power;
     slot->syncword = syncword;
     slot->isFastPath = false;
+    slot->setAt = millis();
 }
 
 bool NexusTxHook::hasOverride(PacketId id)

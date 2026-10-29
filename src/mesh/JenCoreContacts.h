@@ -116,7 +116,14 @@ template <size_t N> class JenCoreContacts
         return n;
     }
 
-    void touch(JenCoreContact *c) { c->lastUsed = ++clock; }
+    void touch(JenCoreContact *c)
+    {
+        // 0 is the free-slot sentinel (see JenCoreContact::lastUsed): skip it on wraparound so a
+        // genuinely touched contact can never be mistaken for a free slot.
+        if (++clock == 0)
+            clock = 1;
+        c->lastUsed = clock;
+    }
 
     template <typename F> void forEach(F fn)
     {

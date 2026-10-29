@@ -265,9 +265,14 @@ void RNodeEngine::queueTxToRadio(const uint8_t *data, size_t len)
             }
         }
     } else {
-        if (len > MAX_RADIO_FRAME_LEN)
+        // queueRNodeFrame rejects anything over MAX_LORA_PAYLOAD_LEN (255, the hard PHY limit) - MAX_RADIO_FRAME_LEN
+        // (256) is too loose a bound here and let oversized frames vanish silently instead of being rejected up front.
+        if (len == 0 || len > MAX_LORA_PAYLOAD_LEN) {
+            LOG_WARN("RNode promiscuous TX dropped: len=%u exceeds max LoRa payload %u", (unsigned)len, (unsigned)MAX_LORA_PAYLOAD_LEN);
             return;
-        rli->queueRNodeFrame(data, len);
+        }
+        if (!rli->queueRNodeFrame(data, len))
+            LOG_WARN("RNode promiscuous TX rejected by queueRNodeFrame: len=%u", (unsigned)len);
     }
 }
 

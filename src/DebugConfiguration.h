@@ -83,6 +83,13 @@ extern MemGet memGet;
 #define LOG_TRACE(...)
 #endif
 
+// Drop only LOG_DEBUG format strings; INFO/WARN/ERROR still compile in. Saves ~28 KB
+// on nRF52 screen builds (measured 2026-10-28) without losing the serial console.
+#if defined(MESHTASTIC_EXCLUDE_DEBUG_LOG)
+#undef LOG_DEBUG
+#define LOG_DEBUG(...)
+#endif
+
 #if defined(DEBUG_HEAP)
 #define LOG_HEAP(...) DEBUG_PORT.log(MESHTASTIC_LOG_LEVEL_HEAP, __VA_ARGS__)
 

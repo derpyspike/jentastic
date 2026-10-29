@@ -344,7 +344,7 @@ class RadioInterface
     }
 
     /** The syncword the main detector is using for RX. */
-    [[nodiscard]] virtual uint8_t getSyncWord() { return 0; }
+    [[nodiscard]] virtual uint8_t getSyncWord() const { return 0; }
 
     /** True if this driver implements the SX126x-style 0x14B4 hybrid RX syncword. */
     [[nodiscard]] virtual bool supportsHybridSync() const { return false; }
@@ -360,6 +360,12 @@ class RadioInterface
      * On multi-SF hardware (LR2021), reports the actual detector SF that received the packet.
      */
     [[nodiscard]] virtual uint8_t getLastRxSF() { return sf; }
+
+    /// Nexus/JenCore: last packet's frequency error (Hz) and raw LoRa header CR (1..7).
+    /// 0 when the driver cannot report it. Populated for packets injected into the
+    /// Meshtastic app by the JenCore companion.
+    [[nodiscard]] virtual float getLastRxFrequencyError() { return 0.0f; }
+    [[nodiscard]] virtual uint8_t getLastRxCodingRate() { return 0; }
 
     /**
      * Nexus-28002 (2026-08-21): restored runtime TCXO/XTAL detection from Nexus-269.

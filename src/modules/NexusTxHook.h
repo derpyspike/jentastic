@@ -15,6 +15,7 @@ struct NexusTxOverride {
     int8_t power = 0x7F; // 0x7F = no power override
     uint8_t syncword = 0;  // 0 = leave the main syncword unchanged
     bool isFastPath = true; // true = same freq/bw/cr, only SF/power switch
+    uint32_t setAt = 0; // millis() at last claim/update, for LRU eviction when every slot is in use
 };
 
 class NexusTxHook : public RadioTxHook

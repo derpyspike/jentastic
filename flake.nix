@@ -35,17 +35,68 @@
           python3 = pkgs.python312.withPackages (
             ps: with ps; [
               google
+              pip
             ]
           );
+
+          # Mirrors .github/actions/setup-native/action.yml: libraries the
+          # Portduino/native build and test suites compile and link against.
+          nativeDeps = with pkgs; [
+            pkg-config
+            bluez
+            curl
+            gnutls
+            i2c-tools
+            jansson
+            jsoncpp
+            libgpiod
+            libmicrohttpd
+            libusb1
+            libuv
+            openssl
+            orcania
+            ulfius
+            yaml-cpp
+            # Native-TFT display backend (not needed by the plain native env).
+            libinput
+            libxkbcommon
+            xorg.libX11
+            yder
+            zlib
+          ];
+
+          tools = with pkgs; [
+            cmake
+            gdb
+            gnumake
+            protobuf
+            unzip
+          ];
+
+          # PlatformIO's native env passes bare -l flags and does not read the
+          # Nix setup hooks, so expose the store paths the Debian CI gets from
+          # /usr/include and /usr/lib.
+          nativeOutputs = lib.concatMap (
+            p: [ p ] ++ lib.optional (p ? dev) p.dev ++ lib.optional (p ? out) p.out
+          ) nativeDeps;
         in
         {
           default = pkgs.mkShell {
-            buildInputs = with pkgs; [
+            buildInputs = [
               python3
-              platformio
-            ];
+              pkgs.platformio
+            ]
+            ++ nativeDeps
+            ++ tools;
 
             shellHook = ''
+              # Native build/test dependencies (yaml-cpp, jsoncpp, libuv,
+              # bluetooth, gpiod, X11, ...) live in the Nix store, not /usr.
+              export CPATH="${lib.makeSearchPath "include" nativeOutputs}''${CPATH:+:$CPATH}"
+              export CPLUS_INCLUDE_PATH="$CPATH"
+              export LIBRARY_PATH="${lib.makeSearchPath "lib" nativeOutputs}"
+              export LD_LIBRARY_PATH="${lib.makeLibraryPath nativeOutputs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              export PKG_CONFIG_PATH="${lib.makeSearchPath "lib/pkgconfig" nativeOutputs}''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
               # Set up PlatformIO to use a local core directory.
               export PLATFORMIO_CORE_DIR=$PWD/.platformio
               # Tell pip to put packages into $PIP_PREFIX instead of the usual

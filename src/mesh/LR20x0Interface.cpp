@@ -802,6 +802,22 @@ template <typename T> int16_t LR20x0Interface<T>::setSpreadingFactorLive(uint8_t
     return RADIOLIB_ERR_NONE;
 }
 
+template <typename T> float LR20x0Interface<T>::getLastRxFrequencyError()
+{
+    return 0.0f; // no public getFrequencyError() on LR2021 in the pinned RadioLib yet
+}
+
+template <typename T> uint8_t LR20x0Interface<T>::getLastRxCodingRate()
+{
+    uint8_t rxCR = 0;
+    bool hasCRC = true;
+    float snr = 0.0f;
+    float rssi = 0.0f;
+    if (lora.getLoRaPacketStatus(&rxCR, &hasCRC, nullptr, &snr, &rssi, nullptr, nullptr) != RADIOLIB_ERR_NONE)
+        return 0;
+    return rxCR;
+}
+
 template <typename T> uint8_t LR20x0Interface<T>::getLastRxSF()
 {
 #if (defined(USE_LR2021) || defined(ARCH_PORTDUINO)) && RADIOLIB_EXCLUDE_LR2021 != 1
@@ -827,7 +843,7 @@ template <typename T> int16_t LR20x0Interface<T>::setSyncWordLive(uint8_t syncwo
     return lora.setSyncWord(syncword);
 }
 
-template <typename T> uint8_t LR20x0Interface<T>::getSyncWord()
+template <typename T> uint8_t LR20x0Interface<T>::getSyncWord() const
 {
     return effectiveMainSyncword();
 }
@@ -1061,7 +1077,7 @@ template <typename T> bool LR20x0Interface<T>::isActivelyReceiving()
 template <typename T> void LR20x0Interface<T>::resetAGC()
 {
     // Safety: don't reset mid-packet
-    if (sendingPacket != NULL || (isReceiving && isActivelyReceiving()))
+    if (isSending() || (isReceiving && isActivelyReceiving()))
         return;
 
     LOG_DEBUG("LR20x0 AGC reset: warm sleep + Calibrate(0x3F)");

@@ -316,6 +316,18 @@ template <typename T> int16_t SX128xInterface<T>::setOutputPowerLive(int8_t powe
     return err;
 }
 
+template <typename T> float SX128xInterface<T>::getLastRxFrequencyError()
+{
+    return lora.getFrequencyError();
+}
+
+template <typename T> uint8_t SX128xInterface<T>::getLastRxCodingRate()
+{
+    uint8_t rxCR = 0;
+    bool hasCRC = true;
+    return lora.getLoRaRxHeaderInfo(&rxCR, &hasCRC) == RADIOLIB_ERR_NONE ? rxCR : 0;
+}
+
 template <typename T> int16_t SX128xInterface<T>::setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr)
 {
     int16_t err = lora.setSpreadingFactor(targetSf);
@@ -507,7 +519,7 @@ template <typename T> void SX128xInterface<T>::configHardwareForSend()
 #if NEXUS_ENABLE_JENCORE_SNIFFER
     if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
         const uint16_t jencorePreamble = sf <= 8 ? 32 : 16;
-        if (isRawSending() && jencorePreamble != preambleLength) {
+        if (getRawSendingType() == RAW_SEND_JENCORE && jencorePreamble != preambleLength) {
             if (lora.setPreambleLength(jencorePreamble) == RADIOLIB_ERR_NONE)
                 jencorePreambleSet = true;
         }

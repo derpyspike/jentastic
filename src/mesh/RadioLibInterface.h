@@ -499,12 +499,6 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
      */
     uint32_t jencoreServiceTick();
 
-  private:
-    uint32_t jencoreContactsFingerprint = 0; // of what is on flash, so a save happens only on a change
-    uint32_t lastJenCoreContactsSaveMs = 0;
-    bool jencoreContactsLoaded = false;
-
-  public:
 #endif
 
   protected:

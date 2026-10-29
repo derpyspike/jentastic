@@ -3,15 +3,13 @@
 #include "PacketProfiler.h"
 #include "modules/NexusModule.h"
 #if NEXUS_ENABLE_JENCORE_SNIFFER
-#include "FSCommon.h"
-#include "HardwareRNG.h"
 #include "JenCoreRepeater.h"
+#include "JenCoreStore.h"
 #if NEXUS_ENABLE_JENCORE_COMPANION
 #include "JenCoreCompanion.h"
 #endif
 #include "NodeDB.h"
 #include "Router.h"
-#include "SafeFile.h"
 #include "gps/RTC.h"
 #endif
 #if NEXUS_ENABLE_RNODE
@@ -680,13 +678,18 @@ bool RadioLibInterface::sendRawFrame(const uint8_t *bytes, size_t len)
         else if (rawSendingType == RAW_SEND_JENCORE)
             wanted = meshtastic::nexus::TIER_MESHCORE;
         if (wanted != meshtastic::nexus::TIER_NONE) {
-            if (cfg.main_protocol == wanted)
+            bool found = false;
+            if (meshtastic::nexus::tierCarriesProtocol(cfg.main_protocol, wanted)) {
                 rawTxSync = cfg.main_syncword;
-            for (uint8_t i = 0; i < cfg.side_count; ++i) {
-                if (cfg.side[i].enabled && cfg.side[i].protocol == wanted) {
-                    rawTxSf = cfg.side[i].sf;
-                    rawTxSync = cfg.side[i].syncword;
-                    break;
+                found = true;
+            }
+            if (!found) {
+                for (uint8_t i = 0; i < cfg.side_count; ++i) {
+                    if (cfg.side[i].enabled && meshtastic::nexus::tierCarriesProtocol(cfg.side[i].protocol, wanted)) {
+                        rawTxSf = cfg.side[i].sf;
+                        rawTxSync = cfg.side[i].syncword;
+                        break;
+                    }
                 }
             }
         }
@@ -850,14 +853,12 @@ uint32_t RadioLibInterface::jencoreRelayTick()
 #endif
 
 #if NEXUS_ENABLE_JENCORE_SNIFFER
-static constexpr size_t JENCORE_SEED_LEN = 32;
 static constexpr uint32_t JENCORE_IDENTITY_LOAD_MS = 5 * 1000; // identity ready early: discovery needs it
 // Automatic ADVERT intervals are operator-configured (0 = disabled, both default OFF);
 // see /nexus JENCORE ADVERT INTERVAL. A flood is re-sent by every node, so keep it rare.
 static constexpr uint32_t JENCORE_ADVERT_RETRY_MS = 60 * 1000;           // no identity / no valid time
 static constexpr uint32_t JENCORE_ADVERT_NUDGE_MS = 1000;                // radio busy: ask again
 static constexpr uint32_t JENCORE_SERVICE_MS = 5 * 1000;                 // longest wait between housekeeping steps
-static constexpr uint32_t JENCORE_CONTACTS_SAVE_MIN_MS = 10 * 60 * 1000; // flash wear: at most one save per 10 minutes
 
 /** Runs RadioLibInterface::jencoreAdvertTick() on its own schedule. */
 class JenCoreAdvertThread : public concurrency::OSThread
@@ -873,86 +874,6 @@ class JenCoreAdvertThread : public concurrency::OSThread
   private:
     RadioLibInterface *radio;
 };
-
-/**
- * The repeater's JenCore identity seed, kept in flash so the node keeps the same JenCore key across reboots.
- * Created from the hardware RNG on first use; never created from a weak source.
- */
-static bool loadOrCreateJenCoreSeed(uint8_t seed[JENCORE_SEED_LEN], bool forceNew)
-{
-#ifdef FSCom
-    static const char *path = "/prefs/jencore_identity.bin";
-    static const char *legacyPath = "/prefs/meshcore_identity.bin";
-    if (!forceNew) {
-        concurrency::LockGuard g(spiLock);
-        const char *readPath = FSCom.exists(path) ? path : (FSCom.exists(legacyPath) ? legacyPath : nullptr);
-        if (readPath) {
-            auto f = FSCom.open(readPath, FILE_O_READ);
-            if (f) {
-                bool ok = f.size() == JENCORE_SEED_LEN && f.read(seed, JENCORE_SEED_LEN) == JENCORE_SEED_LEN;
-                f.close();
-                if (ok)
-                    return true;
-                LOG_WARN("JenCore identity: %s is corrupt, creating a new key", readPath);
-            }
-        }
-    }
-#endif
-    if (!HardwareRNG::fill(seed, JENCORE_SEED_LEN, true)) {
-        LOG_ERROR("JenCore identity: no hardware entropy, not creating a key");
-        return false;
-    }
-#ifdef FSCom
-    // SafeFile: atomic replace under spiLock. A bare FILE_O_WRITE appends on nRF52 LittleFS.
-    SafeFile out(path, true);
-    out.write(seed, JENCORE_SEED_LEN);
-    if (!out.close())
-        LOG_ERROR("JenCore identity: could not save %s, the key will change on reboot", path);
-#endif
-    LOG_INFO("JenCore identity created");
-    return true;
-}
-
-#if NEXUS_ENABLE_JENCORE_COMPANION
-static const char *jencoreContactsPath = "/prefs/jencore_contacts.bin";
-static const char *legacyJenCoreContactsPath = "/prefs/meshcore_contacts.bin";
-
-static void loadJenCoreContacts()
-{
-#ifdef FSCom
-    uint8_t image[JenCoreCompanion::SAVED_IMAGE_MAX];
-    size_t n = 0;
-    {
-        concurrency::LockGuard g(spiLock);
-        const char *readPath = FSCom.exists(jencoreContactsPath) ? jencoreContactsPath
-                               : (FSCom.exists(legacyJenCoreContactsPath) ? legacyJenCoreContactsPath : nullptr);
-        if (!readPath)
-            return;
-        auto f = FSCom.open(readPath, FILE_O_READ);
-        if (!f)
-            return;
-        n = f.size() <= sizeof(image) ? f.read(image, f.size()) : 0;
-        f.close();
-    }
-    const size_t loaded = jencoreCompanion.importContacts(image, n);
-    LOG_INFO("JenCore contacts: %u restored from flash", (unsigned)loaded);
-#endif
-}
-
-static void saveJenCoreContacts()
-{
-#ifdef FSCom
-    uint8_t image[JenCoreCompanion::SAVED_IMAGE_MAX];
-    const size_t n = jencoreCompanion.exportContacts(image, sizeof(image));
-    if (n == 0)
-        return;
-    SafeFile out(jencoreContactsPath, true); // atomic replace
-    out.write(image, n);
-    if (!out.close())
-        LOG_WARN("JenCore contacts: could not save %s", jencoreContactsPath);
-#endif
-}
-#endif
 
 size_t RadioLibInterface::formatContentionStats(char *buf, size_t len)
 {
@@ -983,23 +904,12 @@ uint32_t RadioLibInterface::jencoreServiceTick()
     if (jencoreRepeater.hasIdentity() && !jencoreCompanion.hasIdentity()) {
         jencoreCompanion.setIdentity(jencoreRepeater.getIdentitySeed(), jencoreRepeater.getIdentityPub());
     }
-    if (jencoreCompanion.hasIdentity() && !jencoreContactsLoaded) {
-        jencoreContactsLoaded = true;
-        loadJenCoreContacts();
-        jencoreContactsFingerprint = jencoreCompanion.contactsFingerprint();
-        lastJenCoreContactsSaveMs = millis();
-    }
+    if (jencoreCompanion.hasIdentity())
+        jenCoreStore::loadContactsOnce(jencoreCompanion);
 
     jencoreCompanion.service();
 
-    if (jencoreContactsLoaded && Throttle::hasElapsed(lastJenCoreContactsSaveMs, JENCORE_CONTACTS_SAVE_MIN_MS)) {
-        const uint32_t fingerprint = jencoreCompanion.contactsFingerprint();
-        if (fingerprint != jencoreContactsFingerprint) {
-            saveJenCoreContacts();
-            jencoreContactsFingerprint = fingerprint;
-            lastJenCoreContactsSaveMs = millis();
-        }
-    }
+    jenCoreStore::saveContactsIfChanged(jencoreCompanion);
 #endif
     return next < JENCORE_SERVICE_MS ? next : JENCORE_SERVICE_MS;
 }
@@ -1009,11 +919,11 @@ bool RadioLibInterface::sendJenCoreAdvertNow(bool flood)
     if (!JenCoreRepeater::isJenCoreEnabled())
         return false;
     if (!jencoreRepeater.hasIdentity()) {
-        uint8_t seed[JENCORE_SEED_LEN];
-        if (!loadOrCreateJenCoreSeed(seed, false))
+        uint8_t seed[jenCoreStore::SEED_LEN];
+        if (!jenCoreStore::loadOrCreateSeed(seed, false))
             return false;
         for (int attempt = 0; !jencoreRepeater.setIdentitySeed(seed); attempt++) {
-            if (attempt >= 8 || !loadOrCreateJenCoreSeed(seed, true))
+            if (attempt >= 8 || !jenCoreStore::loadOrCreateSeed(seed, true))
                 return false;
         }
     }
@@ -1052,12 +962,12 @@ uint32_t RadioLibInterface::jencoreAdvertTick()
     if (!JenCoreRepeater::isJenCoreEnabled())
         return JENCORE_SERVICE_MS;
     if (!jencoreRepeater.hasIdentity()) {
-        uint8_t seed[JENCORE_SEED_LEN];
-        if (!loadOrCreateJenCoreSeed(seed, false))
+        uint8_t seed[jenCoreStore::SEED_LEN];
+        if (!jenCoreStore::loadOrCreateSeed(seed, false))
             return JENCORE_ADVERT_RETRY_MS;
         // A key JenCore rejects (public key starting 0x00/0xFF, ~1 in 128) is replaced by a fresh one.
         for (int attempt = 0; !jencoreRepeater.setIdentitySeed(seed); attempt++) {
-            if (attempt >= 8 || !loadOrCreateJenCoreSeed(seed, true))
+            if (attempt >= 8 || !jenCoreStore::loadOrCreateSeed(seed, true))
                 return JENCORE_ADVERT_RETRY_MS;
         }
         const uint8_t *pub = jencoreRepeater.getIdentityPub();
@@ -1348,7 +1258,58 @@ void RadioLibInterface::handleReceiveInterrupt()
 #if HAS_NEXUS
         if (multiSF) {
             const uint8_t tier = readRxTierProtocol();
-            if (tier != meshtastic::nexus::TIER_MESHTASTIC) {
+            if (meshtastic::nexus::isSharedTier(tier)) {
+                // One detector carries several protocols on the same SF/sync. Classify by frame
+                // content, like the non-multi-SF 0x12 path. TRIPLESHARED falls through to the
+                // Meshtastic parser when neither matches; DOUBLESHARED drops such a frame.
+                const float snr = iface->getSNR();
+                const int32_t rssi = (int32_t)lround(iface->getRSSI());
+                bool handled = false;
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+                JenCoreRepeater::FrameInfo mcInfo;
+                if (JenCoreRepeater::isJenCoreEnabled() &&
+                    jencoreRepeater.looksLikeJenCoreFrame((const uint8_t *)&radioBuffer, length, nodeDB->getNodeNum(),
+                                                          &mcInfo) &&
+                    !isMeshtasticOnOurChannels(length)) {
+                    if (JenCoreRepeater::isFrameRegionAllowed((const uint8_t *)&radioBuffer, length)) {
+                        rxGood++;
+#if NEXUS_ENABLE_JENCORE_COMPANION
+                        jencoreCompanion.handleFrame((const uint8_t *)&radioBuffer, length, snr, rssi,
+                                                     getLastRxFrequencyError(), getLastRxCodingRate());
+#endif
+                        jencoreRepeater.handleReceivedFrame((const uint8_t *)&radioBuffer, length, snr,
+                                                             getPacketTime(length, false));
+                        jencoreRepeater.rxAirtimeMs += rxMsec;
+                        wakeJenCoreRelay();
+                    } else {
+                        LOG_DEBUG("JenCore frame dropped: region scope mismatch");
+                    }
+                    handled = true;
+                }
+#endif
+#if NEXUS_ENABLE_RNODE
+                if (!handled && rnodeEngine.getMode() != RNODE_MODE_OFF) {
+                    // Keep the content heuristic here: the detector says "0x12 family", not RNode.
+                    const bool isOurMeshPacket = (rnodeEngine.getMode() == RNODE_MODE_BRIDGE) &&
+                                                 ((length >= sizeof(PacketHeader) &&
+                                                   (radioBuffer.header.to == nodeDB->getNodeNum() ||
+                                                    radioBuffer.header.from == nodeDB->getNodeNum())) ||
+                                                  isMeshtasticOnOurChannels(length));
+                    if (!isOurMeshPacket &&
+                        rnodeEngine.handleReceivedRadioPacket((const uint8_t *)&radioBuffer, length, snr, rssi)) {
+                        rxGood++;
+                        handled = true;
+                    }
+                }
+#endif
+                if (handled || tier == meshtastic::nexus::TIER_DOUBLESHARED) {
+                    if (!handled)
+                        rxGood++;
+                    airTime->logAirtime(RX_LOG, rxMsec);
+                    return;
+                }
+                // TRIPLESHARED: fall through so a Meshtastic frame on 0x12 parses normally.
+            } else if (tier != meshtastic::nexus::TIER_MESHTASTIC) {
                 rxGood++;
                 const float snr = iface->getSNR();
                 const int32_t rssi = (int32_t)lround(iface->getRSSI());
@@ -1363,7 +1324,8 @@ void RadioLibInterface::handleReceiveInterrupt()
 #if NEXUS_ENABLE_JENCORE_SNIFFER
                     if (JenCoreRepeater::isJenCoreEnabled() && JenCoreRepeater::isFrameRegionAllowed((const uint8_t *)&radioBuffer, length)) {
 #if NEXUS_ENABLE_JENCORE_COMPANION
-                        jencoreCompanion.handleFrame((const uint8_t *)&radioBuffer, length, snr, rssi);
+                        jencoreCompanion.handleFrame((const uint8_t *)&radioBuffer, length, snr, rssi,
+                                                     getLastRxFrequencyError(), getLastRxCodingRate());
 #endif
                         jencoreRepeater.handleReceivedFrame((const uint8_t *)&radioBuffer, length, snr,
                                                              getPacketTime(length, false));
@@ -1399,7 +1361,8 @@ void RadioLibInterface::handleReceiveInterrupt()
                      iface->getSNR(), (int)lround(iface->getRSSI()));
 #if NEXUS_ENABLE_JENCORE_COMPANION
             jencoreCompanion.handleFrame((const uint8_t *)&radioBuffer, length, iface->getSNR(),
-                                          (int32_t)lround(iface->getRSSI()));
+                                          (int32_t)lround(iface->getRSSI()), getLastRxFrequencyError(),
+                                          getLastRxCodingRate());
 #endif
             jencoreRepeater.handleReceivedFrame((const uint8_t *)&radioBuffer, length, iface->getSNR(),
                                                  getPacketTime(length, false));

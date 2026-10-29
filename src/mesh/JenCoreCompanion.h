@@ -153,7 +153,8 @@ class JenCoreCompanion
 
     /// Consume a received JenCore frame: GRP_TXT on any MC: channel and TXT_MSG for us are injected into the
     /// router, an ACK settles a pending direct message, an ADVERT teaches us a contact.
-    void handleFrame(const uint8_t *raw, size_t len, float snr, int32_t rssi);
+    void handleFrame(const uint8_t *raw, size_t len, float snr, int32_t rssi, float freqErr = 0.0f,
+                     uint8_t codingRate = 0);
 
     /// Install our JenCore identity (Ed25519 seed and public key); direct messages need it.
     void setIdentity(const uint8_t seed[32], const uint8_t pub[32]);
@@ -214,6 +215,10 @@ class JenCoreCompanion
     uint8_t identitySeed[32] = {};
     uint8_t identityPub[32] = {};
     bool identityReady = false;
+
+    // RX metadata for the packet currently being decoded (filled by handleFrame).
+    float lastRxFreqErr = 0.0f;
+    uint8_t lastRxCodingRate = 0;
 
     /// A direct message on air whose ACK we are waiting for.
     struct PendingAck {

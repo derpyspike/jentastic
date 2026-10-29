@@ -708,10 +708,12 @@ bool JenCoreCompanion::cachedChannelHash(ChannelIndex ch, const uint8_t *key, si
     return true;
 }
 
-void JenCoreCompanion::handleFrame(const uint8_t *raw, size_t len, float snr, int32_t rssi)
+void JenCoreCompanion::handleFrame(const uint8_t *raw, size_t len, float snr, int32_t rssi, float freqErr, uint8_t codingRate)
 {
     if (!raw || !router)
         return;
+    lastRxFreqErr = freqErr;
+    lastRxCodingRate = codingRate;
 
     JenCoreRepeater::FrameInfo info;
     if (!JenCoreRepeater::parse(raw, len, &info))
@@ -819,12 +821,11 @@ void JenCoreCompanion::handleGroupText(const uint8_t *raw, size_t len, const Jen
         if (p->next_hop == NO_NEXT_HOP_PREFERENCE)
             p->next_hop = 1;
         p->transport_mechanism = meshtastic_MeshPacket_TransportMechanism_TRANSPORT_LORA;
-        // Clients show signal strength only for a direct frame; a relayed one shows its hop count.
-        if (info.path_hash_count == 0) {
-            p->rx_snr = snr;
-            p->has_rx_rssi = true;
-            p->rx_rssi = rssi;
-        }
+        p->rx_snr = snr;
+        p->has_rx_rssi = true;
+        p->rx_rssi = rssi;
+        p->rx_frequency_error = lastRxFreqErr;
+        p->rx_coding_rate = lastRxCodingRate;
 
         LOG_INFO("JenCore group text ch=%u ts=%u len=%u", (unsigned)i, timestamp, (unsigned)p->decoded.payload.size);
         router->enqueueReceivedMessage(p);
@@ -973,11 +974,11 @@ void JenCoreCompanion::injectDirectText(const JenCoreContact &c, const char *tex
     p->decoded.bitfield = 0;
     hopFields(pathHashCount, &p->hop_start, &p->hop_limit);
     p->transport_mechanism = meshtastic_MeshPacket_TransportMechanism_TRANSPORT_LORA;
-    if (pathHashCount == 0) {
-        p->rx_snr = snr;
-        p->has_rx_rssi = true;
-        p->rx_rssi = rssi;
-    }
+    p->rx_snr = snr;
+    p->has_rx_rssi = true;
+    p->rx_rssi = rssi;
+    p->rx_frequency_error = lastRxFreqErr;
+    p->rx_coding_rate = lastRxCodingRate;
     router->enqueueReceivedMessage(p);
 }
 
