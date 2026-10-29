@@ -97,6 +97,13 @@ JENCORE_OVERRIDE=-1
 RNODE_OVERRIDE=-1
 STATSBOT_OVERRIDE=-1
 REPLYBOT_OVERRIDE=-1
+# FLASH DIET toggles: 0 = explicit off, 1 = explicit on, -1 = default (off).
+# These append compile-time excludes; none are enabled unless the CLI asks.
+DEBUG_LOG_OVERRIDE=-1    # 1 = MESHTASTIC_EXCLUDE_DEBUG_LOG (drop LOG_DEBUG only)
+DEBUG_MUTE_OVERRIDE=-1   # 1 = DEBUG_MUTE (drop every LOG_*)
+INPUTBROKER_OVERRIDE=-1  # 1 = MESHTASTIC_EXCLUDE_INPUTBROKER
+EMOJI_OVERRIDE=-1        # 1 = EXCLUDE_EMOJI
+BEACON_OVERRIDE=-1       # 1 = MESHTASTIC_EXCLUDE_BEACON
 # Extra PIO target (e.g. "upload", "monitor"); appended to "pio run -e $target"
 PIO_EXTRA_TARGET=""
 
@@ -146,6 +153,18 @@ Options:
   --replybot                  Enable ReplyBotModule (-DNEXUS_ENABLE_REPLYBOT=1).
                               Disabled by default.
   --no-replybot               Explicitly keep ReplyBotModule disabled (default).
+  --no-debug-log              Drop LOG_DEBUG format strings only; INFO/WARN/ERROR stay
+                              (-DMESHTASTIC_EXCLUDE_DEBUG_LOG=1, ~28 KB on nRF52).
+  --debug-log                 Keep LOG_DEBUG (default).
+  --debug-mute                Drop every LOG_* (-DDEBUG_MUTE=1); serial console still works.
+  --no-debug-mute             Keep logging enabled (default).
+  --no-inputbroker            Exclude InputBroker (-DMESHTASTIC_EXCLUDE_INPUTBROKER=1);
+                              loses button/input plumbing (~12 KB on nRF52).
+  --inputbroker               Keep InputBroker (default).
+  --no-emoji                  Drop emoji bitmaps (-DEXCLUDE_EMOJI=1, ~6 KB).
+  --emoji                     Keep emoji (default).
+  --no-beacon                 Drop the mesh beacon module (-DMESHTASTIC_EXCLUDE_BEACON=1, ~7 KB).
+  --beacon                    Keep the beacon module (default).
   -t <pio-target>             Append an extra PlatformIO target to "pio run" (e.g. "upload", "monitor").
                               Example: -t upload -> pio run -e t-deck-tft -t upload
   --dry-run                   Print what would be built without invoking pio.
@@ -167,6 +186,8 @@ Examples:
   $0 admins --no-evil                       # explicit safety build
   $0 jenny --private-build                 # enable private features
   $0 javi --targets tracker-t1000-e --jencore --rnode   # default-off bridges enabled
+  $0 jenny --targets nrf52_promicro_diy_sx1262 --jencore --rnode \
+      --no-debug-log --no-emoji --no-beacon             # screen-on nRF52 flash diet
 EOF
 }
 
@@ -262,6 +283,36 @@ parse_args() {
                 ;;
             --no-replybot)
                 REPLYBOT_OVERRIDE=0
+                ;;
+            --no-debug-log)
+                DEBUG_LOG_OVERRIDE=1
+                ;;
+            --debug-log)
+                DEBUG_LOG_OVERRIDE=0
+                ;;
+            --debug-mute)
+                DEBUG_MUTE_OVERRIDE=1
+                ;;
+            --no-debug-mute)
+                DEBUG_MUTE_OVERRIDE=0
+                ;;
+            --no-inputbroker)
+                INPUTBROKER_OVERRIDE=1
+                ;;
+            --inputbroker)
+                INPUTBROKER_OVERRIDE=0
+                ;;
+            --no-emoji)
+                EMOJI_OVERRIDE=1
+                ;;
+            --emoji)
+                EMOJI_OVERRIDE=0
+                ;;
+            --no-beacon)
+                BEACON_OVERRIDE=1
+                ;;
+            --beacon)
+                BEACON_OVERRIDE=0
                 ;;
             -t)
                 if [[ -z "${2:-}" ]]; then
@@ -525,6 +576,22 @@ run_builder() {
         replybot_source="CLI --no-replybot"
     fi
 
+    # FLASH DIET: opt-in compile-time excludes (default off; CLI-only)
+    local debug_mute=0 debug_log_off=0 inputbroker_off=0 emoji_off=0 beacon_off=0
+    if [[ "$DEBUG_MUTE_OVERRIDE" == "1" ]]; then debug_mute=1; fi
+    if [[ "$DEBUG_LOG_OVERRIDE" == "1" ]]; then debug_log_off=1; fi
+    if [[ "$INPUTBROKER_OVERRIDE" == "1" ]]; then inputbroker_off=1; fi
+    if [[ "$EMOJI_OVERRIDE" == "1" ]]; then emoji_off=1; fi
+    if [[ "$BEACON_OVERRIDE" == "1" ]]; then beacon_off=1; fi
+    local diet_summary=""
+    if [[ "$debug_mute" == "1" ]]; then diet_summary+=" DEBUG_MUTE"; fi
+    if [[ "$debug_log_off" == "1" ]]; then diet_summary+=" NO_DEBUG_LOG"; fi
+    if [[ "$inputbroker_off" == "1" ]]; then diet_summary+=" NO_INPUTBROKER"; fi
+    if [[ "$emoji_off" == "1" ]]; then diet_summary+=" NO_EMOJI"; fi
+    if [[ "$beacon_off" == "1" ]]; then diet_summary+=" NO_BEACON"; fi
+    diet_summary="${diet_summary# }"
+    if [[ -z "$diet_summary" ]]; then diet_summary="none"; fi
+
     # Compose full PIO flags: base + trusted channels + keys + extra + evil
     # Trusted channels: PLATFORMIO_BUILD_FLAGS is parsed by PlatformIO which strips outer
     # quotes; we need the inner quotes around the channel name preserved as if written
@@ -556,6 +623,21 @@ run_builder() {
     fi
     if [[ "$replybot_active" == "1" ]]; then
         base_flags+=" -DNEXUS_ENABLE_REPLYBOT=1"
+    fi
+    if [[ "$debug_mute" == "1" ]]; then
+        base_flags+=" -DDEBUG_MUTE=1"
+    fi
+    if [[ "$debug_log_off" == "1" ]]; then
+        base_flags+=" -DMESHTASTIC_EXCLUDE_DEBUG_LOG=1"
+    fi
+    if [[ "$inputbroker_off" == "1" ]]; then
+        base_flags+=" -DMESHTASTIC_EXCLUDE_INPUTBROKER=1"
+    fi
+    if [[ "$emoji_off" == "1" ]]; then
+        base_flags+=" -DEXCLUDE_EMOJI=1"
+    fi
+    if [[ "$beacon_off" == "1" ]]; then
+        base_flags+=" -DMESHTASTIC_EXCLUDE_BEACON=1"
     fi
     local full_flags="$base_flags$KEYS_FLAGS$EXTRA_FLAGS"
 
@@ -596,6 +678,7 @@ run_builder() {
     else
         echo "║  REPLYBOT: OFF (disabled by default)      source: $replybot_source"
     fi
+    echo "║  DIET    : $diet_summary"
     if [[ -n "$PIO_EXTRA_TARGET" ]]; then
         echo "║  PIO -t  : $PIO_EXTRA_TARGET (appended to pio run per target)"
     fi

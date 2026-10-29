@@ -640,6 +640,12 @@ public:
             uint16_t local_min;           // 0 = disabled
             uint16_t flood_min;           // 0 = disabled
         } jen_advert;                     // v74: automatic ADVERT intervals (default OFF)
+        struct __attribute__((packed)) NexusJenFlood {
+            uint8_t max_hops;             // MeshCore flood_max (default 64)
+            uint8_t max_unscoped;         // MeshCore flood_max_unscoped (default 64)
+            uint8_t max_advert;           // MeshCore flood_max_advert (default 8)
+            uint8_t reserved;
+        } jen_flood;                      // v75: MeshCore flood hop limits
         uint32_t crc32;
     };
 
@@ -784,7 +790,8 @@ public:
             return nullptr;
         if (const TierChannelOverride *override = findTierChannelOverride(ch)) {
             for (uint8_t i = 0; i < multiSFConfig.side_count; ++i)
-                if (multiSFConfig.side[i].enabled && multiSFConfig.side[i].protocol == nexus::TIER_MESHTASTIC &&
+                if (multiSFConfig.side[i].enabled &&
+                    nexus::tierCarriesProtocol(multiSFConfig.side[i].protocol, nexus::TIER_MESHTASTIC) &&
                     multiSFConfig.side[i].sf == override->sf)
                     return &multiSFConfig.side[i];
         }
@@ -796,10 +803,12 @@ public:
             return nullptr;
         const uint8_t slot = multiSFConfig.meshtastic_tx_slot;
         if (slot != nexus::MULTISF_NO_TX_SLOT && slot < multiSFConfig.side_count &&
-            multiSFConfig.side[slot].enabled && multiSFConfig.side[slot].protocol == nexus::TIER_MESHTASTIC)
+            multiSFConfig.side[slot].enabled &&
+            nexus::tierCarriesProtocol(multiSFConfig.side[slot].protocol, nexus::TIER_MESHTASTIC))
             return &multiSFConfig.side[slot];
         for (uint8_t i = 0; i < multiSFConfig.side_count; ++i)
-            if (multiSFConfig.side[i].enabled && multiSFConfig.side[i].protocol == nexus::TIER_MESHTASTIC)
+            if (multiSFConfig.side[i].enabled &&
+                nexus::tierCarriesProtocol(multiSFConfig.side[i].protocol, nexus::TIER_MESHTASTIC))
                 return &multiSFConfig.side[i];
         return nullptr;
     }

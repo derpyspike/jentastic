@@ -2331,6 +2331,118 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                     snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: PathHash = %u byte(s)", (unsigned)bytes);
                 }
             }
+        } else if (strcasecmp(sub, "IDENTITY") == 0 || strcasecmp(sub, "ID") == 0) {
+            const uint8_t *pub = rli->jencoreRepeater.getIdentityPub();
+            if (!rli->jencoreRepeater.hasIdentity()) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: identity not loaded yet (advertise once or run JENCORE ON)");
+            } else {
+                char hex[65];
+                for (int i = 0; i < 32; i++)
+                    snprintf(&hex[i * 2], 3, "%02x", pub[i]);
+                snprintf(replyMsg, sizeof(replyMsg),
+                         "JT JENCORE: id=%02x%02x%02x%02x type=%u name=%s\npub=%s", pub[0], pub[1], pub[2], pub[3],
+                         (unsigned)rli->jencoreRepeater.getNodeType(),
+                         owner.long_name[0] ? owner.long_name : "(none)", hex);
+            }
+        } else if (strncasecmp(sub, "FLOODMAX", 8) == 0 && (sub[8] == '\0' || sub[8] == ' ')) {
+            const char *arg = sub + 8;
+            while (*arg == ' ')
+                arg++;
+            if (*arg == '\0') {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: flood_max=%u unscoped=%u advert=%u",
+                         (unsigned)JenCoreRepeater::getFloodMax(), (unsigned)JenCoreRepeater::getFloodMaxUnscoped(),
+                         (unsigned)JenCoreRepeater::getFloodMaxAdvert());
+            } else {
+                const int fmax = atoi(arg);
+                const char *p2 = skipToken(arg);
+                const int funs = atoi(p2);
+                p2 = skipToken(p2);
+                const int fadv = atoi(p2);
+                if (fmax < 1 || fmax > 64 || funs < 1 || funs > 64 || fadv < 1 || fadv > 64 ||
+                    *skipToken(p2) != '\0') {
+                    snprintf(replyMsg, sizeof(replyMsg),
+                             "JT JENCORE: usage: FLOODMAX <1-64 general> <1-64 unscoped> <1-64 advert>");
+                } else {
+                    JenCoreRepeater::setFloodLimits((uint8_t)fmax, (uint8_t)funs, (uint8_t)fadv);
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: flood_max=%u unscoped=%u advert=%u",
+                             (unsigned)fmax, (unsigned)funs, (unsigned)fadv);
+                }
+            }
+        } else if (strcasecmp(sub, "DISCOVER") == 0) {
+            if (!JenCoreRepeater::isJenCoreEnabled()) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: OFF (use JENCORE ON first)");
+            } else {
+                uint8_t frame[32];
+                const uint32_t tag = JenCoreRepeater::makeDiscoveryTag();
+                const size_t len = JenCoreRepeater::buildDiscoveryRequest(frame, sizeof(frame), tag);
+                if (!len || !rli->queueJenCoreFrame(frame, len)) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: discovery request could not be queued");
+                } else {
+                    JenCoreRepeater::startDiscovery(tag);
+                    snprintf(replyMsg, sizeof(replyMsg),
+                             "JT JENCORE: discover sent (tag=%08x); replies in JENCORE NEIGHBORS", (unsigned)tag);
+                }
+            }
+        } else if (strcasecmp(sub, "NEIGHBORS") == 0 || strcasecmp(sub, "NEIGHBOURS") == 0) {
+            const uint8_t count = JenCoreRepeater::neighborCount();
+            int n = snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: %u neighbour(s)%s", (unsigned)count,
+                             JenCoreRepeater::discoveryActive() ? " (scan active)" : "");
+            for (uint8_t i = 0; i < count && n > 0 && (size_t)n < sizeof(replyMsg) - 40; i++) {
+                const auto *nb = JenCoreRepeater::neighbor(i);
+                if (!nb)
+                    continue;
+                snprintf(replyMsg + n, sizeof(replyMsg) - n, "\n!%02x%02x%02x%02x t=%u snr=%d", nb->pub[0], nb->pub[1],
+                         nb->pub[2], nb->pub[3], (unsigned)nb->type, (int)nb->snr4 / 4);
+                n = (int)strlen(replyMsg);
+            }
+        } else if (strncasecmp(sub, "TRACE", 5) == 0 && (sub[5] == '\0' || sub[5] == ' ')) {
+            const char *arg = sub + 5;
+            while (*arg == ' ')
+                arg++;
+            uint8_t pathBytes[64];
+            size_t pathLen = 0;
+            bool hexOk = true;
+            for (const char *phex = arg; *phex; phex++) {
+                if (*phex == ' ' || *phex == ':')
+                    continue;
+                if (!isxdigit((unsigned char)*phex)) {
+                    hexOk = false;
+                    break;
+                }
+                if (pathLen >= sizeof(pathBytes)) {
+                    hexOk = false;
+                    break;
+                }
+                const int hi = isdigit((unsigned char)*phex) ? *phex - '0' : (tolower((unsigned char)*phex) - 'a' + 10);
+                phex++;
+                if (!*phex || !isxdigit((unsigned char)*phex)) {
+                    hexOk = false;
+                    break;
+                }
+                const int lo = isdigit((unsigned char)*phex) ? *phex - '0' : (tolower((unsigned char)*phex) - 'a' + 10);
+                pathBytes[pathLen++] = (uint8_t)((hi << 4) | lo);
+            }
+            const uint8_t hs = JenCoreRepeater::getPathHashSize();
+            if (!hexOk || (pathLen % hs) != 0 || pathLen > 60) {
+                snprintf(replyMsg, sizeof(replyMsg),
+                         "JT JENCORE: usage: TRACE [<path-hashes-hex>] (must be a multiple of %u bytes)", (unsigned)hs);
+            } else {
+                uint8_t frame[80];
+                const uint32_t tag = JenCoreRepeater::makeDiscoveryTag();
+                frame[0] = (0x09 << 2) | 0x02; // TRACE, DIRECT
+                frame[1] = 0;                  // zero-hop route; hash list is in the payload
+                memcpy(&frame[2], &tag, 4);
+                memset(&frame[6], 0, 4); // auth code
+                frame[10] = (uint8_t)(hs - 1);
+                memcpy(&frame[11], pathBytes, pathLen);
+                const size_t len = 11 + pathLen;
+                if (!JenCoreRepeater::isJenCoreEnabled() || !rli->queueJenCoreFrame(frame, len))
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: TRACE could not be queued");
+                else
+                    snprintf(replyMsg, sizeof(replyMsg),
+                             "JT JENCORE: TRACE sent tag=%08x hops=%u (results are shown at the endpoint)", (unsigned)tag,
+                             (unsigned)(pathLen / hs));
+            }
         } else if (strncasecmp(sub, "REGION", 6) == 0 && (sub[6] == '\0' || sub[6] == ' ')) {
             const char *arg = sub + 6;
             while (*arg == ' ')
@@ -2565,7 +2677,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             }
         } else {
             snprintf(replyMsg, sizeof(replyMsg),
-                     "JT JENCORE: Usage: JENCORE [ON/OFF|STATUS|RELAY ON/OFF|PATHSIZE <1-3>|REGION ...|ADVERT [LOCAL|INTERVAL <local-min> <flood-min>]|CONTACTS|HYBRID ON/OFF|CHANNELS[ ADD <name|#tag> [psk]]|STATS]");
+                     "JT JENCORE: Usage: JENCORE [ON/OFF|STATUS|IDENTITY|RELAY ON/OFF|PATHSIZE <1-3>|FLOODMAX <gen> <unscoped> <advert>|DISCOVER|NEIGHBORS|TRACE [<hex>]|REGION ...|ADVERT [LOCAL|INTERVAL <local-min> <flood-min>]|CONTACTS|HYBRID ON/OFF|CHANNELS[ ADD <name|#tag> [psk]]|STATS]");
         }
     }
 #endif
@@ -4777,6 +4889,123 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 snprintf(replyMsg, sizeof(replyMsg),
                          "JT TIER: Madrid staged (SF5 JenRNode main, SF6/7 Meshtastic, SF8 MeshCore). Applying in 5s. Run /nexus SAVE.");
             }
+        } else if (strncasecmp(sub, "MAIN", 4) == 0 && (sub[4] == '\0' || sub[4] == ' ')) {
+            const char *rest = sub + 4;
+            while (*rest == ' ')
+                rest++;
+            const char *protoTok = rest;
+            rest = skipToken(rest);
+            const char *syncTok = rest;
+            uint8_t proto = 0;
+            uint8_t sync = 0;
+            char *end = nullptr;
+            if (!*protoTok || !*syncTok || !nexus::parseTierProtocol(protoTok, proto)) {
+                snprintf(replyMsg, sizeof(replyMsg),
+                         "JT TIER: usage: MAIN <MESHTASTIC|RNODE|MESHCORE|"
+                         "DOUBLESHARED|TRIPLESHARED> <syncword>");
+            } else {
+                const long sv = strtol(syncTok, &end, 0);
+                if (!end || *end != '\0' || sv < 1 || sv > 255)
+                    snprintf(replyMsg, sizeof(replyMsg), "JT TIER: invalid syncword (use 0xNN)");
+                else {
+                    multiSFConfig.enabled = 1;
+                    multiSFConfig.main_protocol = proto;
+                    multiSFConfig.main_syncword = (uint8_t)sv;
+                    multiSFConfig.main_tx_power = nexus::MULTISF_DEFAULT_POWER;
+                    if (multiSFConfig.meshtastic_tx_slot == 0 && multiSFConfig.side_count == 0)
+                        multiSFConfig.meshtastic_tx_slot = nexus::MULTISF_NO_TX_SLOT;
+                    snprintf(replyMsg, sizeof(replyMsg),
+                             "JT TIER: main = SF%u/%s:0x%02X (main SF comes from SETLORA; run TIER APPLY)",
+                             (unsigned)lr2021->getSF(), nexus::tierProtocolName(proto), (unsigned)sv);
+                }
+            }
+        } else if (strncasecmp(sub, "SIDE", 4) == 0 && (sub[4] == '\0' || sub[4] == ' ')) {
+            const char *rest = sub + 4;
+            while (*rest == ' ')
+                rest++;
+            const int slot = atoi(rest);
+            rest = skipToken(rest);
+            if (slot < 1 || slot > 3) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT TIER: side slot must be 1..3");
+            } else if (strcasecmp(rest, "OFF") == 0) {
+                const uint8_t idx = (uint8_t)(slot - 1);
+                if (idx >= multiSFConfig.side_count) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT TIER: side %d is not configured", slot);
+                } else {
+                    for (uint8_t i = idx; i + 1 < multiSFConfig.side_count; i++)
+                        multiSFConfig.side[i] = multiSFConfig.side[i + 1];
+                    multiSFConfig.side_count--;
+                    if (multiSFConfig.meshtastic_tx_slot == idx)
+                        multiSFConfig.meshtastic_tx_slot = nexus::MULTISF_NO_TX_SLOT;
+                    else if (multiSFConfig.meshtastic_tx_slot != nexus::MULTISF_NO_TX_SLOT &&
+                             multiSFConfig.meshtastic_tx_slot > idx)
+                        multiSFConfig.meshtastic_tx_slot--;
+                    if (multiSFConfig.side_count == 0)
+                        multiSFConfig.enabled = 0;
+                    snprintf(replyMsg, sizeof(replyMsg), "JT TIER: side %d removed", slot);
+                }
+            } else {
+                const char *sfTok = rest;
+                rest = skipToken(rest);
+                const char *protoTok = rest;
+                rest = skipToken(rest);
+                const char *syncTok = rest;
+                const char *sfNum = sfTok;
+                if (strncasecmp(sfNum, "SF", 2) == 0)
+                    sfNum += 2;
+                char *end = nullptr;
+                const long sfv = strtol(sfNum, &end, 10);
+                uint8_t proto = 0;
+                uint8_t sync = 0;
+                if (!*sfTok || !*protoTok || !*syncTok || end == sfNum || (end && *end != '\0') || sfv < 5 || sfv > 12 ||
+                    !nexus::parseTierProtocol(protoTok, proto)) {
+                    snprintf(replyMsg, sizeof(replyMsg),
+                             "JT TIER: usage: SIDE <1-3> <SF5-12> <MESHTASTIC|RNODE|MESHCORE|"
+                             "DOUBLESHARED|TRIPLESHARED> <syncword>");
+                } else {
+                    const long sv = strtol(syncTok, &end, 0);
+                    if (!end || *end != '\0' || sv < 1 || sv > 255) {
+                        snprintf(replyMsg, sizeof(replyMsg), "JT TIER: invalid syncword (use 0xNN)");
+                    } else if (slot > (int)multiSFConfig.side_count + 1) {
+                        snprintf(replyMsg, sizeof(replyMsg), "JT TIER: add sides in order from 1");
+                    } else if (multiSFConfig.main_protocol == 0) {
+                        snprintf(replyMsg, sizeof(replyMsg), "JT TIER: set MAIN first");
+                    } else if ((uint8_t)sfv <= lr2021->getSF()) {
+                        snprintf(replyMsg, sizeof(replyMsg), "JT TIER: side SF must be higher than main SF%u",
+                                 (unsigned)lr2021->getSF());
+                    } else {
+                        const uint8_t idx = (uint8_t)(slot - 1);
+                        for (uint8_t i = 0; i < multiSFConfig.side_count; i++)
+                            if (i != idx && multiSFConfig.side[i].enabled && multiSFConfig.side[i].sf == (uint8_t)sfv) {
+                                snprintf(replyMsg, sizeof(replyMsg), "JT TIER: duplicate side SF%u", (unsigned)sfv);
+                                goto tier_side_done;
+                            }
+                        multiSFConfig.side[idx].enabled = 1;
+                        multiSFConfig.side[idx].sf = (uint8_t)sfv;
+                        multiSFConfig.side[idx].protocol = proto;
+                        multiSFConfig.side[idx].syncword = (uint8_t)sv;
+                        multiSFConfig.side[idx].tx_power = nexus::MULTISF_DEFAULT_POWER;
+                        multiSFConfig.side[idx].flags = 0;
+                        if ((uint8_t)slot > multiSFConfig.side_count)
+                            multiSFConfig.side_count = (uint8_t)slot;
+                        multiSFConfig.enabled = 1;
+                        if (multiSFConfig.meshtastic_tx_slot == nexus::MULTISF_NO_TX_SLOT &&
+                            nexus::tierCarriesProtocol(proto, nexus::TIER_MESHTASTIC))
+                            multiSFConfig.meshtastic_tx_slot = idx;
+                        snprintf(replyMsg, sizeof(replyMsg), "JT TIER: side %d = SF%u/%s:0x%02X", slot,
+                                 (unsigned)sfv, nexus::tierProtocolName(proto), (unsigned)sv);
+                    }
+                }
+            }
+        tier_side_done:;
+        } else if (strcasecmp(sub, "CLEAR") == 0) {
+            multiSFConfig = {};
+            multiSFConfig.meshtastic_tx_slot = nexus::MULTISF_NO_TX_SLOT;
+            splitConfig.mode = NEXUS_SPLIT_OFF;
+            tierChannelOverrideCount = 0;
+            memset(tierChannelOverrides, 0, sizeof(tierChannelOverrides));
+            lr2021->clearMultiSFTiers();
+            snprintf(replyMsg, sizeof(replyMsg), "JT TIER: table cleared (main LoRa config unchanged)");
         } else if (strcasecmp(sub, "OFF") == 0) {
             multiSFConfig.enabled = 0;
             splitConfig.mode = NEXUS_SPLIT_OFF;
@@ -4784,8 +5013,15 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             snprintf(replyMsg, sizeof(replyMsg),
                      "JT TIER: OFF (side detectors cleared; main LoRa config unchanged).");
         } else if (strcasecmp(sub, "APPLY") == 0) {
-            bool ok = lr2021->applyMultiSFTiers();
-            snprintf(replyMsg, sizeof(replyMsg), "JT TIER: %s", ok ? "applied" : "apply failed");
+            const char *reason = nullptr;
+            if (!nexus::validateMultiSF(multiSFConfig, lr2021->getSF(), lr2021->getBW(), &reason)) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT TIER: rejected: %s", reason ? reason : "invalid");
+            } else {
+                // reconfigure() re-reads config.lora, applies effectiveMainSyncword() and
+                // re-arms the side table via applyStoredSideDetectors().
+                bool ok = lr2021->reconfigure();
+                snprintf(replyMsg, sizeof(replyMsg), "JT TIER: %s", ok ? "applied" : "apply failed");
+            }
         } else if (strcasecmp(sub, "SAVE") == 0) {
             bool ok = saveVault();
             snprintf(replyMsg, sizeof(replyMsg), "JT TIER: vault %s", ok ? "saved" : "save failed");
@@ -4798,7 +5034,8 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 int slot = -1;
                 if (v >= 5 && v <= 12) {
                     for (uint8_t i = 0; i < multiSFConfig.side_count; i++)
-                        if (multiSFConfig.side[i].enabled && multiSFConfig.side[i].protocol == nexus::TIER_MESHTASTIC &&
+                        if (multiSFConfig.side[i].enabled &&
+                            nexus::tierCarriesProtocol(multiSFConfig.side[i].protocol, nexus::TIER_MESHTASTIC) &&
                             multiSFConfig.side[i].sf == v) {
                             slot = (int)i;
                             break;
@@ -4806,8 +5043,8 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 } else if (v >= 1 && v <= 3) {
                     slot = v - 1;
                 }
-                if (slot < 0 || slot >= multiSFConfig.side_count ||
-                    !multiSFConfig.side[slot].enabled || multiSFConfig.side[slot].protocol != nexus::TIER_MESHTASTIC)
+                if (slot < 0 || slot >= multiSFConfig.side_count || !multiSFConfig.side[slot].enabled ||
+                    !nexus::tierCarriesProtocol(multiSFConfig.side[slot].protocol, nexus::TIER_MESHTASTIC))
                     return false;
                 *slotOut = slot;
                 *sfOut = multiSFConfig.side[slot].sf;
@@ -4865,7 +5102,8 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 int slot = -1;
                 if (v >= 5 && v <= 12) {
                     for (uint8_t i = 0; i < multiSFConfig.side_count; i++)
-                        if (multiSFConfig.side[i].enabled && multiSFConfig.side[i].protocol == nexus::TIER_MESHTASTIC &&
+                        if (multiSFConfig.side[i].enabled &&
+                            nexus::tierCarriesProtocol(multiSFConfig.side[i].protocol, nexus::TIER_MESHTASTIC) &&
                             multiSFConfig.side[i].sf == v) {
                             slot = (int)i;
                             break;
@@ -4873,8 +5111,8 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 } else if (v >= 1 && v <= 3) {
                     slot = v - 1;
                 }
-                if (slot < 0 || slot >= multiSFConfig.side_count ||
-                    !multiSFConfig.side[slot].enabled || multiSFConfig.side[slot].protocol != nexus::TIER_MESHTASTIC)
+                if (slot < 0 || slot >= multiSFConfig.side_count || !multiSFConfig.side[slot].enabled ||
+                    !nexus::tierCarriesProtocol(multiSFConfig.side[slot].protocol, nexus::TIER_MESHTASTIC))
                     return false;
                 *slotOut = slot;
                 *sfOut = multiSFConfig.side[slot].sf;
@@ -4892,7 +5130,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             }
         } else {
             snprintf(replyMsg, sizeof(replyMsg),
-                     "JT TIER: usage: TIER [STATUS|MADRID|OFF|APPLY|SAVE|TX <1-3|SF5-12>|TXCHANNEL <ch> <1-3|SF5-12|OFF>]");
+                     "JT TIER: usage: TIER [STATUS|MADRID|MAIN <proto> <sync>|SIDE <1-3> <SF5-12> <proto> <sync>|SIDE <1-3> OFF|CLEAR|OFF|APPLY|SAVE|TX <1-3|SF5-12>|TXCHANNEL <ch> <1-3|SF5-12|OFF>]");
         }
     }
 #endif
@@ -6866,6 +7104,34 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             float freqMHz = radio->getFreq();
             uint8_t syncByte = static_cast<RadioLibInterface *>(radio)->getSyncWord();
 
+            const char *snifferState =
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+                "ON";
+#else
+                "OFF";
+#endif
+            const char *jcState =
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+                JenCoreRepeater::isJenCoreEnabled() ? "ON" : "OFF";
+#else
+                "OFF";
+#endif
+            const char *jrState =
+#if NEXUS_ENABLE_RNODE
+                rnodeEngine.getMode() != RNODE_MODE_OFF ? "ON" : "OFF";
+#else
+                "OFF";
+#endif
+            char caps[48];
+            snprintf(caps, sizeof(caps), "Sniffer:%s JC:%s JR:%s MSF:%s", snifferState, jcState, jrState,
+                     multiSFConfig.enabled ? "ON" : "OFF");
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+            char hybridSw[12];
+            snprintf(hybridSw, sizeof(hybridSw), "ON/0x%X", (unsigned)NEXUS_JENCORE_RX_SYNCWORD);
+#else
+            const char *hybridSw = "OFF";
+#endif
+
             // Alt-modem active (SETFSK/SETFLRC): bw/sf/cr/Pre/Slot/CW/SW/Speed are
             // the PARKED LoRa config — the modulation on air is FSK/FLRC, which has
             // no SF/BW/CR. Report alt-modem reality instead (Jenny, 2026-10-16).
@@ -6877,14 +7143,17 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 if (altModem.mode == 2) {
                     const char *crName = (altModem.cr == 2) ? "1/2" : (altModem.cr == 3) ? "3/4" : "1/1";
                     snprintf(replyMsg, sizeof(replyMsg),
-                        "JT LORA Status:\nMode: FLRC\nFreq: %.3fMHz\nBR:%.1fk CR:%s BT:%d\nPre:%u bits\nChipPwr:%ddBm\nSpeed:%u b/s",
+                        "JT LORA Status:\nMode: FLRC\nFreq: %.3fMHz\nBR:%.1fk CR:%s BT:%d\n"
+                        "Pre:%u bits\nChipPwr:%ddBm\n%s\nSpeed:%u b/s",
                         freqMHz, altModem.brKbps, crName, (int)altModem.bt,
-                        (unsigned)altModem.preambleBits, chipPwr, altSpeed);
+                        (unsigned)altModem.preambleBits, chipPwr, caps, altSpeed);
                 } else {
                     snprintf(replyMsg, sizeof(replyMsg),
-                        "JT LORA Status:\nMode: FSK (GFSK)\nFreq: %.3fMHz\nBR:%.1fk dev:%.1fk RXBW:%.1fk\nPre:%u bits\nSW:0x12AD (wire profile)\nChipPwr:%ddBm\nSpeed:%u b/s",
+                        "JT LORA Status:\nMode: FSK (GFSK)\nFreq: %.3fMHz\n"
+                        "BR:%.1fk dev:%.1fk RXBW:%.1fk\nPre:%u bits\nSW:0x12AD (wire profile)\n"
+                        "ChipPwr:%ddBm\n%s\nSpeed:%u b/s",
                         freqMHz, altModem.brKbps, altModem.freqDevKHz, altModem.rxBwKHz,
-                        (unsigned)altModem.preambleBits, chipPwr, altSpeed);
+                        (unsigned)altModem.preambleBits, chipPwr, caps, altSpeed);
                 }
             } else {
             // LoRa useful bit rate (Semtech formula, accounting for FEC).
@@ -6897,11 +7166,13 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             // CWmin/CWmax are static constexpr on RadioInterface. Access via the class
             // directly (no instance needed).
             snprintf(replyMsg, sizeof(replyMsg),
-                "JT LORA Status:\nFreq: %.3fMHz\nBW:%.2fkHz SF:%d CR:%d\nPre:%u (%ums)\nSlot:%ums CW:%u-%u\nSW:0x%02X\nChipPwr:%ddBm\nSpeed:%u b/s",
+                "JT LORA Status:\nFreq: %.3fMHz\nBW:%.2fkHz SF:%d CR:%d\n"
+                "Pre:%u (%ums)\nSlot:%ums CW:%u-%u\nSW:0x%02X (Hyb:%s)\n"
+                "ChipPwr:%ddBm\n%s\nSpeed:%u b/s",
                 freqMHz, bw, sf, crDenom,
                 (unsigned)pre, (unsigned)preMs,
                 (unsigned)slotMs, (unsigned)RadioInterface::CWmin, (unsigned)RadioInterface::CWmax,
-                syncByte, chipPwr,
+                syncByte, hybridSw, chipPwr, caps,
                 speedBps);
             }
         }
@@ -8869,6 +9140,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "Help TIER");
             appendPaging("Usage: TIER [STATUS|MADRID|OFF|APPLY|SAVE|TX <1-3>]\n");
             appendPaging("  MADRID (LR2021): SF5 RNode main, SF6/7 Meshtastic, SF8 MeshCore, 869.618/BW62.5/CR5.\n");
+            appendPaging("  Protos: MESHTASTIC, RNODE, MESHCORE, DOUBLESHARED (RNode+MeshCore), TRIPLESHARED (all 3).\n");
             appendPaging("  TX <slot>: choose the Meshtastic TX side (1=SF6, 2=SF7).\n");
             appendPaging("  No SPLIT frequency required; /nexus SAVE persists vault v70.");
             snprintf(replyMsg, sizeof(replyMsg), "JT: Paging TIER help...");

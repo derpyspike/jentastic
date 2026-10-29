@@ -58,6 +58,27 @@ class JenCoreRepeater
     static uint16_t getAdvertFloodMinutes();
     static void setAdvertIntervals(uint16_t localMinutes, uint16_t floodMinutes);
 
+    /// MeshCore flood hop limits (MeshCore defaults: 64 / 64 / 8).
+    static uint8_t getFloodMax();
+    static uint8_t getFloodMaxUnscoped();
+    static uint8_t getFloodMaxAdvert();
+    static void setFloodLimits(uint8_t maxHops, uint8_t maxUnscoped, uint8_t maxAdvert);
+
+    /// Repeater discovery + neighbours.
+    static constexpr size_t MAX_NEIGHBORS = 8;
+    struct NeighborInfo {
+        uint8_t pub[32];
+        uint8_t type;
+        int8_t snr4;
+        uint32_t seenMs;
+    };
+    static uint32_t makeDiscoveryTag();
+    static size_t buildDiscoveryRequest(uint8_t *out, size_t outCap, uint32_t tag);
+    static void startDiscovery(uint32_t tag);
+    static bool discoveryActive();
+    static uint8_t neighborCount();
+    static const NeighborInfo *neighbor(uint8_t index);
+
     /// MeshCore-like region scoping. Names are stored without the leading '#', max 4 regions.
     static constexpr size_t MAX_REGIONS = 4;
     static constexpr size_t REGION_NAME_LEN = 23;
@@ -321,6 +342,13 @@ class JenCoreRepeater
     static uint8_t &pathHashStorage() { static uint8_t size = 3; return size; }
     static uint16_t &advertLocalStorage() { static uint16_t minutes = 0; return minutes; }
     static uint16_t &advertFloodStorage() { static uint16_t minutes = 0; return minutes; }
+    static uint8_t &floodMaxStorage() { static uint8_t v = 64; return v; }
+    static uint8_t &floodMaxUnscopedStorage() { static uint8_t v = 64; return v; }
+    static uint8_t &floodMaxAdvertStorage() { static uint8_t v = 8; return v; }
+    static uint32_t &discoveryTagStorage() { static uint32_t v = 0; return v; }
+    static uint32_t &discoveryUntilStorage() { static uint32_t v = 0; return v; }
+    static uint8_t &neighborCountStorage() { static uint8_t v = 0; return v; }
+    static NeighborInfo *neighborStorage() { static NeighborInfo list[MAX_NEIGHBORS] = {}; return list; }
 
     /** Our path hash (prefix of the public key) is the first hop of this direct frame's path. */
     bool isNextHopForUs(const uint8_t *raw, const FrameInfo &info) const;

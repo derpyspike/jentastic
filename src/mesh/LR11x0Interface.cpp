@@ -485,6 +485,18 @@ template <typename T> int16_t LR11x0Interface<T>::setOutputPowerLive(int8_t powe
     return err;
 }
 
+template <typename T> float LR11x0Interface<T>::getLastRxFrequencyError()
+{
+    return lora.getFrequencyError();
+}
+
+template <typename T> uint8_t LR11x0Interface<T>::getLastRxCodingRate()
+{
+    uint8_t rxCR = 0;
+    bool hasCRC = true;
+    return lora.getLoRaRxHeaderInfo(&rxCR, &hasCRC) == RADIOLIB_ERR_NONE ? rxCR : 0;
+}
+
 template <typename T> int16_t LR11x0Interface<T>::setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr)
 {
     int16_t err = lora.setSpreadingFactor(targetSf);

@@ -19,6 +19,8 @@ enum TierProtocol : uint8_t {
     TIER_MESHTASTIC = 1,
     TIER_RNODE = 2,
     TIER_MESHCORE = 3,
+    TIER_DOUBLESHARED = 4, // RNode + MeshCore on one 0x12 detector, classified by frame content
+    TIER_TRIPLESHARED = 5, // Meshtastic + RNode + MeshCore on one detector (Meshtastic also 0x12)
 };
 
 struct __attribute__((packed)) TierConfig {
@@ -45,6 +47,24 @@ static constexpr uint8_t MULTISF_MAX_SIDE = 3;
 static constexpr int8_t MULTISF_DEFAULT_POWER = 0x7F;
 static constexpr uint8_t MULTISF_NO_TX_SLOT = 0xFF;
 
+/// True when a detector configured with `tierProtocol` can carry `wanted`. A shared tier is one
+/// detector listening on one syncword; the protocols are separated by frame content on receive.
+inline bool tierCarriesProtocol(uint8_t tierProtocol, uint8_t wanted)
+{
+    if (tierProtocol == wanted)
+        return true;
+    if (tierProtocol == TIER_DOUBLESHARED)
+        return wanted == TIER_RNODE || wanted == TIER_MESHCORE;
+    if (tierProtocol == TIER_TRIPLESHARED)
+        return wanted == TIER_MESHTASTIC || wanted == TIER_RNODE || wanted == TIER_MESHCORE;
+    return false;
+}
+
+inline bool isSharedTier(uint8_t tierProtocol)
+{
+    return tierProtocol == TIER_DOUBLESHARED || tierProtocol == TIER_TRIPLESHARED;
+}
+
 inline uint8_t tierDetectionFactor(uint8_t sf)
 {
     if (sf < 5 || sf > 12)
@@ -61,6 +81,10 @@ inline const char *tierProtocolName(uint8_t protocol)
         return "RNODE";
     case TIER_MESHCORE:
         return "MESHCORE";
+    case TIER_DOUBLESHARED:
+        return "DOUBLESHARED";
+    case TIER_TRIPLESHARED:
+        return "TRIPLESHARED";
     default:
         return "NONE";
     }
@@ -80,6 +104,16 @@ inline bool parseTierProtocol(const char *value, uint8_t &protocol)
     }
     if (!strcasecmp(value, "MESHCORE") || !strcasecmp(value, "JENCORE") || !strcasecmp(value, "MC")) {
         protocol = TIER_MESHCORE;
+        return true;
+    }
+    if (!strcasecmp(value, "DOUBLESHARED") || !strcasecmp(value, "DOUBLE") || !strcasecmp(value, "DS") ||
+        !strcasecmp(value, "RNSMC")) {
+        protocol = TIER_DOUBLESHARED;
+        return true;
+    }
+    if (!strcasecmp(value, "TRIPLESHARED") || !strcasecmp(value, "TRIPLE") || !strcasecmp(value, "TS") ||
+        !strcasecmp(value, "ALL")) {
+        protocol = TIER_TRIPLESHARED;
         return true;
     }
     return false;
@@ -103,7 +137,7 @@ inline bool validateMultiSF(const MultiSFConfig &cfg, uint8_t mainSf, float bwKH
     }
     if (mainSf < 5 || mainSf > 12)
         return reject("main SF out of range [5..12]");
-    if (cfg.main_protocol < TIER_MESHTASTIC || cfg.main_protocol > TIER_MESHCORE)
+    if (cfg.main_protocol < TIER_MESHTASTIC || cfg.main_protocol > TIER_TRIPLESHARED)
         return reject("main protocol invalid");
     if (cfg.main_syncword == 0)
         return reject("main syncword must be non-zero");
@@ -120,7 +154,7 @@ inline bool validateMultiSF(const MultiSFConfig &cfg, uint8_t mainSf, float bwKH
     used[mainSf] = true;
     uint32_t detectionSum = tierDetectionFactor(mainSf);
     uint8_t largestSf = mainSf;
-    bool hasMeshtastic = cfg.main_protocol == TIER_MESHTASTIC;
+    bool hasMeshtastic = tierCarriesProtocol(cfg.main_protocol, TIER_MESHTASTIC);
 
     for (uint8_t i = 0; i < cfg.side_count; ++i) {
         const TierConfig &tier = cfg.side[i];
@@ -132,7 +166,7 @@ inline bool validateMultiSF(const MultiSFConfig &cfg, uint8_t mainSf, float bwKH
             return reject("side SF must be higher than the main SF");
         if (used[tier.sf])
             return reject("duplicate SF in the tier table");
-        if (tier.protocol < TIER_MESHTASTIC || tier.protocol > TIER_MESHCORE)
+        if (tier.protocol < TIER_MESHTASTIC || tier.protocol > TIER_TRIPLESHARED)
             return reject("side protocol invalid");
         if (tier.syncword == 0)
             return reject("side syncword must be non-zero");
@@ -140,7 +174,7 @@ inline bool validateMultiSF(const MultiSFConfig &cfg, uint8_t mainSf, float bwKH
         if (tier.sf > largestSf)
             largestSf = tier.sf;
         detectionSum += tierDetectionFactor(tier.sf);
-        if (tier.protocol == TIER_MESHTASTIC)
+        if (tierCarriesProtocol(tier.protocol, TIER_MESHTASTIC))
             hasMeshtastic = true;
     }
 
@@ -151,7 +185,7 @@ inline bool validateMultiSF(const MultiSFConfig &cfg, uint8_t mainSf, float bwKH
     if (hasMeshtastic && cfg.meshtastic_tx_slot == MULTISF_NO_TX_SLOT) {
         // 0xFF means "first Meshtastic tier"; it is valid as long as one exists.
     } else if (cfg.meshtastic_tx_slot != MULTISF_NO_TX_SLOT &&
-               cfg.side[cfg.meshtastic_tx_slot].protocol != TIER_MESHTASTIC) {
+               !tierCarriesProtocol(cfg.side[cfg.meshtastic_tx_slot].protocol, TIER_MESHTASTIC)) {
         return reject("Meshtastic TX slot is not a Meshtastic tier");
     }
 
@@ -180,10 +214,10 @@ inline bool multiSFHasProtocol(const MultiSFConfig &cfg, uint8_t protocol)
 {
     if (!cfg.enabled)
         return false;
-    if (cfg.main_protocol == protocol)
+    if (tierCarriesProtocol(cfg.main_protocol, protocol))
         return true;
     for (uint8_t i = 0; i < cfg.side_count; ++i)
-        if (cfg.side[i].enabled && cfg.side[i].protocol == protocol)
+        if (cfg.side[i].enabled && tierCarriesProtocol(cfg.side[i].protocol, protocol))
             return true;
     return false;
 }

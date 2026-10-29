@@ -466,6 +466,18 @@ template <typename T> int16_t SX126xInterface<T>::setOutputPowerLive(int8_t powe
     return err;
 }
 
+template <typename T> float SX126xInterface<T>::getLastRxFrequencyError()
+{
+    return lora.getFrequencyError();
+}
+
+template <typename T> uint8_t SX126xInterface<T>::getLastRxCodingRate()
+{
+    uint8_t rxCR = 0;
+    bool hasCRC = true;
+    return lora.getLoRaRxHeaderInfo(&rxCR, &hasCRC) == RADIOLIB_ERR_NONE ? rxCR : 0;
+}
+
 template <typename T> int16_t SX126xInterface<T>::setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr)
 {
     int16_t err = lora.setSpreadingFactor(targetSf);
@@ -681,7 +693,7 @@ template <typename T> void SX126xInterface<T>::configHardwareForSend()
     // JenCore listens for a longer preamble at low SF (RadioLibWrapper::preambleLengthForSF: 32 at SF<=8, else 16).
     // Ours is restored in startReceive().
     const uint16_t jencorePreamble = sf <= 8 ? 32 : 16;
-    if (isRawSending() && jencorePreamble != preambleLength) {
+    if (getRawSendingType() == RAW_SEND_JENCORE && jencorePreamble != preambleLength) {
         if (lora.setPreambleLength(jencorePreamble) == RADIOLIB_ERR_NONE)
             jencorePreambleSet = true;
     }

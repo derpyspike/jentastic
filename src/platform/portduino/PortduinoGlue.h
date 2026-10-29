@@ -9,7 +9,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "LR11x0Interface.h"
 #include "Module.h"
 #include "mesh/generated/meshtastic/mesh.pb.h"
 #ifndef ARCH_PORTDUINO_WASM

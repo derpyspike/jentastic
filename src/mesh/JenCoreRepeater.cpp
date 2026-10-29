@@ -392,6 +392,82 @@ const uint8_t *JenCoreRepeater::scopeOwnFrame(const uint8_t *raw, size_t len, ui
     return out;
 }
 
+uint8_t JenCoreRepeater::getFloodMax()
+{
+    return floodMaxStorage();
+}
+
+uint8_t JenCoreRepeater::getFloodMaxUnscoped()
+{
+    return floodMaxUnscopedStorage();
+}
+
+uint8_t JenCoreRepeater::getFloodMaxAdvert()
+{
+    return floodMaxAdvertStorage();
+}
+
+void JenCoreRepeater::setFloodLimits(uint8_t maxHops, uint8_t maxUnscoped, uint8_t maxAdvert)
+{
+    floodMaxStorage() = maxHops < 1 ? 1 : maxHops;
+    floodMaxUnscopedStorage() = maxUnscoped < 1 ? 1 : maxUnscoped;
+    floodMaxAdvertStorage() = maxAdvert < 1 ? 1 : maxAdvert;
+}
+
+uint32_t JenCoreRepeater::makeDiscoveryTag()
+{
+    uint32_t tag = 0;
+    while (tag == 0)
+        tag = (uint32_t)random(1, 0x7FFFFFFF);
+    return tag;
+}
+
+size_t JenCoreRepeater::buildDiscoveryRequest(uint8_t *out, size_t outCap, uint32_t tag)
+{
+    if (!out || outCap < 12)
+        return 0;
+    out[0] = (MC_PAYLOAD_TYPE_CONTROL << 2) | MC_ROUTE_DIRECT;
+    out[1] = 0; // zero-hop
+    out[2] = MC_CTL_DISCOVER_REQ;
+    out[3] = (1 << ADV_TYPE_CHAT) | (1 << ADV_TYPE_REPEATER);
+    out[4] = (uint8_t)(tag & 0xFF);
+    out[5] = (uint8_t)((tag >> 8) & 0xFF);
+    out[6] = (uint8_t)((tag >> 16) & 0xFF);
+    out[7] = (uint8_t)((tag >> 24) & 0xFF);
+    out[8] = out[9] = out[10] = out[11] = 0; // since = 0
+    return 12;
+}
+
+void JenCoreRepeater::startDiscovery(uint32_t tag)
+{
+    discoveryTagStorage() = tag;
+    discoveryUntilStorage() = millis() + 60000;
+    neighborCountStorage() = 0;
+    memset(neighborStorage(), 0, sizeof(NeighborInfo) * MAX_NEIGHBORS);
+}
+
+bool JenCoreRepeater::discoveryActive()
+{
+    const uint32_t tag = discoveryTagStorage();
+    if (tag == 0)
+        return false;
+    if (Throttle::deadlinePassed(discoveryUntilStorage())) {
+        discoveryTagStorage() = 0;
+        return false;
+    }
+    return true;
+}
+
+uint8_t JenCoreRepeater::neighborCount()
+{
+    return neighborCountStorage();
+}
+
+const JenCoreRepeater::NeighborInfo *JenCoreRepeater::neighbor(uint8_t index)
+{
+    return index < neighborCountStorage() ? &neighborStorage()[index] : nullptr;
+}
+
 bool JenCoreRepeater::looksLikeJenCoreFrame(const uint8_t *raw, size_t len, uint32_t ourNodeNum, FrameInfo *out)
 {
     if (!raw || len < 2 || len > MAX_FRAME_LEN)
@@ -516,10 +592,20 @@ void JenCoreRepeater::handleReceivedFrame(const uint8_t *raw, size_t len, float 
     // A flood that never got its turn is worthless once its dupe window is over: free its slot.
     expireStale();
 
-    // JenCore's flood_max_advert default (NodePrefs.h): ADVERT floods are not forwarded past 8
-    // hops. The general flood_max (64) is implied by the 6-bit hop count plus the path bound below.
-    if (info.payload_type == MC_PAYLOAD_TYPE_ADVERT && info.path_hash_count >= MAX_FLOOD_HOPS_ADVERT) {
-        LOG_DEBUG("JenCore: advert flood past %u hops, drop", info.path_hash_count);
+    // MeshCore flood hop limits (NodePrefs: flood_max / flood_max_unscoped / flood_max_advert).
+    const bool isFlood = info.route_type == MC_ROUTE_FLOOD || info.route_type == MC_ROUTE_TRANSPORT_FLOOD;
+    if (isFlood && info.path_hash_count >= getFloodMax()) {
+        LOG_DEBUG("JenCore: flood past flood_max (%u), drop", (unsigned)getFloodMax());
+        rxDropped++;
+        return;
+    }
+    if (info.route_type == MC_ROUTE_FLOOD && info.path_hash_count >= getFloodMaxUnscoped()) {
+        LOG_DEBUG("JenCore: unscoped flood past limit (%u), drop", (unsigned)getFloodMaxUnscoped());
+        rxDropped++;
+        return;
+    }
+    if (info.payload_type == MC_PAYLOAD_TYPE_ADVERT && info.path_hash_count >= getFloodMaxAdvert()) {
+        LOG_DEBUG("JenCore: advert flood past %u hops, drop", (unsigned)getFloodMaxAdvert());
         rxDropped++;
         return;
     }
@@ -655,14 +741,22 @@ void JenCoreRepeater::handleTrace(const uint8_t *raw, size_t len, const FrameInf
     // Mesh::onRecvPacket, TRACE: payload = tag(4) auth(4) flags(1) then the hashes to visit; the path field holds
     // one SNR byte (x4) per hop already taken, so path_len indexes the hash list. flags&3 is the hash size exponent.
     constexpr size_t traceHeadLen = 4 + 4 + 1;
-    if (!hasIdentityKey || info.path_hash_size != 1 || info.path_hash_count >= MAX_PATH_SIZE || info.payload_len < traceHeadLen)
+    // path_len's count subfield is 6 bits wide (MC_PATH_COUNT_MASK): count+1 must still fit after we append our SNR.
+    if (!hasIdentityKey || info.path_hash_size != 1 || info.path_hash_count >= MC_PATH_COUNT_MASK || info.payload_len < traceHeadLen)
         return;
 
     const uint8_t *payload = &raw[info.header_len];
     const size_t hashSize = (size_t)1 << (payload[8] & 0x03);
     const size_t offset = (size_t)info.path_hash_count * hashSize;
-    if (traceHeadLen + offset + hashSize > info.payload_len) // end of the list: we are the destination, nothing to forward
+    if (traceHeadLen + offset + hashSize > info.payload_len) {
+        // End of the hash list: this node is the trace endpoint. MeshCore reports it to the local
+        // app; we only have the serial log, so surface the tag and inbound SNR here.
+        uint32_t tag = 0;
+        memcpy(&tag, payload, 4);
+        LOG_INFO("JenCore TRACE reached us: tag=%08x snr=%d path=%u", (unsigned)tag, (int)(snr * 4.0f),
+                 (unsigned)info.path_hash_count);
         return;
+    }
     if (memcmp(&payload[traceHeadLen + offset], identityPub, hashSize) != 0)
         return;
     if (len + 1 > MAX_FRAME_LEN)
@@ -682,7 +776,7 @@ void JenCoreRepeater::handleTrace(const uint8_t *raw, size_t len, const FrameInf
     const size_t snrAt = info.header_len;
     uint8_t forwarded[MAX_FRAME_LEN];
     memcpy(forwarded, raw, snrAt);
-    forwarded[pathLenAt] = raw[pathLenAt] + 1;
+    forwarded[pathLenAt] = (uint8_t)((raw[pathLenAt] & ~MC_PATH_COUNT_MASK) | ((info.path_hash_count + 1) & MC_PATH_COUNT_MASK));
     float snrX4 = snr * 4;
     snrX4 = snrX4 > 127.0f ? 127.0f : (snrX4 < -128.0f ? -128.0f : snrX4);
     forwarded[snrAt] = (uint8_t)(int8_t)snrX4;
@@ -734,7 +828,43 @@ void JenCoreRepeater::handleControl(const uint8_t *raw, size_t len, const FrameI
 {
     // NODE_DISCOVER_REQ (simple_repeater onControlDataRecv): type 0x8_, filter, 4-byte tag, optional 'since'.
     const uint8_t *req = &raw[info.header_len];
-    if (!hasIdentityKey || info.payload_len < 6 || (req[0] & 0xF0) != MC_CTL_DISCOVER_REQ)
+    if (!hasIdentityKey || info.payload_len < 6)
+        return;
+
+    if ((req[0] & 0xF0) == MC_CTL_DISCOVER_RESP) {
+        const uint32_t tag = (uint32_t)req[2] | ((uint32_t)req[3] << 8) | ((uint32_t)req[4] << 16) |
+                             ((uint32_t)req[5] << 24);
+        if (!discoveryActive() || tag != discoveryTagStorage() || info.payload_len < 6 + MC_PUB_KEY_SIZE)
+            return;
+        const uint8_t *pub = &req[6];
+        if (memcmp(pub, identityPub, MC_PUB_KEY_SIZE) == 0)
+            return;
+
+        NeighborInfo *list = neighborStorage();
+        uint8_t count = neighborCountStorage();
+        int slot = -1;
+        for (uint8_t i = 0; i < count; i++)
+            if (memcmp(list[i].pub, pub, MC_PUB_KEY_SIZE) == 0) {
+                slot = (int)i;
+                break;
+            }
+        if (slot < 0) {
+            if (count < MAX_NEIGHBORS)
+                slot = count++;
+            else
+                slot = 0; // replace oldest slot
+            memcpy(list[slot].pub, pub, MC_PUB_KEY_SIZE);
+        }
+        list[slot].type = req[0] & 0x0F;
+        list[slot].snr4 = (int8_t)req[1];
+        list[slot].seenMs = millis();
+        neighborCountStorage() = count;
+        LOG_INFO("JenCore DISCOVER_RESP: type=%u snr=%d pub=%02x%02x%02x%02x...", (unsigned)list[slot].type,
+                 (int)list[slot].snr4, pub[0], pub[1], pub[2], pub[3]);
+        return;
+    }
+
+    if ((req[0] & 0xF0) != MC_CTL_DISCOVER_REQ)
         return;
     if ((req[1] & (1 << nodeType)) == 0)
         return;
@@ -1190,6 +1320,8 @@ size_t JenCoreRepeater::buildAdvert(uint8_t *out, size_t outLen, const char *nam
     if (!hasIdentityKey)
         return 0;
 
+    // PRIVACY: never set ADV_LATLON_MASK or write coordinates here. JenCore adverts carry no position
+    // unless an operator explicitly configures it in JENCORE (manual); never inherit Meshtastic position/GPS.
     // App data: type byte (our node type, with the name flag when there is a name), then the UTF-8 name.
     uint8_t appData[MAX_ADVERT_DATA_SIZE];
     size_t appLen = 1;
@@ -1252,7 +1384,7 @@ bool JenCoreRepeater::queueOwnFrame(const uint8_t *raw, size_t len, uint32_t del
         return false;
     if (framed != raw)
         parse(framed, framedLen, &info);
-    const uint32_t hash = hashFrame(raw, len, info);
+    const uint32_t hash = hashFrame(framed, framedLen, info);
 
     const int slot = claimSlot(PRIORITY_OWN);
     if (slot < 0)
