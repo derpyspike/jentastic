@@ -219,6 +219,15 @@ class JenCoreCompanion
     // RX metadata for the packet currently being decoded (filled by handleFrame).
     float lastRxFreqErr = 0.0f;
     uint8_t lastRxCodingRate = 0;
+    float lastRxSnr = 0.0f;
+    int32_t lastRxRssi = 0;
+    bool lastRxHasRssi = false;
+    uint16_t lastFrameFlags = 0;
+    uint16_t lastFrameRelayNode = 0;
+    uint8_t lastFrameHops = 0;
+    uint8_t lastFramePathLen = 0;
+    static constexpr size_t FRAME_PATH_CAP = 27;
+    uint8_t lastFramePath[FRAME_PATH_CAP] = {};
 
     /// A direct message on air whose ACK we are waiting for.
     struct PendingAck {
@@ -247,9 +256,11 @@ class JenCoreCompanion
 
     bool ensureSecret(JenCoreContact &c);
     void injectDirectText(const JenCoreContact &c, const char *text, int pathHashCount, float snr, int32_t rssi);
+    /// Map a path hash (public-key prefix) to a known node, so the phone can name the relay.
+    uint32_t resolveRelayNode(const uint8_t *hash, uint8_t hashSize);
     void queueAck(uint32_t hash);
     /// Tell the client how a direct message ended, as if the contact itself had answered.
-    void reportDelivery(uint32_t fromNum, uint32_t packetId, meshtastic_Routing_Error err);
+    void reportDelivery(uint32_t fromNum, uint32_t packetId, meshtastic_Routing_Error err, bool withMeta = false);
     void addPending(uint32_t ackHash, uint32_t packetId, uint32_t contactNum, bool group = false);
     /// A repeater re-flooded the channel text with this frame hash: report it delivered.
     void settleEcho(uint32_t hash);

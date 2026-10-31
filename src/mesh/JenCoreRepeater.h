@@ -110,6 +110,9 @@ class JenCoreRepeater
         uint8_t payload_len; // remaining bytes
     };
 
+    /// Index of the configured region a transport-flood matches, or 0xFF when unscoped/unmatched.
+    static uint8_t resolveRegionIndex(const uint8_t *raw, size_t len, const FrameInfo &info);
+
     /**
      * True if the raw LoRa frame looks like a valid JenCore packet. Conservative on purpose:
      * must be >= 2 bytes, <= 255, payload version 0, a known payload type, and a valid path_len

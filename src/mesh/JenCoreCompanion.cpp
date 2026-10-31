@@ -14,6 +14,7 @@
 #endif
 
 #include "Channels.h"
+#include "JenCoreMeta.h"
 #include "NodeDB.h"
 #include "RadioInterface.h"
 #include "Router.h"
@@ -708,16 +709,63 @@ bool JenCoreCompanion::cachedChannelHash(ChannelIndex ch, const uint8_t *key, si
     return true;
 }
 
+uint32_t JenCoreCompanion::resolveRelayNode(const uint8_t *hash, uint8_t hashSize)
+{
+    if (!hash || hashSize == 0 || hashSize > 3)
+        return 0;
+
+    uint32_t found = 0;
+    contacts.forEach([&](JenCoreContact &c) {
+        if (!found && memcmp(c.pub, hash, hashSize) == 0)
+            found = c.nodeNum;
+    });
+    if (found || !nodeDB)
+        return found;
+
+    // A repeater we only heard an ADVERT from lives in the node DB, not the contact table.
+    for (size_t i = 0; i < nodeDB->getNumMeshNodes(); i++) {
+        const meshtastic_NodeInfoLite *lite = nodeDB->getMeshNodeByIndex(i);
+        if (lite && lite->public_key.size == sizeof(lite->public_key.bytes) &&
+            memcmp(lite->public_key.bytes, hash, hashSize) == 0)
+            return lite->num;
+    }
+    return 0;
+}
+
 void JenCoreCompanion::handleFrame(const uint8_t *raw, size_t len, float snr, int32_t rssi, float freqErr, uint8_t codingRate)
 {
+    static_assert(FRAME_PATH_CAP == nexus::jen_core_meta::PATH_CAP, "path caps must agree");
     if (!raw || !router)
         return;
     lastRxFreqErr = freqErr;
     lastRxCodingRate = codingRate;
+    lastRxSnr = snr;
+    lastRxRssi = rssi;
+    lastRxHasRssi = true;
 
     JenCoreRepeater::FrameInfo info;
     if (!JenCoreRepeater::parse(raw, len, &info))
         return;
+
+    const size_t pathBytes = (size_t)info.path_hash_count * info.path_hash_size;
+    const uint8_t *path = pathBytes ? raw + info.header_len - pathBytes : nullptr;
+    bool pathTruncated = false;
+    lastFramePathLen = (uint8_t)nexus::jen_core_meta::copyPathTail(path, pathBytes, info.path_hash_size, lastFramePath,
+                                                                  sizeof(lastFramePath), &pathTruncated);
+    lastFrameHops = info.path_hash_count;
+    lastFrameRelayNode = 0;
+    if (info.path_hash_count > 0 && path) {
+        const uint32_t relay = resolveRelayNode(path + pathBytes - info.path_hash_size, info.path_hash_size);
+        lastFrameRelayNode = (uint16_t)(relay & 0xFFFF);
+    }
+    bool regionScoped = false;
+    uint8_t regionIndex = 0xFF;
+    if (info.route_type == 0 && len >= 5) { // transport-flood carries the region code
+        regionScoped = ((uint16_t)raw[1] | ((uint16_t)raw[2] << 8)) != 0;
+        regionIndex = JenCoreRepeater::resolveRegionIndex(raw, len, info);
+    }
+    lastFrameFlags = nexus::jen_core_meta::packFlags(true, regionScoped, pathTruncated, info.route_type, info.payload_type,
+                                                     info.path_hash_size, regionIndex);
 
     switch (info.payload_type) {
     case 0x05: // GRP_TXT
@@ -826,6 +874,7 @@ void JenCoreCompanion::handleGroupText(const uint8_t *raw, size_t len, const Jen
         p->rx_rssi = rssi;
         p->rx_frequency_error = lastRxFreqErr;
         p->rx_coding_rate = lastRxCodingRate;
+        nexus::jen_core_meta::apply(*p, lastFrameFlags, lastFrameRelayNode, lastFramePath, lastFramePathLen);
 
         LOG_INFO("JenCore group text ch=%u ts=%u len=%u", (unsigned)i, timestamp, (unsigned)p->decoded.payload.size);
         router->enqueueReceivedMessage(p);
@@ -979,6 +1028,7 @@ void JenCoreCompanion::injectDirectText(const JenCoreContact &c, const char *tex
     p->rx_rssi = rssi;
     p->rx_frequency_error = lastRxFreqErr;
     p->rx_coding_rate = lastRxCodingRate;
+    nexus::jen_core_meta::apply(*p, lastFrameFlags, lastFrameRelayNode, lastFramePath, lastFramePathLen);
     router->enqueueReceivedMessage(p);
 }
 
@@ -1028,7 +1078,7 @@ void JenCoreCompanion::handleDirectText(const uint8_t *raw, size_t len, const Je
     }
 }
 
-void JenCoreCompanion::reportDelivery(uint32_t fromNum, uint32_t packetId, meshtastic_Routing_Error err)
+void JenCoreCompanion::reportDelivery(uint32_t fromNum, uint32_t packetId, meshtastic_Routing_Error err, bool withMeta)
 {
     meshtastic_Routing r = meshtastic_Routing_init_default;
     r.which_variant = meshtastic_Routing_error_reason_tag;
@@ -1047,10 +1097,18 @@ void JenCoreCompanion::reportDelivery(uint32_t fromNum, uint32_t packetId, mesht
     p->decoded.request_id = packetId;
     p->decoded.payload.size =
         pb_encode_to_bytes(p->decoded.payload.bytes, sizeof(p->decoded.payload.bytes), &meshtastic_Routing_msg, &r);
-    // The router drops a packet whose hop_start is missing, so the delivery report carries real hop fields (direct).
+    // The router drops a packet whose hop_start is missing, so the delivery report carries real hop fields.
     p->decoded.has_bitfield = true;
     p->decoded.bitfield = 0;
-    hopFields(0, &p->hop_start, &p->hop_limit);
+    if (withMeta) {
+        p->rx_snr = lastRxSnr;
+        p->has_rx_rssi = lastRxHasRssi;
+        p->rx_rssi = lastRxRssi;
+        p->rx_frequency_error = lastRxFreqErr;
+        p->rx_coding_rate = lastRxCodingRate;
+        nexus::jen_core_meta::apply(*p, lastFrameFlags, lastFrameRelayNode, lastFramePath, lastFramePathLen);
+    }
+    hopFields(withMeta ? lastFrameHops : 0, &p->hop_start, &p->hop_limit);
     p->transport_mechanism = meshtastic_MeshPacket_TransportMechanism_TRANSPORT_LORA;
     router->enqueueReceivedMessage(p);
 }
@@ -1092,7 +1150,7 @@ void JenCoreCompanion::settleEcho(uint32_t hash)
         if (e.used && e.group && e.ackHash == hash) {
             e.used = false;
             groupEchoed++;
-            reportDelivery(e.contactNum, e.packetId, meshtastic_Routing_Error_NONE);
+            reportDelivery(e.contactNum, e.packetId, meshtastic_Routing_Error_NONE, /*withMeta=*/true);
             return;
         }
     }
@@ -1129,7 +1187,7 @@ void JenCoreCompanion::settleAck(uint32_t hash)
         if (e.used && !e.group && e.ackHash == hash) {
             e.used = false;
             dmAcked++;
-            reportDelivery(e.contactNum, e.packetId, meshtastic_Routing_Error_NONE);
+            reportDelivery(e.contactNum, e.packetId, meshtastic_Routing_Error_NONE, /*withMeta=*/true);
             return;
         }
     }

@@ -98,6 +98,8 @@ class ReliableRouterTestShim : public ReliableRouter
 
     bool filterForTest(const meshtastic_MeshPacket *p) { return ReliableRouter::shouldFilterReceived(p); }
 
+    void clearOwnTrackForTest() { clearOwnTrack(); }
+
     bool hasPending(NodeNum from, PacketId id) { return findPendingPacket(from, id) != nullptr; }
 
     uint32_t pendingNextTx(NodeNum from, PacketId id)
@@ -260,6 +262,25 @@ static meshtastic_MeshPacket makeEncryptedToUs(uint8_t channel, bool wantAck)
     return p;
 }
 
+static meshtastic_MeshPacket makeOverheardOwnCopy(PacketId id, uint8_t relay,
+                                                  meshtastic_MeshPacket_TransportMechanism transport)
+{
+    meshtastic_MeshPacket p = meshtastic_MeshPacket_init_zero;
+    p.from = kLocalNode;
+    p.to = kRemoteNode;
+    p.id = id;
+    p.hop_start = 3;
+    p.hop_limit = 2;
+    p.transport_mechanism = transport;
+    p.which_payload_variant = meshtastic_MeshPacket_encrypted_tag;
+    p.encrypted.size = 32;
+    p.relay_node = relay;
+    p.has_rx_rssi = true;
+    p.rx_rssi = -80;
+    p.rx_snr = 5.0f;
+    return p;
+}
+
 static void expectSingleAckNak(meshtastic_Routing_Error err, NodeNum to, PacketId id, ChannelIndex chIndex, uint8_t hopLimit,
                                bool ackWantsAck)
 {
@@ -331,6 +352,7 @@ void setUp(void)
     owner.public_key.size = 0;
     mockNodeDB->clearTestNodes();
     reliableShim->clearPendingForTest();
+    reliableShim->clearOwnTrackForTest();
     reliableShim->resetRouteHealthForTest();
     radio->reset();
     mockRoutingModule->ackNaks.clear();
@@ -791,6 +813,61 @@ void test_overheard_own_dm_rebroadcast_mints_implicit_ack(void)
     TEST_ASSERT_EQUAL_UINT32(0, reliableShim->pendingCount());
 }
 
+void test_each_distinct_relay_gets_its_own_confirmation(void)
+{
+    // Every distinct repeater that rebroadcasts our packet must produce a confirmation, not just
+    // the first one that cancels retransmission. Duplicate receptions of the same copy must not.
+    auto original = makeDecodedPacket(meshtastic_PortNum_TEXT_MESSAGE_APP, kLocalNode, kRemoteNode, 1, /*wantAck=*/true);
+    reliableShim->seedRetry(original, NextHopRouter::NUM_RELIABLE_UNICAST_ATTEMPTS);
+
+    auto copy = makeOverheardOwnCopy(original.id, 0x31, meshtastic_MeshPacket_TransportMechanism_TRANSPORT_LORA);
+    reliableShim->filterForTest(&copy);
+    TEST_ASSERT_EQUAL_UINT32(0, reliableShim->pendingCount());
+    TEST_ASSERT_EQUAL_UINT32(1, mockRoutingModule->ackNaks.size());
+
+    copy.relay_node = 0x32;
+    copy.rx_rssi = -70;
+    copy.rx_snr = 6.0f;
+    reliableShim->filterForTest(&copy);
+    TEST_ASSERT_EQUAL_UINT32(2, mockRoutingModule->ackNaks.size());
+    TEST_ASSERT_EQUAL_HEX8(0x31, mockRoutingModule->relaySources[0].relayNode);
+    TEST_ASSERT_EQUAL_HEX8(0x32, mockRoutingModule->relaySources[1].relayNode);
+    TEST_ASSERT_EQUAL_INT32(-70, mockRoutingModule->relaySources[1].rxRssi);
+    TEST_ASSERT_EQUAL_FLOAT(6.0f, mockRoutingModule->relaySources[1].rxSnr);
+
+    // The same copy heard twice is not a second relay.
+    reliableShim->filterForTest(&copy);
+    TEST_ASSERT_EQUAL_UINT32(2, mockRoutingModule->ackNaks.size());
+
+    for (const auto &ack : mockRoutingModule->ackNaks) {
+        TEST_ASSERT_EQUAL_HEX32(kLocalNode, std::get<1>(ack));
+        TEST_ASSERT_EQUAL_HEX32(original.id, std::get<2>(ack));
+    }
+}
+
+void test_late_repeat_after_real_ack_still_reports(void)
+{
+    // The cache is seeded in send(); a real ACK from the destination may clear the pending retry
+    // before a repeater is overheard, and that late repeat must still reach the phone.
+    auto original = makeDecodedPacket(meshtastic_PortNum_TEXT_MESSAGE_APP, kLocalNode, kRemoteNode, 1, /*wantAck=*/true);
+    original.from = 0; // phone-originated, as MeshService hands it to the router
+    auto *allocated = packetPool.allocCopy(original);
+    TEST_ASSERT_NOT_NULL(allocated);
+    TEST_ASSERT_EQUAL_INT(ERRNO_OK, reliableShim->send(allocated));
+
+    auto ack = makeDecodedPacket(meshtastic_PortNum_ROUTING_APP, kRemoteNode, kLocalNode, 1);
+    ack.decoded.request_id = original.id;
+    meshtastic_Routing routing = meshtastic_Routing_init_zero;
+    routing.error_reason = meshtastic_Routing_Error_NONE;
+    reliableShim->sniffForTest(&ack, &routing);
+    TEST_ASSERT_EQUAL_UINT32(0, reliableShim->pendingCount());
+
+    auto copy = makeOverheardOwnCopy(original.id, 0x55, meshtastic_MeshPacket_TransportMechanism_TRANSPORT_LORA);
+    reliableShim->filterForTest(&copy);
+    TEST_ASSERT_EQUAL_UINT32(1, mockRoutingModule->ackNaks.size());
+    TEST_ASSERT_EQUAL_HEX8(0x55, mockRoutingModule->relaySources[0].relayNode);
+}
+
 void test_overheard_own_dm_via_mqtt_acks_but_keeps_retransmissions(void)
 {
     // The MQTT copy still surfaces "Delivered to mesh" but must not cancel the LoRa retries.
@@ -1020,6 +1097,8 @@ void setup()
 
     printf("\n=== implicit ACK for our own overheard DM ===\n");
     RUN_TEST(test_overheard_own_dm_rebroadcast_mints_implicit_ack);
+    RUN_TEST(test_each_distinct_relay_gets_its_own_confirmation);
+    RUN_TEST(test_late_repeat_after_real_ack_still_reports);
     RUN_TEST(test_overheard_own_dm_via_mqtt_acks_but_keeps_retransmissions);
     RUN_TEST(test_overheard_foreign_packet_mints_no_implicit_ack);
 
