@@ -12,6 +12,69 @@
 
 // ReliableRouter::ReliableRouter() {}
 
+void ReliableRouter::rememberOwnTransmission(const meshtastic_MeshPacket *p)
+{
+    // Client-supplied packets carry from == 0; isFromUs() treats that as ours.
+    if (!p || !isFromUs(p) || p->id == 0)
+        return;
+    if (p->which_payload_variant == meshtastic_MeshPacket_decoded_tag &&
+        p->decoded.portnum == meshtastic_PortNum_ROUTING_APP)
+        return; // never track an ack/nak of our own
+
+    const uint32_t now = Time::getMillis();
+    OwnTransmission *slot = findOwnTransmission(p->id);
+    if (slot) {
+        slot->channel = p->channel;
+        return;
+    }
+
+    slot = nullptr;
+    uint32_t oldestAge = 0;
+    for (auto &e : ownTrack) {
+        if (e.id == 0) {
+            slot = &e;
+            break;
+        }
+        const uint32_t age = now - e.atMsec;
+        if (!slot || age > oldestAge) {
+            slot = &e;
+            oldestAge = age;
+        }
+    }
+
+    *slot = OwnTransmission();
+    slot->id = p->id;
+    slot->atMsec = now;
+    slot->channel = p->channel;
+}
+
+ReliableRouter::OwnTransmission *ReliableRouter::findOwnTransmission(PacketId id)
+{
+    const uint32_t now = Time::getMillis();
+    for (auto &e : ownTrack) {
+        if (e.id != id)
+            continue;
+        if (now - e.atMsec >= OWN_TRACK_TTL_MSEC) {
+            e = OwnTransmission();
+            return nullptr;
+        }
+        return &e;
+    }
+    return nullptr;
+}
+
+bool ReliableRouter::noteOwnRelay(OwnTransmission *t, uint8_t relay)
+{
+    if (!t)
+        return false;
+    for (uint8_t i = 0; i < t->relayCount; i++)
+        if (t->relays[i] == relay)
+            return false;
+    if (t->relayCount < NUM_RELAYERS)
+        t->relays[t->relayCount++] = relay;
+    return true;
+}
+
 /**
  * If the message is want_ack, then add it to a list of packets to retransmit.
  * If we run out of retransmissions, send a nak packet towards the original client to indicate failure.
@@ -23,6 +86,8 @@ ErrorCode ReliableRouter::send(meshtastic_MeshPacket *p)
         packetPool.release(p);
         return meshtastic_Routing_Error_NOT_AUTHORIZED;
     }
+
+    rememberOwnTransmission(p);
 
     const GlobalPacketId key(p);
     const bool retransmitting = p->want_ack;
@@ -70,22 +135,40 @@ void ReliableRouter::perhapsGenerateImplicitAckForOwnOverheard(const meshtastic_
 
     // This "optimization", does save lots of airtime. For DMs, you also get a real ACK back
     // from the intended recipient.
+    // Every distinct relay that repeats the packet gets its own confirmation, so the client can
+    // show the whole relay set rather than only the first one. The first copy still stops our
+    // retransmissions; later copies only report.
     auto key = GlobalPacketId(getFrom(p), p->id);
     auto old = findPendingPacket(key);
-    if (old) {
-        LOG_DEBUG("Generate implicit ack");
-        // NOTE: we do NOT check p->wantAck here because p is the INCOMING rebroadcast and that packet is not expected to be
-        // marked as wantAck
-        // Pass the overheard rebroadcast as the relay source so the ack carries the relaying node's id
-        // and the RSSI/SNR we heard it at.
-        sendAckNak(meshtastic_Routing_Error_NONE, getFrom(p), p->id, old->packet->channel, 0, false, p);
+    OwnTransmission *tracked = findOwnTransmission(p->id);
 
-        // Only stop retransmissions if the rebroadcast came via LoRa
-        if (p->transport_mechanism == meshtastic_MeshPacket_TransportMechanism_TRANSPORT_LORA) {
-            stopRetransmission(key);
-        }
-    } else {
+    if (!old && !tracked) {
         LOG_DEBUG("Didn't find pending packet");
+        return;
+    }
+
+    if (old && !tracked) {
+        // Pending copy proves this is ours even if send() tracking was evicted.
+        rememberOwnTransmission(old->packet);
+        tracked = findOwnTransmission(p->id);
+    }
+
+    if (tracked && !noteOwnRelay(tracked, p->relay_node)) {
+        LOG_DEBUG("Implicit ack already reported relay 0x%02x", p->relay_node);
+        return;
+    }
+
+    LOG_DEBUG("Generate implicit ack (relay 0x%02x)", p->relay_node);
+    // NOTE: we do NOT check p->wantAck here because p is the INCOMING rebroadcast and that packet is not expected to be
+    // marked as wantAck
+    // Pass the overheard rebroadcast as the relay source so the ack carries the relaying node's id
+    // and the metrics we heard it at.
+    const uint8_t channel = old ? old->packet->channel : (tracked ? tracked->channel : p->channel);
+    sendAckNak(meshtastic_Routing_Error_NONE, getFrom(p), p->id, channel, 0, false, p);
+
+    // Only stop retransmissions if the rebroadcast came via LoRa
+    if (old && p->transport_mechanism == meshtastic_MeshPacket_TransportMechanism_TRANSPORT_LORA) {
+        stopRetransmission(key);
     }
 }
 

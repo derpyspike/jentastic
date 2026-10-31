@@ -272,6 +272,26 @@ bool JenCoreRepeater::isFrameRegionAllowed(const uint8_t *raw, size_t len)
     return isRegionAllowed(raw, len, info);
 }
 
+uint8_t JenCoreRepeater::resolveRegionIndex(const uint8_t *raw, size_t len, const FrameInfo &info)
+{
+    const RegionStore &store = regionStore();
+    if (!raw || store.count == 0 || info.route_type != MC_ROUTE_TRANSPORT_FLOOD || len < 5)
+        return 0xFF;
+
+    const uint16_t code = (uint16_t)raw[1] | ((uint16_t)raw[2] << 8);
+    if (code == 0)
+        return 0xFF;
+
+    const uint8_t *payload = raw + info.header_len;
+    for (uint8_t i = 0; i < store.count; i++) {
+        uint8_t key[16];
+        regionKey(store.names[i], key);
+        if (transportCode(key, info.payload_type, payload, info.payload_len) == code)
+            return i;
+    }
+    return 0xFF;
+}
+
 bool JenCoreRepeater::addRegion(const char *name)
 {
     RegionStore &store = regionStore();

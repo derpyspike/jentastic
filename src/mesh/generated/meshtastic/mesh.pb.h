@@ -1111,6 +1111,7 @@ typedef struct _meshtastic_MqttClientProxyMessage {
 
 typedef PB_BYTES_ARRAY_T(256) meshtastic_MeshPacket_encrypted_t;
 typedef PB_BYTES_ARRAY_T(32) meshtastic_MeshPacket_public_key_t;
+typedef PB_BYTES_ARRAY_T(27) meshtastic_MeshPacket_jc_path_t;
 /* A packet envelope sent/received over the mesh
  only payload_variant is sent in the payload portion of the LORA packet.
  The other fields are either not sent at all, or sent in the special 16 byte LORA header. */
@@ -1243,6 +1244,19 @@ typedef struct _meshtastic_MeshPacket {
  Used by NexusModule::updateTargetStats() / cr_stats[][] accumulator for /nexus CRSTATS
  and by the META alert / FWS / PPING display paths. */
     uint8_t rx_coding_rate;
+
+    /* Nexus-only JenCore metadata, sent to the phone but never over LoRa.
+ Packed so the whole set fits the 512-byte FromRadio budget:
+ bit0 is_jencore, bit1 region_scoped, bit2 path_truncated,
+ bits3-4 route_type, bits5-8 payload_type, bits9-10 path_hash_size-1,
+ bits11-13 region_index (7 = none).
+ Zero means "not a JenCore packet", so proto3 leaves the field absent. */
+    uint16_t jc_flags;
+    /* Low 16 bits of the last repeater's NodeNum, 0 when unresolved. */
+    uint16_t jc_relay_node;
+    /* Tail of the JenCore path (public-key prefixes), at most 27 bytes and
+ always whole hashes; jc_flags.path_truncated says whether the head was cut. */
+    meshtastic_MeshPacket_jc_path_t jc_path;
 } meshtastic_MeshPacket;
 
 /* The bluetooth to device link:
@@ -2051,6 +2065,9 @@ extern "C" {
 #define meshtastic_MeshPacket_ack_proof_status_tag 23
 #define meshtastic_MeshPacket_rx_frequency_error_tag  63
 #define meshtastic_MeshPacket_rx_coding_rate_tag  64
+#define meshtastic_MeshPacket_jc_flags_tag  65
+#define meshtastic_MeshPacket_jc_relay_node_tag  66
+#define meshtastic_MeshPacket_jc_path_tag  67
 #define meshtastic_NodeInfo_num_tag              1
 #define meshtastic_NodeInfo_user_tag             2
 #define meshtastic_NodeInfo_position_tag         3
@@ -2346,7 +2363,10 @@ X(a, STATIC,   SINGULAR, UENUM,    transport_mechanism,  21) \
 X(a, STATIC,   SINGULAR, BOOL,     xeddsa_signed,    22) \
 X(a, STATIC,   SINGULAR, UENUM,    ack_proof_status,  23) \
 X(a, STATIC,   SINGULAR, FLOAT,    rx_frequency_error,  63) \
-X(a, STATIC,   SINGULAR, UINT32,   rx_coding_rate,      64)
+X(a, STATIC,   SINGULAR, UINT32,   rx_coding_rate,      64) \
+X(a, STATIC,   SINGULAR, UINT32,   jc_flags,          65) \
+X(a, STATIC,   SINGULAR, UINT32,   jc_relay_node,     66) \
+X(a, STATIC,   SINGULAR, BYTES,    jc_path,           67)
 #define meshtastic_MeshPacket_CALLBACK NULL
 #define meshtastic_MeshPacket_DEFAULT NULL
 #define meshtastic_MeshPacket_payload_variant_decoded_MSGTYPE meshtastic_Data
@@ -2705,7 +2725,7 @@ extern const pb_msgdesc_t meshtastic_ChunkedPayloadResponse_msg;
 #define meshtastic_DeviceMetadata_size           56
 #define meshtastic_DuplicatedPublicKey_size      0
 #define meshtastic_FileInfo_size                 236
-#define meshtastic_FromRadio_size                510
+#define meshtastic_FromRadio_size                512
 #define meshtastic_Heartbeat_size                6
 #define meshtastic_KeyVerificationFinal_size     65
 #define meshtastic_KeyVerificationNumberInform_size 58
@@ -2717,7 +2737,7 @@ extern const pb_msgdesc_t meshtastic_ChunkedPayloadResponse_msg;
 #define meshtastic_LockdownStatus_size           53
 #define meshtastic_LogRecord_size                426
 #define meshtastic_LowEntropyKey_size            0
-#define meshtastic_MeshPacket_size               453
+#define meshtastic_MeshPacket_size               503
 #define meshtastic_MqttClientProxyMessage_size   501
 #define meshtastic_MyNodeInfo_size               83
 #define meshtastic_NeighborInfo_size             258
@@ -2731,7 +2751,7 @@ extern const pb_msgdesc_t meshtastic_ChunkedPayloadResponse_msg;
 #define meshtastic_Routing_size                  269
 #define meshtastic_StatusMessage_size            81
 #define meshtastic_StoreForwardPlusPlus_size     377
-#define meshtastic_ToRadio_size                  504
+#define meshtastic_ToRadio_size                  506
 #define meshtastic_User_size                     115
 #define meshtastic_Waypoint_size                 199
 

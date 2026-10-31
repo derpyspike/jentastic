@@ -7123,7 +7123,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 "OFF";
 #endif
             char caps[48];
-            snprintf(caps, sizeof(caps), "Sniffer:%s JC:%s JR:%s MSF:%s", snifferState, jcState, jrState,
+            snprintf(caps, sizeof(caps), "MultiP:%s JC:%s JR:%s MSF:%s", snifferState, jcState, jrState,
                      multiSFConfig.enabled ? "ON" : "OFF");
 #if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
             char hybridSw[12];

@@ -63,4 +63,31 @@ class ReliableRouter : public NextHopRouter
         meshtastic_MeshPacket_AckProofStatus status = meshtastic_MeshPacket_AckProofStatus_ACK_PROOF_ABSENT;
     };
     AckProofVerdict lastAckProof;
+
+    /**
+     * Recently originated packets, so an overheard rebroadcast can still be reported to the phone
+     * after the first implicit ACK removed the pending retransmission. Bounded, reuse-oldest, RAM-only.
+     */
+    struct OwnTransmission {
+        PacketId id = 0;
+        uint32_t atMsec = 0;
+        uint8_t channel = 0;
+        uint8_t relayCount = 0;
+        uint8_t relays[NUM_RELAYERS] = {};
+    };
+    static constexpr size_t OWN_TRACK_MAX = 8;
+    static constexpr uint32_t OWN_TRACK_TTL_MSEC = 5UL * 60 * 1000;
+    OwnTransmission ownTrack[OWN_TRACK_MAX] = {};
+
+    void rememberOwnTransmission(const meshtastic_MeshPacket *p);
+    OwnTransmission *findOwnTransmission(PacketId id);
+    /// False when this relay was already reported for the packet.
+    bool noteOwnRelay(OwnTransmission *t, uint8_t relay);
+
+  protected:
+    void clearOwnTrack()
+    {
+        for (auto &e : ownTrack)
+            e = OwnTransmission();
+    }
 };

@@ -719,6 +719,8 @@ static void test_localAck_carriesRelaySourceToPhone()
     overheard.has_rx_rssi = true;
     overheard.rx_rssi = -93;
     overheard.rx_snr = 4.75f;
+    overheard.rx_frequency_error = -123.0f;
+    overheard.rx_coding_rate = 3;
 
     realRoutingModule->sendAckNak(meshtastic_Routing_Error_NONE, LOCAL_NODE, overheard.id, 0, /*hopLimit=*/0,
                                   /*ackWantsAck=*/false, &overheard);
@@ -730,6 +732,8 @@ static void test_localAck_carriesRelaySourceToPhone()
     TEST_ASSERT_TRUE(toPhone->has_rx_rssi);
     TEST_ASSERT_EQUAL_INT32(-93, toPhone->rx_rssi);
     TEST_ASSERT_EQUAL_FLOAT(4.75f, toPhone->rx_snr);
+    TEST_ASSERT_EQUAL_FLOAT(-123.0f, toPhone->rx_frequency_error);
+    TEST_ASSERT_EQUAL_UINT8(3, toPhone->rx_coding_rate);
     mockService->releaseToPool(toPhone);
 }
 
