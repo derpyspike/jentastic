@@ -131,6 +131,9 @@ static void test_fromradio_roundtrip(void)
     const char msg[] = "hello";
     p.decoded.payload.size = sizeof(msg) - 1;
     memcpy(p.decoded.payload.bytes, msg, p.decoded.payload.size);
+    // Nexus diagnostics must survive the same encode as the ordinary Meshtastic fields.
+    p.rx_frequency_error = -123.0f;
+    p.rx_coding_rate = 3;
     apply(p, packFlags(true, true, true, 0, 0x05, 3, 2), 0x4DAB, path, sizeof(path));
 
     meshtastic_FromRadio in = meshtastic_FromRadio_init_zero;
@@ -147,6 +150,8 @@ static void test_fromradio_roundtrip(void)
     TEST_ASSERT_EQUAL_HEX16(p.jc_relay_node, out.packet.jc_relay_node);
     TEST_ASSERT_EQUAL_UINT32(p.jc_path.size, out.packet.jc_path.size);
     TEST_ASSERT_EQUAL_UINT8_ARRAY(p.jc_path.bytes, out.packet.jc_path.bytes, p.jc_path.size);
+    TEST_ASSERT_EQUAL_FLOAT(-123.0f, out.packet.rx_frequency_error);
+    TEST_ASSERT_EQUAL_UINT8(3, out.packet.rx_coding_rate);
 }
 
 static void test_declared_meshpacket_size_bounds_all_fields(void)

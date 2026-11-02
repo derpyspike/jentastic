@@ -25,7 +25,9 @@
 #include "mesh/RNodeEngine.h"
 #endif
 #if NEXUS_ENABLE_JENCORE_SNIFFER
+#include "mesh/JenCoreCompanion.h"
 #include "mesh/JenCoreRepeater.h"
+#include "mesh/JenCoreVault.h"
 #endif
 #include "NodeDB.h"
 #include "Power.h"
@@ -56,6 +58,7 @@
 #include "main.h"
 #include "mesh/Throttle.h"
 #include <new>
+#include <stdarg.h>
 #ifdef ARCH_NRF52
 #include "main.h"
 #endif
@@ -382,6 +385,12 @@ void NexusModule::initOnce() {
     if (!nexusTxHook) {
         nexusTxHook = new NexusTxHook();
     }
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+    // Policy must be in RAM before the first JenCore frame: the radio thread
+    // reads it for block/burner decisions and the trace alert.
+    jenCoreVault::loadPolicy();
+    JenCoreRepeater::setTraceObserver(&NexusModule::jenCoreTraceObserver);
+#endif
 
 #ifdef STATION_G3
     // Nexus-28005 (2026-09-15): /nexus G3 boot-detect + vault apply.
@@ -2786,6 +2795,11 @@ int32_t NexusModule::runOnce() {
         sendReply(traceReply, message, strlen(message));
     }
 
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+    // 2.5 JenCore TRACE/PING endpoint result or 60 s timeout.
+    serviceJenCoreTrace();
+#endif
+
     // 3. Process Deferred LoRa Changes
     if (pendingLoRaConfig && Throttle::deadlinePassedAt(now, pendingLoRaApplyAt)) {
         LOG_INFO("Nexus: Applying deferred LoRa configuration change (LIVE).");
@@ -4872,6 +4886,278 @@ bool NexusModule::sendToNexusChannel(const char *msg, size_t len, uint32_t reply
     if (ch == 0xFFFFFFFF) return false; // No Nexus channel configured
     return sendToMeshPacket(0xFFFFFFFF, ch, replyId, msg, len, false, true);
 }
+
+bool NexusModule::injectLocalNexusText(uint32_t channel, const char *text, size_t len, uint32_t fromNum)
+{
+    if (!router || !text || len == 0)
+        return false;
+    meshtastic_MeshPacket *p = packetPool.allocZeroed();
+    if (!p)
+        return false;
+    p->from = fromNum;
+    p->to = NODENUM_BROADCAST;
+    p->id = generatePacketId();
+    p->channel = channel;
+    p->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
+    p->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
+    if (len > sizeof(p->decoded.payload.bytes))
+        len = sizeof(p->decoded.payload.bytes);
+    memcpy(p->decoded.payload.bytes, text, len);
+    p->decoded.payload.size = (pb_size_t)len;
+    p->decoded.has_bitfield = true;
+    p->decoded.bitfield = 0;
+    // Local news, never repeated: the next hop is deliberately not us.
+    p->hop_start = 1;
+    p->hop_limit = 0;
+    const uint8_t ourRelay = nodeDB ? nodeDB->getLastByteOfNodeNum(nodeDB->getNodeNum()) : 0;
+    p->next_hop = (uint8_t)(ourRelay + 1);
+    if (p->next_hop == NO_NEXT_HOP_PREFERENCE)
+        p->next_hop = 1;
+    p->transport_mechanism = meshtastic_MeshPacket_TransportMechanism_TRANSPORT_LORA;
+    router->enqueueReceivedMessage(p);
+    return true;
+}
+
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+namespace
+{
+void traceAppend(char *buf, size_t cap, size_t &pos, const char *fmt, ...)
+{
+    if (pos >= cap)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    const int n = vsnprintf(buf + pos, cap - pos, fmt, ap);
+    va_end(ap);
+    if (n > 0)
+        pos = (size_t)n < cap - pos ? pos + (size_t)n : cap - 1;
+}
+
+void hashHex(const uint8_t *hash, uint8_t size, char *out, size_t cap)
+{
+    size_t pos = 0;
+    if (cap == 0)
+        return;
+    for (uint8_t i = 0; i < size && pos + 3 <= cap; i++)
+        pos += (size_t)snprintf(out + pos, cap - pos, "%02x", hash[i]);
+}
+
+/// Resolve a trace hash to "name(!prefix)" when a contact matches, "ME" for
+/// our own identity, or "!prefix" otherwise. Names come from the companion's
+/// contact table; discovery neighbours have no name, only a public-key prefix.
+void resolveJenCoreHash(const uint8_t *hash, uint8_t size, char *out, size_t cap)
+{
+    if (!out || cap == 0)
+        return;
+    out[0] = '\0';
+    if (!hash || size == 0 || size > 8)
+        return;
+
+    char hex[2 * 8 + 1];
+    hashHex(hash, size, hex, sizeof(hex));
+
+    RadioLibInterface *rli = static_cast<RadioLibInterface *>(RadioLibInterface::instance);
+    if (rli && rli->jencoreRepeater.hasIdentity()) {
+        const uint8_t *pub = rli->jencoreRepeater.getIdentityPub();
+        if (memcmp(hash, pub, size) == 0) {
+            snprintf(out, cap, "ME");
+            return;
+        }
+    }
+
+#if NEXUS_ENABLE_JENCORE_COMPANION
+    const char *name = nullptr;
+    jencoreCompanion.contacts.forEach([&](JenCoreContact &c) {
+        if (!name && c.name[0] && memcmp(hash, c.pub, size) == 0)
+            name = c.name;
+    });
+    if (name) {
+        snprintf(out, cap, "%s(!%s)", name, hex);
+        return;
+    }
+#endif
+
+    for (uint8_t i = 0; i < JenCoreRepeater::neighborCount(); i++) {
+        const auto *nb = JenCoreRepeater::neighbor(i);
+        if (nb && memcmp(hash, nb->pub, size) == 0) {
+            snprintf(out, cap, "R(!%s)", hex);
+            return;
+        }
+    }
+
+    snprintf(out, cap, "!%s", hex);
+}
+
+void formatJenCoreTraceResult(char *out, size_t cap, const uint8_t *raw, const JenCoreRepeater::FrameInfo &info, bool ping,
+                              float snr, int32_t rssi, uint32_t elapsedMs)
+{
+    ::nexus::jen_core_policy::TraceSummary s;
+    const uint8_t *payload = raw + info.header_len;
+    if (!::nexus::jen_core_policy::parseTraceSummary(payload, info.payload_len, info.path_hash_count, s)) {
+        snprintf(out, cap, "JT JC %s: malformed result", ping ? "PING" : "TRACE");
+        return;
+    }
+
+    const size_t pathBytes = (size_t)info.path_hash_count * info.path_hash_size;
+    const uint8_t *pathSnrs = info.header_len >= pathBytes ? raw + info.header_len - pathBytes : nullptr;
+    const float seconds = elapsedMs / 1000.0f;
+    size_t pos = 0;
+
+    if (ping) {
+        char target[64];
+        resolveJenCoreHash(payload + 9, s.hashSize, target, sizeof(target));
+        // pathSnrs[0] is the target's receive SNR of our ping; snr is ours of its forward.
+        const float hopSnr = pathSnrs ? (float)(int8_t)pathSnrs[0] / 4.0f : 0.0f;
+        traceAppend(out, cap, pos, "JT JC PING %s OK (%.2fs) hop=%.1fdB snr=%.1f rssi=%d", target, seconds, hopSnr, snr,
+                    (int)rssi);
+        return;
+    }
+
+    traceAppend(out, cap, pos, "JT JC TRACE tag=%08x %uB (%.2fs):\n", (unsigned)s.tag, (unsigned)s.hashSize, seconds);
+    const uint8_t hops = s.completedHops < s.requestedHops ? s.completedHops : s.requestedHops;
+    for (uint8_t i = 0; i < hops; i++) {
+        char label[64];
+        resolveJenCoreHash(payload + 9 + (size_t)i * s.hashSize, s.hashSize, label, sizeof(label));
+        const int snr4 = pathSnrs ? (int)(int8_t)pathSnrs[i] : 0;
+        traceAppend(out, cap, pos, "%s%s(%.1f)", i ? " > " : "", label, snr4 / 4.0f);
+    }
+    traceAppend(out, cap, pos, "%sME(%.1f) [%u/%u] [%ddBm]", hops ? " > " : "", snr, (unsigned)hops, (unsigned)s.requestedHops,
+                (int)rssi);
+}
+} // namespace
+
+void NexusModule::jenCoreTraceObserver(const uint8_t *raw, size_t len, const JenCoreRepeater::FrameInfo &info, float snr,
+                                       int32_t rssi)
+{
+    if (meshtastic::nexusModule)
+        meshtastic::nexusModule->onJenCoreTrace(raw, len, info, snr, rssi);
+}
+
+void NexusModule::onJenCoreTrace(const uint8_t *raw, size_t len, const JenCoreRepeater::FrameInfo &info, float snr, int32_t rssi)
+{
+    if (!raw || info.payload_len < 9)
+        return;
+
+    const uint8_t *payload = raw + info.header_len;
+    ::nexus::jen_core_policy::TraceSummary s;
+    if (!::nexus::jen_core_policy::parseTraceSummary(payload, info.payload_len, info.path_hash_count, s))
+        return;
+
+    if (jenTrace.active.load(std::memory_order_acquire) && s.tag == jenTrace.tag) {
+        if (s.completedHops > jenTrace.bestCompleted)
+            jenTrace.bestCompleted = s.completedHops;
+        if (s.endpoint && !jenTraceResult.pending.load(std::memory_order_relaxed)) {
+            formatJenCoreTraceResult(jenTraceResult.text, sizeof(jenTraceResult.text), raw, info, jenTrace.ping, snr, rssi,
+                                     Time::getMillis() - jenTrace.startMs);
+            jenTraceResult.atMs = Time::getMillis();
+            jenTraceResult.pending.store(true, std::memory_order_release);
+        }
+        return;
+    }
+
+    const auto &p = jenCoreVault::policy();
+    if (!::nexus::jen_core_policy::has(p, ::nexus::jen_core_policy::FEATURE_TRACE_ALERT))
+        return;
+
+    // One alert per trace tag per 10 s; a multi-hop trace re-heard at every hop
+    // is one event to the operator, not one per retransmission.
+    const uint32_t now = Time::getMillis();
+    for (size_t i = 0; i < JEN_TRACE_ALERT_MARKS; i++) {
+        const auto &mark = jenTraceAlertMarks[i];
+        if (mark.tag != 0 && mark.tag == s.tag && !Throttle::hasElapsed(mark.ms, 10000))
+            return;
+    }
+    jenTraceAlertMarks[jenTraceAlertNext].tag = s.tag;
+    jenTraceAlertMarks[jenTraceAlertNext].ms = now;
+    jenTraceAlertNext = (jenTraceAlertNext + 1) % JEN_TRACE_ALERT_MARKS;
+
+    char text[96];
+    snprintf(text, sizeof(text), "%s JC %s tag=%08x %u/%u hops %uB snr=%.1f", s.endpoint ? "✅" : "📡",
+             s.requestedHops <= 1 ? "PING" : "TRACE", (unsigned)s.tag, (unsigned)s.completedHops, (unsigned)s.requestedHops,
+             (unsigned)s.hashSize, snr);
+
+    uint32_t from = nodeDB ? nodeDB->getNodeNum() : 0;
+#if NEXUS_ENABLE_JENCORE_COMPANION
+    if (nodeDB) {
+        jencoreCompanion.ensurePseudoNode();
+        from = JenCoreCompanion::PSEUDO_NODE_NUM;
+    }
+#endif
+    injectLocalNexusText(findFirstNexusChannel(), text, strlen(text), from);
+}
+
+bool NexusModule::startJenCoreTrace(bool ping, const uint8_t *hashes, uint8_t hashSize, uint8_t hops, const ReplyContext &reply,
+                                    const uint8_t *target)
+{
+    if (jenTrace.active.load(std::memory_order_acquire) || !hashes || hops == 0 || hops > 63 ||
+        !::nexus::jen_core_policy::traceSizeSupported(hashSize))
+        return false;
+    const uint8_t flags = ::nexus::jen_core_policy::traceFlagsForSize(hashSize);
+    const size_t pathBytes = (size_t)hops * hashSize;
+    // 9-byte TRACE header + hashes must stay inside JenCore's 184-byte payload.
+    if (flags == 0xFF || pathBytes + 9 > 184)
+        return false;
+
+    RadioLibInterface *rli = static_cast<RadioLibInterface *>(RadioLibInterface::instance);
+    if (!rli || !JenCoreRepeater::isJenCoreEnabled())
+        return false;
+
+    uint8_t frame[255];
+    const uint32_t tag = JenCoreRepeater::makeDiscoveryTag();
+    frame[0] = (0x09 << 2) | 0x02; // TRACE, DIRECT
+    frame[1] = 0;                  // SNR path: one byte per hop, count 0
+    memcpy(&frame[2], &tag, 4);
+    memset(&frame[6], 0, 4); // auth code
+    frame[10] = flags;
+    memcpy(&frame[11], hashes, pathBytes);
+    if (!rli->queueJenCoreFrame(frame, 11 + pathBytes))
+        return false;
+
+    jenTrace.active.store(false, std::memory_order_relaxed);
+    jenTrace.ping = ping;
+    jenTrace.tag = tag;
+    jenTrace.startMs = Time::getMillis();
+    jenTrace.hashSize = hashSize;
+    jenTrace.requestedHops = hops;
+    jenTrace.bestCompleted = 0;
+    jenTrace.reply = reply;
+    if (target)
+        memcpy(jenTrace.target, target, hashSize < sizeof(jenTrace.target) ? hashSize : sizeof(jenTrace.target));
+    jenTraceResult.pending.store(false, std::memory_order_relaxed);
+    jenTrace.active.store(true, std::memory_order_release);
+    LOG_INFO("Nexus: JenCore %s queued tag=%08x size=%u hops=%u", ping ? "PING" : "TRACE", (unsigned)tag, hashSize, hops);
+    return true;
+}
+
+void NexusModule::serviceJenCoreTrace()
+{
+    if (jenTraceResult.pending.exchange(false, std::memory_order_acquire)) {
+        if (!jenTrace.active.load(std::memory_order_acquire))
+            return;
+        jenTrace.active.store(false, std::memory_order_release);
+        sendReply(jenTrace.reply, jenTraceResult.text, strlen(jenTraceResult.text));
+        return;
+    }
+
+    if (!jenTrace.active.load(std::memory_order_acquire) || !Throttle::hasElapsed(jenTrace.startMs, JEN_TRACE_TIMEOUT_MS))
+        return;
+
+    char msg[NEXUS_MAX_REPLY];
+    if (jenTrace.ping) {
+        char target[64];
+        resolveJenCoreHash(jenTrace.target, jenTrace.hashSize, target, sizeof(target));
+        snprintf(msg, sizeof(msg), "JT JC PING %s: no response in %us", target, (unsigned)(JEN_TRACE_TIMEOUT_MS / 1000));
+    } else if (jenTrace.bestCompleted) {
+        snprintf(msg, sizeof(msg), "JT JC TRACE tag=%08x: heard %u/%u hops, no endpoint in %us", (unsigned)jenTrace.tag,
+                 (unsigned)jenTrace.bestCompleted, (unsigned)jenTrace.requestedHops, (unsigned)(JEN_TRACE_TIMEOUT_MS / 1000));
+    } else {
+        snprintf(msg, sizeof(msg), "JT JC TRACE tag=%08x: no trace heard in %us", (unsigned)jenTrace.tag,
+                 (unsigned)(JEN_TRACE_TIMEOUT_MS / 1000));
+    }
+    jenTrace.active.store(false, std::memory_order_release);
+    sendReply(jenTrace.reply, msg, strlen(msg));
+}
+#endif // NEXUS_ENABLE_JENCORE_SNIFFER
 
 const char* NexusModule::matchTargetedCmd(const char *cmdBuf, size_t *outKind) {
     if (outKind) *outKind = TARGET_NONE;

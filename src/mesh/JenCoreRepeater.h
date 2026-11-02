@@ -110,6 +110,14 @@ class JenCoreRepeater
         uint8_t payload_len; // remaining bytes
     };
 
+    /**
+     * Called for every parsed TRACE frame, including copies that are not for us and copies heard while relay is off.
+     * It runs on the radio RX path, so an observer must not block: copy what it needs and hand the work to a module
+     * thread. raw/len/info stay valid only for the duration of the call.
+     */
+    using TraceObserver = void (*)(const uint8_t *raw, size_t len, const FrameInfo &info, float snr, int32_t rssi);
+    static void setTraceObserver(TraceObserver observer);
+
     /// Index of the configured region a transport-flood matches, or 0xFF when unscoped/unmatched.
     static uint8_t resolveRegionIndex(const uint8_t *raw, size_t len, const FrameInfo &info);
 
@@ -133,9 +141,9 @@ class JenCoreRepeater
     /**
      * Handle a received JenCore frame (raw bytes as demodulated). Sniffs always; relays floods
      * if enabled. airtimeMs is the frame's on-air time (RadioInterface::getPacketTime), used to
-     * size the adaptive relay delay.
+     * size the adaptive relay delay. rssi feeds the trace observer and is otherwise unused.
      */
-    void handleReceivedFrame(const uint8_t *raw, size_t len, float snr, uint32_t airtimeMs);
+    void handleReceivedFrame(const uint8_t *raw, size_t len, float snr, uint32_t airtimeMs, int32_t rssi = 0);
 
     /** True when at least one raw JenCore frame is queued for transmission. */
     bool hasPendingFrame() const;
@@ -352,6 +360,10 @@ class JenCoreRepeater
     static uint32_t &discoveryUntilStorage() { static uint32_t v = 0; return v; }
     static uint8_t &neighborCountStorage() { static uint8_t v = 0; return v; }
     static NeighborInfo *neighborStorage() { static NeighborInfo list[MAX_NEIGHBORS] = {}; return list; }
+    static TraceObserver traceObserver;
+
+    /** True when a path entry is our real public-key prefix, or (with ROUTE) one of our burner aliases. */
+    bool matchesOurRelayId(const uint8_t *entry, uint8_t size) const;
 
     /** Our path hash (prefix of the public key) is the first hop of this direct frame's path. */
     bool isNextHopForUs(const uint8_t *raw, const FrameInfo &info) const;

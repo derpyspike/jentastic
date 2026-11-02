@@ -9,6 +9,7 @@
 
 #include "Arduino.h"
 #include "Ed25519.h"
+#include "JenCoreVault.h"
 #include "NodeDB.h"
 #include "Throttle.h"
 #include "UptimeClock.h"
@@ -18,6 +19,13 @@
 #include <strings.h>
 
 #if NEXUS_ENABLE_JENCORE_SNIFFER
+
+JenCoreRepeater::TraceObserver JenCoreRepeater::traceObserver = nullptr;
+
+void JenCoreRepeater::setTraceObserver(TraceObserver observer)
+{
+    traceObserver = observer;
+}
 
 // JenCore Dispatcher::tryParsePacket payload types (see JenCore src/Packet.h)
 #define MC_PAYLOAD_TYPE_REQ 0x00
@@ -567,9 +575,8 @@ bool JenCoreRepeater::parse(const uint8_t *raw, size_t len, FrameInfo *out)
     return true;
 }
 
-void JenCoreRepeater::handleReceivedFrame(const uint8_t *raw, size_t len, float snr, uint32_t airtimeMs)
+void JenCoreRepeater::handleReceivedFrame(const uint8_t *raw, size_t len, float snr, uint32_t airtimeMs, int32_t rssi)
 {
-    (void)snr;       // only used by the relay half (discovery replies report it)
     (void)airtimeMs; // only used by the relay half
     FrameInfo info;
     if (!parse(raw, len, &info)) {
@@ -584,6 +591,12 @@ void JenCoreRepeater::handleReceivedFrame(const uint8_t *raw, size_t len, float 
         rxDropped++;
         return;
     }
+
+    // Observe TRACE before the relay gate: trace feedback and the trace-alert
+    // toggle must work even when this node is not relaying (and even when the
+    // trace is not addressed to us).
+    if (info.payload_type == MC_PAYLOAD_TYPE_TRACE && traceObserver)
+        traceObserver(raw, len, info, snr, rssi);
 
 #if NEXUS_ENABLE_JENCORE_RELAY
     if (!isRelayEnabled()) {
@@ -682,12 +695,19 @@ void JenCoreRepeater::handleReceivedFrame(const uint8_t *raw, size_t len, float 
 }
 
 #if NEXUS_ENABLE_JENCORE_RELAY
+bool JenCoreRepeater::matchesOurRelayId(const uint8_t *entry, uint8_t size) const
+{
+    if (!hasIdentityKey || !entry || size == 0 || size > sizeof(identityPub))
+        return false;
+    return nexus::jen_core_policy::matchesNextHop(jenCoreVault::policy(), entry, size, identityPub);
+}
+
 bool JenCoreRepeater::isNextHopForUs(const uint8_t *raw, const FrameInfo &info) const
 {
     if (!hasIdentityKey || info.path_hash_count == 0)
         return false;
     const size_t pathStart = info.header_len - (size_t)info.path_hash_count * info.path_hash_size;
-    return memcmp(&raw[pathStart], identityPub, info.path_hash_size) == 0;
+    return matchesOurRelayId(&raw[pathStart], info.path_hash_size);
 }
 
 size_t JenCoreRepeater::rewritePath(const uint8_t *raw, size_t len, const FrameInfo &info, bool appendSelf, uint8_t *out,
@@ -708,7 +728,11 @@ size_t JenCoreRepeater::rewritePath(const uint8_t *raw, size_t len, const FrameI
     if (appendSelf) {
         memcpy(&out[i], &raw[pathLenAt + 1], pathBytes);
         i += pathBytes;
-        memcpy(&out[i], identityPub, hashSize); // a path hash is the public key prefix (Identity::copyHashTo)
+        // A path hash is the public key prefix (Identity::copyHashTo), unless
+        // burner aliases are configured: then one is picked per relayed flood.
+        const auto &p = jenCoreVault::policy();
+        const uint8_t burner = p.burner_count > 0 ? (uint8_t)random(0, p.burner_count) : 0;
+        nexus::jen_core_policy::stampEntry(p, identityPub, hashSize, burner, &out[i]);
         i += hashSize;
     } else {
         memcpy(&out[i], &raw[pathLenAt + 1 + hashSize], pathBytes - hashSize); // drop the first hop: us
@@ -767,17 +791,25 @@ void JenCoreRepeater::handleTrace(const uint8_t *raw, size_t len, const FrameInf
 
     const uint8_t *payload = &raw[info.header_len];
     const size_t hashSize = (size_t)1 << (payload[8] & 0x03);
+    const size_t listBytes = info.payload_len - traceHeadLen;
+    const size_t entryCount = hashSize ? listBytes / hashSize : 0;
+    // A one-entry TRACE is a ping; the block flags are participation only - the
+    // trace observer has already had its chance to report the packet.
+    if (!hashSize || (listBytes % hashSize) != 0 ||
+        nexus::jen_core_policy::blocksTrace(jenCoreVault::policy(), (uint8_t)entryCount))
+        return;
+
     const size_t offset = (size_t)info.path_hash_count * hashSize;
     if (traceHeadLen + offset + hashSize > info.payload_len) {
         // End of the hash list: this node is the trace endpoint. MeshCore reports it to the local
-        // app; we only have the serial log, so surface the tag and inbound SNR here.
+        // app; the trace observer turns it into a phone/channel result.
         uint32_t tag = 0;
         memcpy(&tag, payload, 4);
         LOG_INFO("JenCore TRACE reached us: tag=%08x snr=%d path=%u", (unsigned)tag, (int)(snr * 4.0f),
                  (unsigned)info.path_hash_count);
         return;
     }
-    if (memcmp(&payload[traceHeadLen + offset], identityPub, hashSize) != 0)
+    if (!matchesOurRelayId(&payload[traceHeadLen + offset], (uint8_t)hashSize))
         return;
     if (len + 1 > MAX_FRAME_LEN)
         return;
@@ -885,6 +917,8 @@ void JenCoreRepeater::handleControl(const uint8_t *raw, size_t len, const FrameI
     }
 
     if ((req[0] & 0xF0) != MC_CTL_DISCOVER_REQ)
+        return;
+    if (nexus::jen_core_policy::has(jenCoreVault::policy(), nexus::jen_core_policy::FEATURE_BLOCK_DISC))
         return;
     if ((req[1] & (1 << nodeType)) == 0)
         return;

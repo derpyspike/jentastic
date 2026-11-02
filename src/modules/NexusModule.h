@@ -11,11 +11,15 @@
 #include "concurrency/OSThread.h"
 #include "configuration.h"
 #include "detect/ScanI2CConsumer.h"
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+#include "mesh/JenCoreRepeater.h"
+#endif
 #include "input/InputBroker.h"
 #include "mesh/MeshModule.h"
 #include "mesh/generated/meshtastic/mesh.pb.h"
 #include "modules/NexusMultiSF.h"
 #include "modules/NexusRuntime.h"
+#include <atomic>
 #include <vector>
 
 namespace meshtastic {
@@ -425,6 +429,39 @@ public:
     };
     ReplyContext traceReply, netscanReply, clientscanReply, noiseReply;
     bool sendReply(const ReplyContext &context, const char *message, size_t length, bool reliable = true);
+
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+    // JenCore TRACE/PING async state. A trace is sent with a random tag; the
+    // radio-thread observer captures an endpoint copy into jenTraceResult and
+    // runOnce() formats/sends it (or reports the 60 s timeout).
+    static constexpr uint32_t JEN_TRACE_TIMEOUT_MS = 60000;
+    struct JenTraceState {
+        std::atomic<bool> active{false}; // set/cleared on the module thread, read on RX
+        bool ping = false;
+        uint32_t tag = 0;
+        uint32_t startMs = 0;
+        uint8_t hashSize = 0;
+        uint8_t requestedHops = 0;
+        uint8_t bestCompleted = 0; // RX updates progress; module reads it on timeout
+        uint8_t target[4] = {};    // ping target prefix; unused for a trace
+        ReplyContext reply;
+    };
+    JenTraceState jenTrace;
+    struct JenTraceResult {
+        std::atomic<bool> pending{false}; // published by RX, consumed by runOnce
+        char text[NEXUS_MAX_REPLY] = {};
+        uint32_t atMs = 0;
+    };
+    JenTraceResult jenTraceResult;
+    // Dedup generic trace alerts: one per tag per ~10 s, four most recent tags.
+    struct JenTraceAlertMark {
+        uint32_t tag = 0;
+        uint32_t ms = 0;
+    };
+    static constexpr size_t JEN_TRACE_ALERT_MARKS = 4;
+    JenTraceAlertMark jenTraceAlertMarks[JEN_TRACE_ALERT_MARKS];
+    size_t jenTraceAlertNext = 0;
+#endif
 
     // Trace context
     bool trace_active = false;
@@ -984,6 +1021,24 @@ public:
     // reliable packet. Returns false if no Nexus channel is configured
     // or if the router/service is unavailable.
     bool sendToNexusChannel(const char *msg, size_t len, uint32_t replyId = 0);
+
+    // Inject a local-only text on `channel` (phone UI, never transmitted). Used
+    // by the JenCore trace alert; safe to call from the radio RX path.
+    bool injectLocalNexusText(uint32_t channel, const char *text, size_t len, uint32_t fromNum);
+
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+    /// Radio-thread trampoline registered on JenCoreRepeater.
+    static void jenCoreTraceObserver(const uint8_t *raw, size_t len, const JenCoreRepeater::FrameInfo &info, float snr,
+                                     int32_t rssi);
+    /// Correlate an endpoint copy with our active trace and emit generic trace alerts.
+    void onJenCoreTrace(const uint8_t *raw, size_t len, const JenCoreRepeater::FrameInfo &info, float snr, int32_t rssi);
+    /// runOnce(): send a captured endpoint result, or report the timeout.
+    void serviceJenCoreTrace();
+    bool jenCoreTraceActive() const { return jenTrace.active; }
+    /// Queue a JenCore TRACE or PING and remember where its result goes.
+    bool startJenCoreTrace(bool ping, const uint8_t *hashes, uint8_t hashSize, uint8_t hops, const ReplyContext &reply,
+                           const uint8_t *target = nullptr);
+#endif
 
     // Targeted CLI dispatch. Used by both handleReceived (over RF) and
     // handleLocal (from the phone) to parse /nexus-device <id>, /nexus-node

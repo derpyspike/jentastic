@@ -5,6 +5,7 @@
 #if NEXUS_ENABLE_JENCORE_SNIFFER
 #include "JenCoreRepeater.h"
 #include "JenCoreStore.h"
+#include "JenCoreVault.h"
 #if NEXUS_ENABLE_JENCORE_COMPANION
 #include "JenCoreCompanion.h"
 #endif
@@ -1112,7 +1113,7 @@ bool RadioLibInterface::sendJenCoreAdvertNow(bool flood)
         return false;
 
     char fallbackName[20];
-    const char *name = owner.long_name;
+    const char *name = nexus::jen_core_policy::advertName(jenCoreVault::policy(), owner.long_name);
     if (name[0] == 0) {
         snprintf(fallbackName, sizeof(fallbackName), "JenCore-%04x", (unsigned)(nodeDB->getNodeNum() & 0xFFFF));
         name = fallbackName;
@@ -1191,7 +1192,7 @@ uint32_t RadioLibInterface::jencoreAdvertTick()
     // A flood also reaches the direct neighbours, so it stands in for the local advert that is due with it.
     // JenCore clients ignore an advert without a name (BaseChatMesh::onAdvertRecv).
     char fallbackName[20];
-    const char *name = owner.long_name;
+    const char *name = nexus::jen_core_policy::advertName(jenCoreVault::policy(), owner.long_name);
     if (name[0] == 0) {
         snprintf(fallbackName, sizeof(fallbackName), "JenCore-%04x", (unsigned)(nodeDB->getNodeNum() & 0xFFFF));
         name = fallbackName;
@@ -1537,7 +1538,7 @@ void RadioLibInterface::handleReceiveInterrupt(const CapturedRxInfo *captured)
                                                      getLastRxFrequencyError(), getLastRxCodingRate());
 #endif
                         jencoreRepeater.handleReceivedFrame((const uint8_t *)&radioBuffer, length, snr,
-                                                             getPacketTime(length, false));
+                                                            getPacketTime(length, false), rssi);
                         jencoreRepeater.rxAirtimeMs += rxMsec;
                         wakeJenCoreRelay();
                     } else {
@@ -1587,7 +1588,7 @@ void RadioLibInterface::handleReceiveInterrupt(const CapturedRxInfo *captured)
                                                      getLastRxFrequencyError(), getLastRxCodingRate());
 #endif
                         jencoreRepeater.handleReceivedFrame((const uint8_t *)&radioBuffer, length, snr,
-                                                             getPacketTime(length, false));
+                                                            getPacketTime(length, false), rssi);
                         jencoreRepeater.rxAirtimeMs += rxMsec;
                         wakeJenCoreRelay();
                     }
@@ -1624,7 +1625,7 @@ void RadioLibInterface::handleReceiveInterrupt(const CapturedRxInfo *captured)
                                           getLastRxCodingRate());
 #endif
             jencoreRepeater.handleReceivedFrame((const uint8_t *)&radioBuffer, length, iface->getSNR(),
-                                                 getPacketTime(length, false));
+                                                getPacketTime(length, false), (int32_t)lround(iface->getRSSI()));
             wakeJenCoreRelay(); // when the adaptive relay delay elapses
             airTime->logAirtime(RX_LOG, rxMsec);
             jencoreRepeater.rxAirtimeMs += rxMsec;

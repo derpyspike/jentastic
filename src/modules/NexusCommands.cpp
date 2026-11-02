@@ -99,6 +99,9 @@
 #if NEXUS_ENABLE_JENCORE_COMPANION
 #include "mesh/JenCoreCompanion.h"
 #endif
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+#include "mesh/JenCoreVault.h"
+#endif
 #if NEXUS_ENABLE_RNODE
 #include "mesh/RNodeEngine.h"
 #endif
@@ -413,6 +416,54 @@ static void onNexusTraceResult(const String &result, int8_t rssi, float freqErr,
     nexusModule->sendReply(nexusModule->traceReply, replyMsg, strlen(replyMsg));
     nexusModule->trace_reply_to = 0; // Clear
 }
+
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+// Parse a JenCore hex hash list, skipping spaces and colons. Rejects a
+// non-hex character, an odd digit count, or a buffer overflow.
+static bool parseJenCoreHex(const char *arg, uint8_t *out, size_t cap, size_t &outLen)
+{
+    outLen = 0;
+    if (!arg)
+        return false;
+    for (const char *p = arg; *p; p++) {
+        if (*p == ' ' || *p == ':')
+            continue;
+        if (!isxdigit((unsigned char)*p) || outLen >= cap)
+            return false;
+        const int hi = isdigit((unsigned char)*p) ? *p - '0' : (tolower((unsigned char)*p) - 'a' + 10);
+        p++;
+        if (!*p || !isxdigit((unsigned char)*p))
+            return false;
+        const int lo = isdigit((unsigned char)*p) ? *p - '0' : (tolower((unsigned char)*p) - 'a' + 10);
+        out[outLen++] = (uint8_t)((hi << 4) | lo);
+    }
+    return outLen > 0;
+}
+
+// A leading 1/2/4 token selects the TRACE hash size. 3 and 8 are rejected:
+// MeshCore's wire format allows them, but this build only originates 1/2/4.
+// Returns 0 when the token is absent, 0xFF when it is present but unsupported.
+static uint8_t parseJenCoreTraceSize(const char *arg, const char *&rest)
+{
+    rest = arg;
+    if (!arg || !*arg)
+        return 0;
+    const char *end = arg;
+    while (*end && *end != ' ')
+        end++;
+    if (*end == '\0')
+        return 0; // a lone token is a hash, not a size
+    if (end - arg == 1 && (arg[0] == '1' || arg[0] == '2' || arg[0] == '4')) {
+        rest = end;
+        while (*rest == ' ')
+            rest++;
+        return (uint8_t)(arg[0] - '0');
+    }
+    if (end - arg == 1 && (arg[0] == '3' || arg[0] == '8'))
+        return 0xFF;
+    return 0;
+}
+#endif
 
 // Nexus: Encode the given text into a meshtastic_StatusMessage and send it as
 // a node-status broadcast (portnum NODE_STATUS_APP). Mirrors the upstream
@@ -2292,23 +2343,64 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             if (rli->supportsHybridSync())
                 hybridState = rli->hybridSyncEnabled ? "ON (0x14B4)" : "OFF";
 #endif
+            const auto &jp = jenCoreVault::policy();
+            const char *effName = ::nexus::jen_core_policy::advertName(jp, owner.long_name);
+            if (effName[0] == 0)
+                effName = "(none)";
             snprintf(replyMsg, sizeof(replyMsg),
                      "JT JENCORE:\n Enabled: %s\n Relay: %s\n PathHash: %u byte(s)\n Regions: %u\n"
                      " Advert: local=%umin flood=%umin\n HybridSync: %s\n"
-                     " RxSeen: %u (dup=%u)\n TxRelay: %u\n Contacts: %u",
-                     JenCoreRepeater::isJenCoreEnabled() ? "ON" : "OFF",
-                     JenCoreRepeater::isRelayEnabled() ? "ON" : "OFF", JenCoreRepeater::getPathHashSize(),
-                     (unsigned)JenCoreRepeater::getRegionCount(),
+                     " RxSeen: %u (dup=%u)\n TxRelay: %u\n Contacts: %u\n"
+                     " Block: t=%u p=%u d=%u | Burners: %u route=%u\n Name: %s\n TraceAlert: %s",
+                     JenCoreRepeater::isJenCoreEnabled() ? "ON" : "OFF", JenCoreRepeater::isRelayEnabled() ? "ON" : "OFF",
+                     JenCoreRepeater::getPathHashSize(), (unsigned)JenCoreRepeater::getRegionCount(),
                      (unsigned)JenCoreRepeater::getAdvertLocalMinutes(), (unsigned)JenCoreRepeater::getAdvertFloodMinutes(),
-                     hybridState,
-                     (unsigned)rli->jencoreRepeater.rxSeen, (unsigned)rli->jencoreRepeater.rxDup,
+                     hybridState, (unsigned)rli->jencoreRepeater.rxSeen, (unsigned)rli->jencoreRepeater.rxDup,
                      (unsigned)rli->jencoreRepeater.txRelayed,
 #if NEXUS_ENABLE_JENCORE_COMPANION
-                     (unsigned)jencoreCompanion.contactCount()
+                     (unsigned)jencoreCompanion.contactCount(),
 #else
-                     0
+                     0,
 #endif
-            );
+                     ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_BLOCK_TRACE) ? 1 : 0,
+                     ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_BLOCK_PING) ? 1 : 0,
+                     ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_BLOCK_DISC) ? 1 : 0,
+                     (unsigned)jp.burner_count,
+                     ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_ROUTE_INTERVENE) ? 1 : 0, effName,
+                     ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_TRACE_ALERT) ? "ON" : "OFF");
+        } else if (strcasecmp(sub, "POLICY") == 0) {
+            const auto &jp = jenCoreVault::policy();
+            const char *effName = ::nexus::jen_core_policy::advertName(jp, owner.long_name);
+            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE POLICY: block t=%u p=%u d=%u | alert=%s | name=%s",
+                     ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_BLOCK_TRACE) ? 1 : 0,
+                     ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_BLOCK_PING) ? 1 : 0,
+                     ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_BLOCK_DISC) ? 1 : 0,
+                     ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_TRACE_ALERT) ? "ON" : "OFF",
+                     effName[0] ? effName : "(owner)");
+        } else if (strcasecmp(sub, "NAME") == 0 || strncasecmp(sub, "NAME ", 5) == 0) {
+            auto &jp = jenCoreVault::policy();
+            const char *arg = sub + 4;
+            while (*arg == ' ')
+                arg++;
+            if (*arg == '\0') {
+                const char *eff = ::nexus::jen_core_policy::advertName(jp, owner.long_name);
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: name=%s (%s)", eff[0] ? eff : "(none)",
+                         ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_NAME_SET) ? "override" : "owner");
+            } else if (strcasecmp(arg, "OFF") == 0 || strcasecmp(arg, "CLEAR") == 0) {
+                memset(jp.name, 0, sizeof(jp.name));
+                ::nexus::jen_core_policy::set(jp, ::nexus::jen_core_policy::FEATURE_NAME_SET, false);
+                const bool ok = jenCoreVault::savePolicy();
+                snprintf(replyMsg, sizeof(replyMsg),
+                         ok ? "JT JENCORE: name override cleared" : "JT JENCORE: name cleared, save failed");
+            } else if (strlen(arg) >= sizeof(jp.name)) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: name too long (max %u bytes)", (unsigned)(sizeof(jp.name) - 1));
+            } else {
+                memset(jp.name, 0, sizeof(jp.name));
+                memcpy(jp.name, arg, strlen(arg));
+                ::nexus::jen_core_policy::set(jp, ::nexus::jen_core_policy::FEATURE_NAME_SET, true);
+                const bool ok = jenCoreVault::savePolicy();
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: name='%s' (%s)", jp.name, ok ? "saved" : "save failed");
+            }
         } else if (strcasecmp(sub, "ON") == 0) {
             JenCoreRepeater::setJenCoreEnabled(true);
             snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: ON");
@@ -2339,10 +2431,9 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 char hex[65];
                 for (int i = 0; i < 32; i++)
                     snprintf(&hex[i * 2], 3, "%02x", pub[i]);
-                snprintf(replyMsg, sizeof(replyMsg),
-                         "JT JENCORE: id=%02x%02x%02x%02x type=%u name=%s\npub=%s", pub[0], pub[1], pub[2], pub[3],
-                         (unsigned)rli->jencoreRepeater.getNodeType(),
-                         owner.long_name[0] ? owner.long_name : "(none)", hex);
+                const char *effName = ::nexus::jen_core_policy::advertName(jenCoreVault::policy(), owner.long_name);
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: id=%02x%02x%02x%02x type=%u name=%s\npub=%s", pub[0], pub[1],
+                         pub[2], pub[3], (unsigned)rli->jencoreRepeater.getNodeType(), effName[0] ? effName : "(none)", hex);
             }
         } else if (strncasecmp(sub, "FLOODMAX", 8) == 0 && (sub[8] == '\0' || sub[8] == ' ')) {
             const char *arg = sub + 8;
@@ -2395,53 +2486,316 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                          nb->pub[2], nb->pub[3], (unsigned)nb->type, (int)nb->snr4 / 4);
                 n = (int)strlen(replyMsg);
             }
+        } else if (strncasecmp(sub, "TRACEALERT", 10) == 0 && (sub[10] == '\0' || sub[10] == ' ')) {
+            auto &jp = jenCoreVault::policy();
+            const char *arg = sub + 10;
+            while (*arg == ' ')
+                arg++;
+            if (*arg == '\0') {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: trace alert %s",
+                         ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_TRACE_ALERT) ? "ON" : "OFF");
+            } else if (strcasecmp(arg, "ON") == 0 || strcasecmp(arg, "OFF") == 0) {
+                const bool on = strcasecmp(arg, "ON") == 0;
+                ::nexus::jen_core_policy::set(jp, ::nexus::jen_core_policy::FEATURE_TRACE_ALERT, on);
+                const bool ok = jenCoreVault::savePolicy();
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: trace alert %s (%s)", on ? "ON" : "OFF",
+                         ok ? "saved" : "save failed");
+            } else {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: usage: TRACEALERT [ON|OFF]");
+            }
+        } else if (strncasecmp(sub, "BLOCK", 5) == 0 && (sub[5] == '\0' || sub[5] == ' ')) {
+            auto &jp = jenCoreVault::policy();
+            const char *arg = sub + 5;
+            while (*arg == ' ')
+                arg++;
+            if (*arg == '\0') {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: block trace=%u ping=%u disc=%u",
+                         ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_BLOCK_TRACE) ? 1 : 0,
+                         ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_BLOCK_PING) ? 1 : 0,
+                         ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_BLOCK_DISC) ? 1 : 0);
+            } else {
+                const char *what = arg;
+                const char *val = skipToken(arg);
+                while (*val == ' ')
+                    val++;
+                uint64_t bit = 0;
+                if (strncasecmp(what, "TRACE", 5) == 0 && (what[5] == '\0' || what[5] == ' '))
+                    bit = ::nexus::jen_core_policy::FEATURE_BLOCK_TRACE;
+                else if (strncasecmp(what, "PING", 4) == 0 && (what[4] == '\0' || what[4] == ' '))
+                    bit = ::nexus::jen_core_policy::FEATURE_BLOCK_PING;
+                else if ((strncasecmp(what, "DISC", 4) == 0 && (what[4] == '\0' || what[4] == ' ')) ||
+                         (strncasecmp(what, "DISCOVERY", 9) == 0 && (what[9] == '\0' || what[9] == ' ')))
+                    bit = ::nexus::jen_core_policy::FEATURE_BLOCK_DISC;
+                if (!bit) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: usage: BLOCK TRACE|PING|DISC ON|OFF");
+                } else if (strcasecmp(val, "ON") == 0 || strcasecmp(val, "OFF") == 0) {
+                    const bool on = strcasecmp(val, "ON") == 0;
+                    ::nexus::jen_core_policy::set(jp, bit, on);
+                    const bool ok = jenCoreVault::savePolicy();
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: block %s %s (%s)", what, on ? "ON" : "OFF",
+                             ok ? "saved" : "save failed");
+                } else {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: usage: BLOCK TRACE|PING|DISC ON|OFF");
+                }
+            }
+        }
+        /*
+         * BURNER / MULTIBURNER - repeater path-hash aliases (kept out of the user docs on purpose)
+         *
+         * A relayed JenCore flood normally appends the first PATHSIZE bytes of our
+         * public key to the path, so any observer can fingerprint this repeater and
+         * follow it from packet to packet. A burner replaces that stamp with one of
+         * up to eight operator-chosen aliases. Each relayed flood picks an alias at
+         * random, and with ROUTE ON a direct packet whose next hop matches ANY
+         * configured alias is still claimed, so return paths through an alias keep
+         * working. Aliases are prefixes: a 1-, 2- or 3-byte PATHSIZE takes the first
+         * 1, 2 or 3 bytes. They are stored as four bytes with the trailing byte
+         * zero, leaving room to widen them later without a vault layout change.
+         *
+         * Why this exists: in the MeshCore DE community some operators are reluctant
+         * to move from a 1-byte to a 2- or 3-byte path hash because the longer hash
+         * makes a repeater easier to identify and track, even though it collides far
+         * less. Burners are designed for exactly that trade-off: keep the longer hash
+         * where it reduces collisions, while rotating a small alias set in the path so
+         * the real repeater identity never becomes a stable handle. They are not
+         * cryptographic identities and are not access control - only an obfuscation
+         * layer for repeater operators who want it.
+         *
+         * Deliberately NOT in docs/nexus-commands.md: this is a privacy tool, and the
+         * source comment is the manual. Keep it that way.
+         */
+        else if (strncasecmp(sub, "BURNER", 6) == 0 && (sub[6] == '\0' || sub[6] == ' ')) {
+            auto &jp = jenCoreVault::policy();
+            const char *arg = sub + 6;
+            while (*arg == ' ')
+                arg++;
+            if (*arg == '\0') {
+                int n = snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: %u burner(s):", (unsigned)jp.burner_count);
+                for (uint8_t i = 0; i < jp.burner_count && n > 0 && (size_t)n < sizeof(replyMsg) - 10; i++)
+                    n += snprintf(replyMsg + n, sizeof(replyMsg) - n, " %02x%02x%02x", jp.burners[i][0], jp.burners[i][1],
+                                  jp.burners[i][2]);
+            } else if (strcasecmp(arg, "OFF") == 0) {
+                jp.burner_count = 0;
+                memset(jp.burners, 0, sizeof(jp.burners));
+                ::nexus::jen_core_policy::set(jp, ::nexus::jen_core_policy::FEATURE_BURNER_ON, false);
+                ::nexus::jen_core_policy::set(jp, ::nexus::jen_core_policy::FEATURE_ROUTE_INTERVENE, false);
+                const bool ok = jenCoreVault::savePolicy();
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: burner cleared (%s)", ok ? "saved" : "save failed");
+            } else {
+                uint8_t alias[3] = {};
+                size_t aliasLen = 0;
+                if (!parseJenCoreHex(arg, alias, sizeof(alias), aliasLen) || aliasLen != 3) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: usage: BURNER <hex6>|OFF");
+                } else {
+                    memset(jp.burners[0], 0, sizeof(jp.burners[0]));
+                    memcpy(jp.burners[0], alias, sizeof(alias));
+                    jp.burner_count = 1;
+                    ::nexus::jen_core_policy::set(jp, ::nexus::jen_core_policy::FEATURE_BURNER_ON, true);
+                    ::nexus::jen_core_policy::set(jp, ::nexus::jen_core_policy::FEATURE_ROUTE_INTERVENE, true);
+                    const bool ok = jenCoreVault::savePolicy();
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: burner %02x%02x%02x, stamping (%s)", alias[0], alias[1],
+                             alias[2], ok ? "saved" : "save failed");
+                }
+            }
+        } else if (strncasecmp(sub, "MULTIBURNER", 11) == 0 && (sub[11] == '\0' || sub[11] == ' ')) {
+            auto &jp = jenCoreVault::policy();
+            const char *arg = sub + 11;
+            while (*arg == ' ')
+                arg++;
+            if (strcasecmp(arg, "OFF") == 0) {
+                jp.burner_count = 0;
+                memset(jp.burners, 0, sizeof(jp.burners));
+                ::nexus::jen_core_policy::set(jp, ::nexus::jen_core_policy::FEATURE_BURNER_ON, false);
+                ::nexus::jen_core_policy::set(jp, ::nexus::jen_core_policy::FEATURE_ROUTE_INTERVENE, false);
+                const bool ok = jenCoreVault::savePolicy();
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: multiburner cleared (%s)", ok ? "saved" : "save failed");
+            } else {
+                uint8_t aliases[8][4] = {};
+                uint8_t count = 0;
+                bool bad = false;
+                const char *p = arg;
+                while (*p && !bad) {
+                    while (*p == ' ')
+                        p++;
+                    if (!*p)
+                        break;
+                    const char *end = p;
+                    while (*end && *end != ' ')
+                        end++;
+                    if (end - p != 6 || count >= 8) {
+                        bad = true;
+                        break;
+                    }
+                    char token[7];
+                    memcpy(token, p, 6);
+                    token[6] = '\0';
+                    size_t n = 0;
+                    if (!parseJenCoreHex(token, aliases[count], 3, n) || n != 3) {
+                        bad = true;
+                        break;
+                    }
+                    count++;
+                    p = end;
+                }
+                if (bad || count == 0) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: usage: MULTIBURNER <hex6> [<hex6>...]|OFF");
+                } else {
+                    memcpy(jp.burners, aliases, sizeof(jp.burners));
+                    jp.burner_count = count;
+                    ::nexus::jen_core_policy::set(jp, ::nexus::jen_core_policy::FEATURE_BURNER_ON, true);
+                    ::nexus::jen_core_policy::set(jp, ::nexus::jen_core_policy::FEATURE_ROUTE_INTERVENE, true);
+                    const bool ok = jenCoreVault::savePolicy();
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: %u aliases, random stamp + claim-any (%s)", (unsigned)count,
+                             ok ? "saved" : "save failed");
+                }
+            }
+        } else if (strncasecmp(sub, "ROUTE", 5) == 0 && (sub[5] == '\0' || sub[5] == ' ')) {
+            auto &jp = jenCoreVault::policy();
+            const char *arg = sub + 5;
+            while (*arg == ' ')
+                arg++;
+            if (*arg == '\0') {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: route claim %s",
+                         ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_ROUTE_INTERVENE) ? "ON" : "OFF");
+            } else if (strcasecmp(arg, "ON") == 0 || strcasecmp(arg, "OFF") == 0) {
+                const bool on = strcasecmp(arg, "ON") == 0;
+                if (on && jp.burner_count == 0) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: set a burner first");
+                } else {
+                    ::nexus::jen_core_policy::set(jp, ::nexus::jen_core_policy::FEATURE_ROUTE_INTERVENE, on);
+                    const bool ok = jenCoreVault::savePolicy();
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: route claim %s (%s)", on ? "ON" : "OFF",
+                             ok ? "saved" : "save failed");
+                }
+            } else {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: usage: ROUTE [ON|OFF]");
+            }
+        } else if (strncasecmp(sub, "PING", 4) == 0 && (sub[4] == '\0' || sub[4] == ' ')) {
+            const char *arg = sub + 4;
+            while (*arg == ' ')
+                arg++;
+            uint8_t hash[4] = {};
+            uint8_t hashSize = 0;
+            const char *targetName = nullptr;
+            if (!JenCoreRepeater::isJenCoreEnabled()) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: OFF (use JENCORE ON first)");
+            } else if (strncasecmp(arg, "NEIGHBOR ", 9) == 0) {
+                const char *idxStr = arg + 9;
+                const int idx = atoi(idxStr);
+                const char *sizeStr = skipToken(idxStr);
+                while (*sizeStr == ' ')
+                    sizeStr++;
+                uint8_t wanted = 4;
+                bool sizeOk = true;
+                if (*sizeStr) {
+                    const int s = atoi(sizeStr);
+                    if (!::nexus::jen_core_policy::traceSizeSupported((uint8_t)s))
+                        sizeOk = false;
+                    else
+                        wanted = (uint8_t)s;
+                }
+                const auto *nb =
+                    (idx >= 0 && idx < JenCoreRepeater::neighborCount()) ? JenCoreRepeater::neighbor((uint8_t)idx) : nullptr;
+                if (!sizeOk) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: only 1/2/4-byte trace paths are allowed");
+                } else if (!nb) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: no neighbour %d (run DISCOVER first)", idx);
+                } else {
+                    memcpy(hash, nb->pub, wanted);
+                    hashSize = wanted;
+                }
+            } else {
+                const char *pathArg = arg;
+                const uint8_t sizeTok = parseJenCoreTraceSize(arg, pathArg);
+                if (sizeTok == 0xFF) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: only 1/2/4-byte trace paths are allowed");
+                } else {
+                    uint8_t parsed[4] = {};
+                    size_t parsedLen = 0;
+                    if (!parseJenCoreHex(pathArg, parsed, sizeof(parsed), parsedLen)) {
+                        // Not hex: try an exact contact name.
+#if NEXUS_ENABLE_JENCORE_COMPANION
+                        jencoreCompanion.contacts.forEach([&](JenCoreContact &c) {
+                            if (!hashSize && c.name[0] && strcasecmp(c.name, pathArg) == 0) {
+                                hashSize = sizeTok ? sizeTok : 4;
+                                memcpy(hash, c.pub, hashSize);
+                                targetName = c.name;
+                            }
+                        });
+#endif
+                        if (!hashSize)
+                            snprintf(replyMsg, sizeof(replyMsg),
+                                     "JT JENCORE: usage: PING <hex6|hex8|hex4|name>|NEIGHBOR <n> [1|2|4]");
+                    } else if (sizeTok && parsedLen != sizeTok) {
+                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: hash must be exactly %u byte(s)", (unsigned)sizeTok);
+                    } else if (!sizeTok && !(parsedLen == 1 || parsedLen == 2 || parsedLen == 4)) {
+                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: only 1/2/4-byte trace paths are allowed");
+                    } else {
+                        hashSize = sizeTok ? sizeTok : (uint8_t)parsedLen;
+                        memcpy(hash, parsed, hashSize);
+                    }
+                }
+            }
+            if (hashSize) {
+                ReplyContext jcReply{isDM ? mp.from : 0xFFFFFFFF, mp.channel, replyId, toPhoneOnly, toPhoneOnly || !isDM};
+                char label[56];
+                char hex[2 * 4 + 1];
+                for (uint8_t i = 0; i < hashSize; i++)
+                    snprintf(&hex[i * 2], 3, "%02x", hash[i]);
+                if (targetName)
+                    snprintf(label, sizeof(label), "%s(!%s)", targetName, hex);
+                else
+                    snprintf(label, sizeof(label), "!%s", hex);
+                if (jenCoreTraceActive())
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: trace busy");
+                else if (!startJenCoreTrace(true, hash, hashSize, 1, jcReply, hash))
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: PING could not be queued");
+                else
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: PING %s %uB tag=%08x queued (60s)", label,
+                             (unsigned)hashSize, (unsigned)jenTrace.tag);
+            }
         } else if (strncasecmp(sub, "TRACE", 5) == 0 && (sub[5] == '\0' || sub[5] == ' ')) {
             const char *arg = sub + 5;
             while (*arg == ' ')
                 arg++;
-            uint8_t pathBytes[64];
-            size_t pathLen = 0;
-            bool hexOk = true;
-            for (const char *phex = arg; *phex; phex++) {
-                if (*phex == ' ' || *phex == ':')
-                    continue;
-                if (!isxdigit((unsigned char)*phex)) {
-                    hexOk = false;
-                    break;
-                }
-                if (pathLen >= sizeof(pathBytes)) {
-                    hexOk = false;
-                    break;
-                }
-                const int hi = isdigit((unsigned char)*phex) ? *phex - '0' : (tolower((unsigned char)*phex) - 'a' + 10);
-                phex++;
-                if (!*phex || !isxdigit((unsigned char)*phex)) {
-                    hexOk = false;
-                    break;
-                }
-                const int lo = isdigit((unsigned char)*phex) ? *phex - '0' : (tolower((unsigned char)*phex) - 'a' + 10);
-                pathBytes[pathLen++] = (uint8_t)((hi << 4) | lo);
-            }
-            const uint8_t hs = JenCoreRepeater::getPathHashSize();
-            if (!hexOk || (pathLen % hs) != 0 || pathLen > 60) {
-                snprintf(replyMsg, sizeof(replyMsg),
-                         "JT JENCORE: usage: TRACE [<path-hashes-hex>] (must be a multiple of %u bytes)", (unsigned)hs);
+            const char *pathArg = arg;
+            const uint8_t sizeTok = parseJenCoreTraceSize(arg, pathArg);
+            if (sizeTok == 0xFF) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: only 1/2/4-byte trace paths are allowed");
+            } else if (!JenCoreRepeater::isJenCoreEnabled()) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: OFF (use JENCORE ON first)");
             } else {
-                uint8_t frame[80];
-                const uint32_t tag = JenCoreRepeater::makeDiscoveryTag();
-                frame[0] = (0x09 << 2) | 0x02; // TRACE, DIRECT
-                frame[1] = 0;                  // zero-hop route; hash list is in the payload
-                memcpy(&frame[2], &tag, 4);
-                memset(&frame[6], 0, 4); // auth code
-                frame[10] = (uint8_t)(hs - 1);
-                memcpy(&frame[11], pathBytes, pathLen);
-                const size_t len = 11 + pathLen;
-                if (!JenCoreRepeater::isJenCoreEnabled() || !rli->queueJenCoreFrame(frame, len))
-                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: TRACE could not be queued");
-                else
-                    snprintf(replyMsg, sizeof(replyMsg),
-                             "JT JENCORE: TRACE sent tag=%08x hops=%u (results are shown at the endpoint)", (unsigned)tag,
-                             (unsigned)(pathLen / hs));
+                uint8_t hashSize = sizeTok;
+                if (!hashSize) {
+                    const uint8_t nodeSize = JenCoreRepeater::getPathHashSize();
+                    if (nodeSize == 3)
+                        snprintf(replyMsg, sizeof(replyMsg),
+                                 "JT JENCORE: only 1/2/4-byte trace paths are allowed (PATHSIZE is 3; specify 1, 2 or 4)");
+                    else
+                        hashSize = nodeSize;
+                }
+                if (hashSize) {
+                    uint8_t pathBytes[175];
+                    size_t pathLen = 0;
+                    if (!parseJenCoreHex(pathArg, pathBytes, sizeof(pathBytes), pathLen)) {
+                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: usage: TRACE [1|2|4] <path-hashes-hex>");
+                    } else if ((pathLen % hashSize) != 0) {
+                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: path must be a multiple of %u byte(s)",
+                                 (unsigned)hashSize);
+                    } else if ((pathLen / hashSize) > 63) {
+                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: trace path too long (max 63 hops)");
+                    } else {
+                        ReplyContext jcReply{isDM ? mp.from : 0xFFFFFFFF, mp.channel, replyId, toPhoneOnly, toPhoneOnly || !isDM};
+                        const uint8_t hops = (uint8_t)(pathLen / hashSize);
+                        if (jenCoreTraceActive())
+                            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: trace busy");
+                        else if (!startJenCoreTrace(false, pathBytes, hashSize, hops, jcReply))
+                            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: TRACE could not be queued");
+                        else
+                            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: TRACE %uB tag=%08x hops=%u queued (60s)",
+                                     (unsigned)hashSize, (unsigned)jenTrace.tag, (unsigned)hops);
+                    }
+                }
             }
         } else if (strncasecmp(sub, "REGION", 6) == 0 && (sub[6] == '\0' || sub[6] == ' ')) {
             const char *arg = sub + 6;
@@ -2677,7 +3031,10 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             }
         } else {
             snprintf(replyMsg, sizeof(replyMsg),
-                     "JT JENCORE: Usage: JENCORE [ON/OFF|STATUS|IDENTITY|RELAY ON/OFF|PATHSIZE <1-3>|FLOODMAX <gen> <unscoped> <advert>|DISCOVER|NEIGHBORS|TRACE [<hex>]|REGION ...|ADVERT [LOCAL|INTERVAL <local-min> <flood-min>]|CONTACTS|HYBRID ON/OFF|CHANNELS[ ADD <name|#tag> [psk]]|STATS]");
+                     "JT JENCORE: Usage: JENCORE [ON/OFF|STATUS|POLICY|IDENTITY|NAME <name>|OFF|TRACEALERT ON/OFF|"
+                     "BLOCK TRACE|PING|DISC ON/OFF|RELAY ON/OFF|PATHSIZE <1-3>|FLOODMAX <gen> <unscoped> <advert>|"
+                     "DISCOVER|NEIGHBORS|TRACE [1|2|4] <hex>|PING <hex>|NEIGHBOR <n>|REGION ...|ADVERT ...|CONTACTS|"
+                     "BURNER <hex6>|OFF|MULTIBURNER <hex6>...|OFF|ROUTE ON/OFF|HYBRID ON/OFF|CHANNELS ...|STATS]");
         }
     }
 #endif

@@ -21,28 +21,44 @@ namespace
 {
 constexpr const char *VAULT_PATH = "/jencore.bin";
 
-bool validate(const Vault &v, size_t fileSize, const char **reason)
+/// v1 was an unused 20-byte header carrying only features_mask. Accept it so a
+/// tree from before the policy existed still boots with clean defaults.
+struct __attribute__((packed)) VaultV1 {
+    char magic[4];
+    uint32_t version;
+    uint64_t features_mask;
+    uint32_t crc32;
+};
+
+nexus::jen_core_policy::Policy currentPolicy;
+
+bool validateHeader(const char *magic, uint32_t version, size_t fileSize, const char **reason)
 {
     auto reject = [reason](const char *why) {
         if (reason)
             *reason = why;
         return false;
     };
-    if (fileSize != sizeof(Vault))
-        return reject("size mismatch");
-    if (memcmp(v.magic, MAGIC, sizeof(MAGIC)) != 0)
+    if (memcmp(magic, MAGIC, sizeof(MAGIC)) != 0)
         return reject("bad magic");
-    if (v.version != VERSION)
+    if (version != VERSION && version != 1)
         return reject("unsupported version");
-    if (crc32Buffer(&v, offsetof(Vault, crc32)) != v.crc32)
-        return reject("CRC mismatch");
+    if (version == VERSION && fileSize != sizeof(Vault))
+        return reject("size mismatch");
+    if (version == 1 && fileSize != sizeof(VaultV1))
+        return reject("size mismatch");
     if (reason)
         *reason = "OK";
     return true;
 }
 } // namespace
 
-bool load(Vault &out, const char **reason)
+nexus::jen_core_policy::Policy &policy()
+{
+    return currentPolicy;
+}
+
+bool load(nexus::jen_core_policy::Policy &out, const char **reason)
 {
     if (reason)
         *reason = "no file";
@@ -52,33 +68,86 @@ bool load(Vault &out, const char **reason)
     auto file = FSCom.open(VAULT_PATH, FILE_O_READ);
     if (!file)
         return false;
+
     const size_t fileSize = file.size();
-    const size_t read = fileSize <= sizeof(out) ? file.read(reinterpret_cast<uint8_t *>(&out), fileSize) : 0;
-    file.close();
-    if (fileSize != sizeof(out) || read != fileSize) {
+    if (fileSize != sizeof(Vault) && fileSize != sizeof(VaultV1)) {
+        file.close();
         if (reason)
-            *reason = "invalid size or short read";
+            *reason = "invalid size";
         return false;
     }
-    return validate(out, fileSize, reason);
+
+    Vault v;
+    memset(&v, 0, sizeof(v));
+    const size_t read = file.read(reinterpret_cast<uint8_t *>(&v), fileSize);
+    file.close();
+    if (read != fileSize) {
+        if (reason)
+            *reason = "short read";
+        return false;
+    }
+
+    if (!validateHeader(v.magic, v.version, fileSize, reason))
+        return false;
+
+    if (v.version == 1) {
+        const auto *v1 = reinterpret_cast<const VaultV1 *>(&v);
+        if (crc32Buffer(v1, offsetof(VaultV1, crc32)) != v1->crc32) {
+            if (reason)
+                *reason = "CRC mismatch";
+            return false;
+        }
+        return true; // clean defaults; the v1 features_mask was never wired
+    }
+
+    if (crc32Buffer(&v, offsetof(Vault, crc32)) != v.crc32) {
+        if (reason)
+            *reason = "CRC mismatch";
+        return false;
+    }
+
+    out = v.policy;
+    nexus::jen_core_policy::sanitize(out);
+    if (reason)
+        *reason = "OK";
+    return true;
 #else
     (void)reason;
     return false;
 #endif
 }
 
-bool save(Vault &in)
+bool save(const nexus::jen_core_policy::Policy &in)
 {
-    memcpy(in.magic, MAGIC, sizeof(MAGIC));
-    in.version = VERSION;
-    in.crc32 = crc32Buffer(&in, offsetof(Vault, crc32));
 #ifdef FSCom
+    Vault v;
+    memset(&v, 0, sizeof(v));
+    memcpy(v.magic, MAGIC, sizeof(MAGIC));
+    v.version = VERSION;
+    v.policy = in;
+    nexus::jen_core_policy::sanitize(v.policy);
+    v.crc32 = crc32Buffer(&v, offsetof(Vault, crc32));
+
     SafeFile file(VAULT_PATH, true);
-    const size_t written = file.write(reinterpret_cast<const uint8_t *>(&in), sizeof(in));
-    return written == sizeof(in) && file.close();
+    const size_t written = file.write(reinterpret_cast<const uint8_t *>(&v), sizeof(v));
+    return written == sizeof(v) && file.close();
 #else
+    (void)in;
     return false;
 #endif
+}
+
+bool loadPolicy(const char **reason)
+{
+    const bool ok = load(currentPolicy, reason);
+    if (!ok)
+        memset(&currentPolicy, 0, sizeof(currentPolicy));
+    return ok;
+}
+
+bool savePolicy()
+{
+    return save(currentPolicy);
 }
 } // namespace jenCoreVault
 
