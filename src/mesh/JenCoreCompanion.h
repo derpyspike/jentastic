@@ -226,7 +226,7 @@ class JenCoreCompanion
     uint16_t lastFrameRelayNode = 0;
     uint8_t lastFrameHops = 0;
     uint8_t lastFramePathLen = 0;
-    static constexpr size_t FRAME_PATH_CAP = 27;
+    static constexpr size_t FRAME_PATH_CAP = 24;
     uint8_t lastFramePath[FRAME_PATH_CAP] = {};
 
     /// A direct message on air whose ACK we are waiting for.

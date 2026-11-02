@@ -1145,7 +1145,7 @@ typedef struct _meshtastic_MqttClientProxyMessage {
 
 typedef PB_BYTES_ARRAY_T(256) meshtastic_MeshPacket_encrypted_t;
 typedef PB_BYTES_ARRAY_T(32) meshtastic_MeshPacket_public_key_t;
-typedef PB_BYTES_ARRAY_T(27) meshtastic_MeshPacket_jc_path_t;
+typedef PB_BYTES_ARRAY_T(24) meshtastic_MeshPacket_jc_path_t;
 /* A packet envelope sent/received over the mesh
  only payload_variant is sent in the payload portion of the LORA packet.
  The other fields are either not sent at all, or sent in the special 16 byte LORA header. */
@@ -1292,7 +1292,7 @@ typedef struct _meshtastic_MeshPacket {
     uint16_t jc_flags;
     /* Low 16 bits of the last repeater's NodeNum, 0 when unresolved. */
     uint16_t jc_relay_node;
-    /* Tail of the JenCore path (public-key prefixes), at most 27 bytes and
+    /* Tail of the JenCore path (public-key prefixes), at most 24 bytes and
  always whole hashes; jc_flags.path_truncated says whether the head was cut. */
     meshtastic_MeshPacket_jc_path_t jc_path;
 } meshtastic_MeshPacket;

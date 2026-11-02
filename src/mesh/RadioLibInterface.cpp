@@ -1366,9 +1366,6 @@ meshtastic_MeshPacket *RadioLibInterface::detachSentPacket()
         RadioTxHooks::packetReleased(this, p);
     return p;
 }
-        RadioTxHooks::packetReleased(this, p);
-    return p;
-}
 
 void RadioLibInterface::finishSentPacket(meshtastic_MeshPacket *p)
 {

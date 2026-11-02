@@ -8,6 +8,7 @@
 #include "Throttle.h"
 #include "configuration.h"
 #include "mesh/AdminKeys.h"
+#include "mesh/RadioLibInterface.h"
 #include "mesh/generated/meshtastic/mesh.pb.h"
 #include "mesh/mesh-pb-constants.h"
 #include "meshUtils.h"

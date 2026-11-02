@@ -66,7 +66,7 @@ static void test_path_tail_keeps_last_hashes(void)
     for (size_t i = 0; i < sizeof(src); i++)
         src[i] = (uint8_t)(0x40 + i);
 
-    uint8_t out[PATH_CAP] = {};
+    uint8_t out[27] = {};
     bool truncated = false;
     const size_t n = copyPathTail(src, sizeof(src), 3, out, sizeof(out), &truncated);
 
