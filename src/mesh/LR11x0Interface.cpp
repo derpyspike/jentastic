@@ -669,6 +669,26 @@ template <typename T> void LR11x0Interface<T>::configHardwareForSend()
 // For power draw measurements, helpful to force radio to stay sleeping
 // #define SLEEP_ONLY
 
+template <typename T> void LR11x0Interface<T>::applyReceiveConfig()
+{
+    if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
+        lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent. Not sure why this is needed.
+#if NEXUS_ENABLE_RNODE
+        if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
+            lora.setSyncWord(0x12);
+            lora.setSpreadingFactor(rnodeEngine.getSf());
+            rnodeRadioDirty = false;
+            rnodeWasStandalone = true;
+        } else if (rnodeRadioDirty || rnodeWasStandalone) {
+            lora.setSyncWord(this->syncWord);
+            lora.setSpreadingFactor(this->sf);
+            rnodeRadioDirty = false;
+            rnodeWasStandalone = false;
+        }
+#endif
+    }
+}
+
 template <typename T> void LR11x0Interface<T>::startReceive()
 {
 #ifdef SLEEP_ONLY
@@ -678,22 +698,7 @@ template <typename T> void LR11x0Interface<T>::startReceive()
     int16_t err = trySetStandby();
 
     if (err == RADIOLIB_ERR_NONE) {
-        if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
-            lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent.  Not sure why this is needed.
-#if NEXUS_ENABLE_RNODE
-            if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
-                lora.setSyncWord(0x12);
-                lora.setSpreadingFactor(rnodeEngine.getSf());
-                rnodeRadioDirty = false;
-                rnodeWasStandalone = true;
-            } else if (rnodeRadioDirty || rnodeWasStandalone) {
-                lora.setSyncWord(this->syncWord);
-                lora.setSpreadingFactor(this->sf);
-                rnodeRadioDirty = false;
-                rnodeWasStandalone = false;
-            }
-#endif
-        }
+        applyReceiveConfig();
 
         // We use a 16 bit preamble so this should save some power by letting radio sit in standby mostly.
         err =
@@ -789,10 +794,10 @@ template <typename T> void LR11x0Interface<T>::rearmReceiveFromTask()
     if (rearmState != REARM_PENDING)
         return;
     // What startReceive() sends, less the standby: after TX_DONE the chip has already fallen back to standby.
-    int16_t err = lora.setPreambleLength(preambleLength);
-    if (err == RADIOLIB_ERR_NONE)
-        err =
-            lora.startReceive(RADIOLIB_LR11X0_RX_TIMEOUT_INF, MESHTASTIC_RADIOLIB_IRQ_RX_FLAGS, RADIOLIB_IRQ_RX_DEFAULT_MASK, 0);
+    // Restore the RX preamble/persona too: the last TX may have left a raw RNode config behind.
+    applyReceiveConfig();
+    int16_t err =
+        lora.startReceive(RADIOLIB_LR11X0_RX_TIMEOUT_INF, MESHTASTIC_RADIOLIB_IRQ_RX_FLAGS, RADIOLIB_IRQ_RX_DEFAULT_MASK, 0);
     rearmErr = err;
     if (err != RADIOLIB_ERR_NONE) {
         rearmState = REARM_FAILED;

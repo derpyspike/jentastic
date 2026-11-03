@@ -1007,6 +1007,38 @@ template <typename T> bool LR20x0Interface<T>::readTxFifoLevel(uint16_t &level)
 // For power draw measurements, helpful to force radio to stay sleeping
 // #define SLEEP_ONLY
 
+template <typename T> void LR20x0Interface<T>::applyReceiveConfig()
+{
+    if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
+        lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent. Not sure why this is needed.
+#if NEXUS_ENABLE_RNODE
+        if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
+            lora.setSyncWord(0x12);
+            lora.setSpreadingFactor(rnodeEngine.getSf());
+            rnodeRadioDirty = false;
+            rnodeWasStandalone = true;
+        } else if (rnodeRadioDirty || rnodeWasStandalone) {
+            lora.setSyncWord(effectiveMainSyncword());
+            lora.setSpreadingFactor(this->sf);
+            rnodeRadioDirty = false;
+            rnodeWasStandalone = false;
+            // SetLoraModulationParams above disabled every side detector; re-arm the stored table now
+            // that the main SF is back (the apply guard parks it while sf is above a side SF).
+            static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
+        }
+#elif NEXUS_ENABLE_JENCORE_SNIFFER
+        if (rnodeRadioDirty) {
+            lora.setSyncWord(effectiveMainSyncword());
+            lora.setSpreadingFactor(this->sf);
+            rnodeRadioDirty = false;
+            static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
+        }
+#endif
+    } else {
+        (void)lora.variablePacketLengthMode(maxFrameLen());
+    }
+}
+
 template <typename T> void LR20x0Interface<T>::startReceive()
 {
 #ifdef SLEEP_ONLY
@@ -1016,34 +1048,7 @@ template <typename T> void LR20x0Interface<T>::startReceive()
     int16_t err = trySetStandby();
 
     if (err == RADIOLIB_ERR_NONE) {
-        if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
-            lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent.  Not sure why this is needed.
-#if NEXUS_ENABLE_RNODE
-            if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
-                lora.setSyncWord(0x12);
-                lora.setSpreadingFactor(rnodeEngine.getSf());
-                rnodeRadioDirty = false;
-                rnodeWasStandalone = true;
-            } else if (rnodeRadioDirty || rnodeWasStandalone) {
-                lora.setSyncWord(effectiveMainSyncword());
-                lora.setSpreadingFactor(this->sf);
-                rnodeRadioDirty = false;
-                rnodeWasStandalone = false;
-                // SetLoraModulationParams above disabled every side detector; re-arm the stored table now
-                // that the main SF is back (the apply guard parks it while sf is above a side SF).
-                static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
-            }
-#elif NEXUS_ENABLE_JENCORE_SNIFFER
-            if (rnodeRadioDirty) {
-                lora.setSyncWord(effectiveMainSyncword());
-                lora.setSpreadingFactor(this->sf);
-                rnodeRadioDirty = false;
-                static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
-            }
-#endif
-        } else {
-            (void)lora.variablePacketLengthMode(maxFrameLen());
-        }
+        applyReceiveConfig();
 
         // We use a 16 bit preamble so this should save some power by letting radio sit in standby mostly.
         err =
@@ -1144,10 +1149,11 @@ template <typename T> void LR20x0Interface<T>::rearmReceiveFromTask()
     if (rearmState != REARM_PENDING)
         return;
     // What startReceive() sends, less the standby: after TX_DONE the chip has already fallen back to standby.
-    int16_t err = lora.setPreambleLength(preambleLength);
-    if (err == RADIOLIB_ERR_NONE)
-        err =
-            lora.startReceive(RADIOLIB_LR2021_RX_TIMEOUT_INF, MESHTASTIC_RADIOLIB_IRQ_RX_FLAGS, RADIOLIB_IRQ_RX_DEFAULT_MASK, 0);
+    // Restore the RX preamble/persona/alt-modem framing too: the last TX may have left a raw RNode or
+    // FLRC/GFSK config behind, and the side detectors need re-arming after a main-modem write.
+    applyReceiveConfig();
+    int16_t err =
+        lora.startReceive(RADIOLIB_LR2021_RX_TIMEOUT_INF, MESHTASTIC_RADIOLIB_IRQ_RX_FLAGS, RADIOLIB_IRQ_RX_DEFAULT_MASK, 0);
     rearmErr = err;
     if (err != RADIOLIB_ERR_NONE) {
         rearmState = REARM_FAILED;

@@ -177,6 +177,9 @@ template <class T> class LR20x0Interface : public RadioLibInterface
     /** setStandby()'s body, returning the standby error instead of asserting - for callers that can recover */
     int16_t trySetStandby();
 
+    /** Restore the RX-side preamble / RNode persona / alt-modem framing before an RX arm. */
+    void applyReceiveConfig();
+
 #ifdef MESHTASTIC_RX_READOUT_TASK
     bool rearmReceiveFromIsr() override;
     void rearmReceiveFromTask() override;

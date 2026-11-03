@@ -727,14 +727,8 @@ template <typename T> void SX126xInterface<T>::setSyncWordRegister(uint16_t regi
 // For power draw measurements, helpful to force radio to stay sleeping
 // #define SLEEP_ONLY
 
-template <typename T> void SX126xInterface<T>::startReceive()
+template <typename T> void SX126xInterface<T>::applyReceiveConfig()
 {
-#ifdef SLEEP_ONLY
-    sleep();
-#else
-
-    setTransmitEnable(false);
-
 #if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
     if (this->hybridSyncEnabled) {
         setSyncWordRegister(NEXUS_JENCORE_RX_SYNCWORD);
@@ -764,6 +758,16 @@ template <typename T> void SX126xInterface<T>::startReceive()
         rnodeWasStandalone = false;
     }
 #endif
+}
+
+template <typename T> void SX126xInterface<T>::startReceive()
+{
+#ifdef SLEEP_ONLY
+    sleep();
+#else
+
+    setTransmitEnable(false);
+    applyReceiveConfig();
 
     auto tryStartRx = [&]() -> int16_t { return startRxCommand(); };
 
@@ -866,7 +870,9 @@ template <typename T> void SX126xInterface<T>::rearmReceiveFromTask()
     if (rearmState != REARM_PENDING)
         return;
     // What startReceive() sends, less the standby: after TX_DONE the chip has already fallen back to standby.
+    // Restore the RX syncword/preamble/persona too: the last TX may have left the raw 0x12 or an alt-modem config.
     setTransmitEnable(false);
+    applyReceiveConfig();
     const int16_t err = startRxCommand();
     rearmErr = err;
     if (err != RADIOLIB_ERR_NONE) {

@@ -190,6 +190,9 @@ template <class T> class SX126xInterface : public RadioLibInterface
     /** The RX command startReceive() sends once the chip is in standby. Always a continuous RX */
     int16_t startRxCommand();
 
+    /** Restore the RX-side radio config (hybrid syncword, JenCore preamble, RNode persona) before an RX arm. */
+    void applyReceiveConfig();
+
 #ifdef MESHTASTIC_RX_READOUT_TASK
     bool rearmReceiveFromIsr() override;
     void rearmReceiveFromTask() override;
