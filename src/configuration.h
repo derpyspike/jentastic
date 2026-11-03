@@ -161,9 +161,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #error "NEXUS_ENABLE_JENCORE_COMPANION requires NEXUS_ENABLE_JENCORE_SNIFFER"
 #endif
 
-// Experimental, SX126x only: receive with a hybrid sync word so one radio hears both standard (0x2B,
-// register 0x24B4) and JenCore (0x12, register 0x1424) frames, and transmit each protocol with its own
-// sync word. On when NEXUS_ENABLE_JENCORE=1; -D...=0 opts out.
+// Experimental: receive with a hybrid sync word so one radio hears both standard (0x2B, register
+// 0x24B4) and JenCore/MeshCore (0x12, register 0x1424) frames, and transmit each protocol with its
+// own sync word. On when NEXUS_ENABLE_JENCORE=1; -D...=0 opts out.
 #ifndef NEXUS_ENABLE_JENCORE_HYBRID_SYNC
 #define NEXUS_ENABLE_JENCORE_HYBRID_SYNC 1
 #endif
@@ -174,6 +174,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #ifndef NEXUS_JENCORE_RX_SYNCWORD
 #define NEXUS_JENCORE_RX_SYNCWORD 0x14B4
 #endif
+
+// The same hybrid word as a single byte, for chips that take one byte directly (LR11x0). RadioLib
+// expands a byte into the SX126x register as ((sw & 0xF0) | 0x04), ((sw << 4) | 0x04), so 0x14B4 is
+// exactly 0x1B: 0x12's high nibble + 0x2B's low nibble (bench-observed on LR1110 by Xavi).
+#define NEXUS_JENCORE_RX_SYNCWORD_BYTE (((NEXUS_JENCORE_RX_SYNCWORD >> 8) & 0xF0) | ((NEXUS_JENCORE_RX_SYNCWORD & 0xF0) >> 4))
 
 // Debug only: log every preamble/header detection and every received frame's leading bytes, so a
 // JenCore frame is visible even when it fails the sniffer's header check. Never enable in a release.

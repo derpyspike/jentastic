@@ -21,6 +21,7 @@
 #include "modules/NexusModule.h"
 #if NEXUS_ENABLE_JENCORE_COMPANION
 #include "JenCoreCompanion.h"
+#include "JenCoreVault.h"
 #endif
 #include "mesh-pb-constants.h"
 #include "meshUtils.h"
@@ -424,7 +425,8 @@ bool MeshService::sendJenCoreGroupText(const meshtastic_MeshPacket *p)
     char text[sizeof(plain) + 64]; // room for the "@[name] " of a reply and the brackets of mentions
     jencoreCompanion.prepareGroupText(plain, p->decoded.reply_id, text, sizeof(text));
 
-    const char *sender = owner.long_name[0] ? owner.long_name : (owner.short_name[0] ? owner.short_name : "JenCore");
+    const char *fallback = owner.long_name[0] ? owner.long_name : (owner.short_name[0] ? owner.short_name : "JenCore");
+    const char *sender = ::nexus::jen_core_policy::advertName(jenCoreVault::policy(), fallback);
     uint8_t frame[JenCoreRepeater::MAX_FRAME_LEN];
     bool truncated = false;
     const size_t frameLen = JenCoreCompanion::encodeGroupText(key, keyLen, sender, jencoreCompanion.nextTxTimestamp(now), text,

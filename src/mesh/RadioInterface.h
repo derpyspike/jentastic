@@ -361,8 +361,11 @@ class RadioInterface
     /** The syncword the main detector is using for RX. */
     [[nodiscard]] virtual uint8_t getSyncWord() const { return 0; }
 
-    /** True if this driver implements the SX126x-style 0x14B4 hybrid RX syncword. */
+    /** True if this driver implements the hybrid RX syncword (0x14B4 register / 0x1B byte). */
     [[nodiscard]] virtual bool supportsHybridSync() const { return false; }
+
+    /** How this radio's hybrid RX word is programmed, for status output (SX126x/SX128x: register form). */
+    [[nodiscard]] virtual const char *hybridSyncLabel() const { return "0x14B4"; }
 
     /**
      * Protocol tier of the frame just read off the radio. 1 = Meshtastic is

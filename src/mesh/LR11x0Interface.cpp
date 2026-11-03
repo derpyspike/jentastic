@@ -655,12 +655,27 @@ template <typename T> void LR11x0Interface<T>::configHardwareForSend()
     rearmState = REARM_NONE; // only this TX's TX_DONE may re-arm, never a stale one from a TX the poll completed
     rxArmedBeforeTxDone = false;
 #endif
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+    // RX parks on the hybrid word; each TX goes out with its own protocol's word (JenCore/RNode 0x12,
+    // Meshtastic 0x2B or the operator override). Skipped in the alt modem: the chip is on GFSK.
+    if (hybridSyncEnabled && (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0))
+        lora.setSyncWord(isRawSending() ? jencoreSyncWord : this->syncWord);
+#endif
 #if NEXUS_ENABLE_RNODE
     if (getRawSendingType() == RAW_SEND_RNODE) {
-        lora.setSyncWord(0x12);
+        lora.setSyncWord(jencoreSyncWord);
         if (rnodeEngine.getSf() != this->sf) {
             lora.setSpreadingFactor(rnodeEngine.getSf());
         }
+    }
+#endif
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+    // Raw JenCore frames (advert, discovery, relay, group text) must carry 0x12 even when the hybrid is
+    // off: the chip otherwise keeps the Meshtastic word and MeshCore peers on 0x12 never hear them.
+    if (getRawSendingType() == RAW_SEND_JENCORE) {
+        lora.setSyncWord(getRawTxSync() ? getRawTxSync() : jencoreSyncWord);
+        if (getRawTxSf() && getRawTxSf() != this->sf)
+            lora.setSpreadingFactor(getRawTxSf());
     }
 #endif
     RadioLibInterface::configHardwareForSend();
@@ -669,22 +684,41 @@ template <typename T> void LR11x0Interface<T>::configHardwareForSend()
 // For power draw measurements, helpful to force radio to stay sleeping
 // #define SLEEP_ONLY
 
+template <typename T> void LR11x0Interface<T>::applyMainSyncWord()
+{
+#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+    // 0x1B hears both Meshtastic 0x2B and JenCore/MeshCore 0x12 on this SF. It is the same hybrid
+    // word the SX126x programs as register 0x14B4, just written as the single byte this chip takes.
+    const uint8_t word = hybridSyncEnabled ? NEXUS_JENCORE_RX_SYNCWORD_BYTE : this->syncWord;
+#else
+    const uint8_t word = this->syncWord;
+#endif
+    const int16_t err = lora.setSyncWord(word);
+    if (err != RADIOLIB_ERR_NONE)
+        LOG_ERROR("LR11x0 setSyncWord 0x%02X %s%d", word, radioLibErr, err);
+}
+
 template <typename T> void LR11x0Interface<T>::applyReceiveConfig()
 {
     if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
         lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent. Not sure why this is needed.
 #if NEXUS_ENABLE_RNODE
         if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
-            lora.setSyncWord(0x12);
+            lora.setSyncWord(jencoreSyncWord);
             lora.setSpreadingFactor(rnodeEngine.getSf());
             rnodeRadioDirty = false;
             rnodeWasStandalone = true;
         } else if (rnodeRadioDirty || rnodeWasStandalone) {
-            lora.setSyncWord(this->syncWord);
+            applyMainSyncWord();
             lora.setSpreadingFactor(this->sf);
             rnodeRadioDirty = false;
             rnodeWasStandalone = false;
+        } else {
+            // Re-applied every arm so a HYBRID ON/OFF toggle takes effect without a reconfigure.
+            applyMainSyncWord();
         }
+#else
+        applyMainSyncWord();
 #endif
     }
 }
@@ -708,9 +742,8 @@ template <typename T> void LR11x0Interface<T>::startReceive()
     if (err != RADIOLIB_ERR_NONE) {
         LOG_ERROR("StartReceive error: %d", err);
         if (maybeRecoverChipStateLoss()) {
-            if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
-                lora.setPreambleLength(preambleLength);
-            }
+            // begin() re-programmed the plain sync word; restore the hybrid/preamble/persona too.
+            applyReceiveConfig();
             err = lora.startReceive(RADIOLIB_LR11X0_RX_TIMEOUT_INF, MESHTASTIC_RADIOLIB_IRQ_RX_FLAGS,
                                     RADIOLIB_IRQ_RX_DEFAULT_MASK, 0);
         }

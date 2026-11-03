@@ -378,7 +378,7 @@ class JenCoreRepeater
     static bool isFloodForwardable(const FrameInfo &info);
 
     /** Zero-hop CONTROL frame: answer a NODE_DISCOVER_REQ for repeaters with our public key. */
-    void handleControl(const uint8_t *raw, size_t len, const FrameInfo &info, float snr, uint32_t airtimeMs);
+    void handleControl(const uint8_t *raw, size_t len, const FrameInfo &info, float snr, uint32_t airtimeMs, bool allowReply);
     void handleDirect(const uint8_t *raw, size_t len, const FrameInfo &info, float snr, uint32_t airtimeMs);
     /** TRACE: when the next hash in its payload list is ours, append our receive SNR to the path and forward it. */
     void handleTrace(const uint8_t *raw, size_t len, const FrameInfo &info, float snr, uint32_t airtimeMs);

@@ -2338,36 +2338,40 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         if (!rli) {
             snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: radio interface unavailable");
         } else if (!*sub || strcasecmp(sub, "STATUS") == 0) {
-            const char *hybridState = "N/A";
+            char hybridStateBuf[32] = "N/A";
 #if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
             if (rli->supportsHybridSync())
-                hybridState = rli->hybridSyncEnabled ? "ON (0x14B4)" : "OFF";
+                snprintf(hybridStateBuf, sizeof(hybridStateBuf), "%s (%s)", rli->hybridSyncEnabled ? "ON" : "OFF",
+                         rli->hybridSyncLabel());
 #endif
+            const char *hybridState = hybridStateBuf;
             const auto &jp = jenCoreVault::policy();
             const char *effName = ::nexus::jen_core_policy::advertName(jp, owner.long_name);
             if (effName[0] == 0)
                 effName = "(none)";
-            snprintf(replyMsg, sizeof(replyMsg),
-                     "JT JENCORE:\n Enabled: %s\n Relay: %s\n PathHash: %u byte(s)\n Regions: %u\n"
-                     " Advert: local=%umin flood=%umin\n HybridSync: %s\n"
-                     " RxSeen: %u (dup=%u)\n TxRelay: %u\n Contacts: %u\n"
-                     " Block: t=%u p=%u d=%u | Burners: %u route=%u\n Name: %s\n TraceAlert: %s",
-                     JenCoreRepeater::isJenCoreEnabled() ? "ON" : "OFF", JenCoreRepeater::isRelayEnabled() ? "ON" : "OFF",
-                     JenCoreRepeater::getPathHashSize(), (unsigned)JenCoreRepeater::getRegionCount(),
-                     (unsigned)JenCoreRepeater::getAdvertLocalMinutes(), (unsigned)JenCoreRepeater::getAdvertFloodMinutes(),
-                     hybridState, (unsigned)rli->jencoreRepeater.rxSeen, (unsigned)rli->jencoreRepeater.rxDup,
-                     (unsigned)rli->jencoreRepeater.txRelayed,
+            int n = snprintf(replyMsg, sizeof(replyMsg),
+                             "JT JENCORE: %s relay=%s path=%uB reg=%u\n adv=%u/%umin hybrid=%s\n"
+                             " rx=%u dup=%u tx=%u contacts=%u\n name=%s alert=%s block=t%up%ud%u",
+                             JenCoreRepeater::isJenCoreEnabled() ? "ON" : "OFF", JenCoreRepeater::isRelayEnabled() ? "ON" : "OFF",
+                             JenCoreRepeater::getPathHashSize(), (unsigned)JenCoreRepeater::getRegionCount(),
+                             (unsigned)JenCoreRepeater::getAdvertLocalMinutes(),
+                             (unsigned)JenCoreRepeater::getAdvertFloodMinutes(), hybridState,
+                             (unsigned)rli->jencoreRepeater.rxSeen, (unsigned)rli->jencoreRepeater.rxDup,
+                             (unsigned)rli->jencoreRepeater.txRelayed,
 #if NEXUS_ENABLE_JENCORE_COMPANION
-                     (unsigned)jencoreCompanion.contactCount(),
+                             (unsigned)jencoreCompanion.contactCount(),
 #else
-                     0,
+                             0,
 #endif
-                     ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_BLOCK_TRACE) ? 1 : 0,
-                     ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_BLOCK_PING) ? 1 : 0,
-                     ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_BLOCK_DISC) ? 1 : 0,
-                     (unsigned)jp.burner_count,
-                     ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_ROUTE_INTERVENE) ? 1 : 0, effName,
-                     ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_TRACE_ALERT) ? "ON" : "OFF");
+                             effName,
+                             ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_TRACE_ALERT) ? "ON" : "OFF",
+                             ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_BLOCK_TRACE) ? 1 : 0,
+                             ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_BLOCK_PING) ? 1 : 0,
+                             ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_BLOCK_DISC) ? 1 : 0);
+            // Burners are an advanced/undocumented feature: mention them only when one is configured.
+            if (n > 0 && (size_t)n < sizeof(replyMsg) && jp.burner_count > 0)
+                snprintf(replyMsg + n, sizeof(replyMsg) - n, " burner=%u route=%s", (unsigned)jp.burner_count,
+                         ::nexus::jen_core_policy::has(jp, ::nexus::jen_core_policy::FEATURE_ROUTE_INTERVENE) ? "ON" : "OFF");
         } else if (strcasecmp(sub, "POLICY") == 0) {
             const auto &jp = jenCoreVault::policy();
             const char *effName = ::nexus::jen_core_policy::advertName(jp, owner.long_name);
@@ -2470,6 +2474,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                     snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: discovery request could not be queued");
                 } else {
                     JenCoreRepeater::startDiscovery(tag);
+                    LOG_INFO("JenCore discover request queued (tag=%08x)", (unsigned)tag);
                     snprintf(replyMsg, sizeof(replyMsg),
                              "JT JENCORE: discover sent (tag=%08x); replies in JENCORE NEIGHBORS", (unsigned)tag);
                 }
@@ -2765,36 +2770,43 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             } else if (!JenCoreRepeater::isJenCoreEnabled()) {
                 snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: OFF (use JENCORE ON first)");
             } else {
+                uint8_t pathBytes[175];
+                size_t pathLen = 0;
+                const bool parsed = parseJenCoreHex(pathArg, pathBytes, sizeof(pathBytes), pathLen);
                 uint8_t hashSize = sizeTok;
                 if (!hashSize) {
                     const uint8_t nodeSize = JenCoreRepeater::getPathHashSize();
-                    if (nodeSize == 3)
-                        snprintf(replyMsg, sizeof(replyMsg),
-                                 "JT JENCORE: only 1/2/4-byte trace paths are allowed (PATHSIZE is 3; specify 1, 2 or 4)");
-                    else
+                    if (::nexus::jen_core_policy::traceSizeSupported(nodeSize)) {
                         hashSize = nodeSize;
-                }
-                if (hashSize) {
-                    uint8_t pathBytes[175];
-                    size_t pathLen = 0;
-                    if (!parseJenCoreHex(pathArg, pathBytes, sizeof(pathBytes), pathLen)) {
-                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: usage: TRACE [1|2|4] <path-hashes-hex>");
-                    } else if ((pathLen % hashSize) != 0) {
-                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: path must be a multiple of %u byte(s)",
-                                 (unsigned)hashSize);
-                    } else if ((pathLen / hashSize) > 63) {
-                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: trace path too long (max 63 hops)");
-                    } else {
-                        ReplyContext jcReply{isDM ? mp.from : 0xFFFFFFFF, mp.channel, replyId, toPhoneOnly, toPhoneOnly || !isDM};
-                        const uint8_t hops = (uint8_t)(pathLen / hashSize);
-                        if (jenCoreTraceActive())
-                            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: trace busy");
-                        else if (!startJenCoreTrace(false, pathBytes, hashSize, hops, jcReply))
-                            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: TRACE could not be queued");
-                        else
-                            snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: TRACE %uB tag=%08x hops=%u queued (60s)",
-                                     (unsigned)hashSize, (unsigned)jenTrace.tag, (unsigned)hops);
+                    } else if (parsed) {
+                        // PATHSIZE 3 is valid on the wire but this build only originates 1/2/4, so
+                        // take the largest supported size that divides the supplied path: AABB -> 2B.
+                        hashSize = 1;
+                        if ((pathLen % 4) == 0)
+                            hashSize = 4;
+                        else if ((pathLen % 2) == 0)
+                            hashSize = 2;
                     }
+                }
+                if (!parsed) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: usage: TRACE [1|2|4] <path-hashes-hex>");
+                } else if (!hashSize) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: only 1/2/4-byte trace paths are allowed");
+                } else if ((pathLen % hashSize) != 0) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: path must be a multiple of %u byte(s)",
+                             (unsigned)hashSize);
+                } else if ((pathLen / hashSize) > 63) {
+                    snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: trace path too long (max 63 hops)");
+                } else {
+                    ReplyContext jcReply{isDM ? mp.from : 0xFFFFFFFF, mp.channel, replyId, toPhoneOnly, toPhoneOnly || !isDM};
+                    const uint8_t hops = (uint8_t)(pathLen / hashSize);
+                    if (jenCoreTraceActive())
+                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: trace busy");
+                    else if (!startJenCoreTrace(false, pathBytes, hashSize, hops, jcReply))
+                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: TRACE could not be queued");
+                    else
+                        snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: TRACE %uB tag=%08x hops=%u queued (60s)",
+                                 (unsigned)hashSize, (unsigned)jenTrace.tag, (unsigned)hops);
                 }
             }
         } else if (strncasecmp(sub, "REGION", 6) == 0 && (sub[6] == '\0' || sub[6] == ' ')) {
@@ -2926,7 +2938,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             } else {
                 rli->hybridSyncEnabled = true;
                 rli->startReceive();
-                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: HybridSync ON (0x14B4)");
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: HybridSync ON (%s)", rli->hybridSyncLabel());
             }
 #else
             snprintf(replyMsg, sizeof(replyMsg), "JT JENCORE: HybridSync not supported on this radio");
@@ -7482,11 +7494,11 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             char caps[48];
             snprintf(caps, sizeof(caps), "MultiP:%s JC:%s JR:%s MSF:%s", snifferState, jcState, jrState,
                      multiSFConfig.enabled ? "ON" : "OFF");
+            char hybridSw[16] = "N/A";
 #if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
-            char hybridSw[12];
-            snprintf(hybridSw, sizeof(hybridSw), "ON/0x%X", (unsigned)NEXUS_JENCORE_RX_SYNCWORD);
-#else
-            const char *hybridSw = "OFF";
+            RadioLibInterface *rli = static_cast<RadioLibInterface *>(radio);
+            if (rli->supportsHybridSync())
+                snprintf(hybridSw, sizeof(hybridSw), "%s/%s", rli->hybridSyncEnabled ? "ON" : "OFF", rli->hybridSyncLabel());
 #endif
 
             // Alt-modem active (SETFSK/SETFLRC): bw/sf/cr/Pre/Slot/CW/SW/Speed are

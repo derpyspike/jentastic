@@ -90,6 +90,8 @@ template <class T> class LR11x0Interface : public RadioLibInterface
     virtual int16_t setSpreadingFactorLive(uint8_t targetSf, int8_t targetPwr = 0x7F) override;
     virtual float getLastRxFrequencyError() override;
     virtual uint8_t getLastRxCodingRate() override;
+    bool supportsHybridSync() const override { return true; }
+    const char *hybridSyncLabel() const override { return "0x1B"; }
 
     uint32_t getPacketTime(uint32_t pl, bool received) override { return computePacketTime(lora, pl, received); }
 
@@ -124,6 +126,9 @@ template <class T> class LR11x0Interface : public RadioLibInterface
 
     /** Restore the RX-side preamble / RNode persona / alt-modem framing before an RX arm. */
     void applyReceiveConfig();
+
+    /** Program the main RX sync word: the hybrid word when enabled, else the Meshtastic/operator one. */
+    void applyMainSyncWord();
 
 #ifdef MESHTASTIC_RX_READOUT_TASK
     bool rearmReceiveFromIsr() override;

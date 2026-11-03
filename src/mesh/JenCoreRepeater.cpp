@@ -599,19 +599,19 @@ void JenCoreRepeater::handleReceivedFrame(const uint8_t *raw, size_t len, float 
         traceObserver(raw, len, info, snr, rssi);
 
 #if NEXUS_ENABLE_JENCORE_RELAY
+    const bool direct = info.route_type == MC_ROUTE_DIRECT || info.route_type == MC_ROUTE_TRANSPORT_DIRECT;
+    // Zero-hop CONTROL is neighbour discovery (Mesh::onRecvPacket): a direct exchange, so observe it even when
+    // flood relaying is off. Only a relaying node answers the request.
+    if (direct && info.payload_type == MC_PAYLOAD_TYPE_CONTROL && info.path_hash_count == 0)
+        handleControl(raw, len, info, snr, airtimeMs, isRelayEnabled());
+
     if (!isRelayEnabled()) {
         return;
     }
-    const bool direct = info.route_type == MC_ROUTE_DIRECT || info.route_type == MC_ROUTE_TRANSPORT_DIRECT;
     if (direct) {
-        // Zero-hop CONTROL is neighbour discovery (Mesh::onRecvPacket); any other direct frame is forwarded only
-        // when we are its next hop, exactly like a JenCore repeater.
-        if (info.payload_type == MC_PAYLOAD_TYPE_CONTROL) {
-            if (info.path_hash_count == 0)
-                handleControl(raw, len, info, snr, airtimeMs);
-        } else {
+        // Any other direct frame is forwarded only when we are its next hop, exactly like a JenCore repeater.
+        if (info.payload_type != MC_PAYLOAD_TYPE_CONTROL)
             handleDirect(raw, len, info, snr, airtimeMs);
-        }
         return;
     }
     // Only what JenCore itself routes on: anything else (TRACE, MULTIPART, CONTROL, RAW_CUSTOM, a truncated packet) is
@@ -876,7 +876,8 @@ void JenCoreRepeater::handleMultipartAck(const uint8_t *raw, size_t len, const F
     rememberFrame(hash);
 }
 
-void JenCoreRepeater::handleControl(const uint8_t *raw, size_t len, const FrameInfo &info, float snr, uint32_t airtimeMs)
+void JenCoreRepeater::handleControl(const uint8_t *raw, size_t len, const FrameInfo &info, float snr, uint32_t airtimeMs,
+                                    bool allowReply)
 {
     // NODE_DISCOVER_REQ (simple_repeater onControlDataRecv): type 0x8_, filter, 4-byte tag, optional 'since'.
     const uint8_t *req = &raw[info.header_len];
@@ -886,8 +887,11 @@ void JenCoreRepeater::handleControl(const uint8_t *raw, size_t len, const FrameI
     if ((req[0] & 0xF0) == MC_CTL_DISCOVER_RESP) {
         const uint32_t tag = (uint32_t)req[2] | ((uint32_t)req[3] << 8) | ((uint32_t)req[4] << 16) |
                              ((uint32_t)req[5] << 24);
-        if (!discoveryActive() || tag != discoveryTagStorage() || info.payload_len < 6 + MC_PUB_KEY_SIZE)
+        if (!discoveryActive() || tag != discoveryTagStorage() || info.payload_len < 6 + MC_PUB_KEY_SIZE) {
+            LOG_DEBUG("JenCore DISCOVER_RESP ignored: active=%d tag=%08x/%08x payload=%u", discoveryActive() ? 1 : 0,
+                      (unsigned)tag, (unsigned)discoveryTagStorage(), (unsigned)info.payload_len);
             return;
+        }
         const uint8_t *pub = &req[6];
         if (memcmp(pub, identityPub, MC_PUB_KEY_SIZE) == 0)
             return;
@@ -917,6 +921,8 @@ void JenCoreRepeater::handleControl(const uint8_t *raw, size_t len, const FrameI
     }
 
     if ((req[0] & 0xF0) != MC_CTL_DISCOVER_REQ)
+        return;
+    if (!allowReply) // responses are still observed; only relaying nodes answer requests
         return;
     if (nexus::jen_core_policy::has(jenCoreVault::policy(), nexus::jen_core_policy::FEATURE_BLOCK_DISC))
         return;
