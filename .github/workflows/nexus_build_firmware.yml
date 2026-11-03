@@ -1,11 +1,15 @@
 name: Build (direct PlatformIO)
 
 # Fork of build_firmware.yml that compiles with pip-installed PlatformIO
-# directly on the GitHub-hosted runner, instead of the meshtastic/
-# gh-action-firmware Docker container. The develop-* images regressed on
-# 2026-10-12 (image rev c48ef2c): /pio/core/penv has no pip, so every
-# ESP-family build dies at link with
-#   ModuleNotFoundError: No module named 'SCons.Tool.FortranCommon'
+# directly on the GitHub-hosted runner instead of the meshtastic/
+# gh-action-firmware Docker container (the develop-* images regressed on
+# 2026-10-12, image rev c48ef2c, and left ESP builds broken).
+#
+# Pinned to PlatformIO 6.2.0 + pioarduino 6.2.0, the combination upstream's
+# container uses for ESP32 and the minimum espressif32 55.03.312-1 accepts.
+# The constraint matters: PyPI's pioarduino 6.2.0.post1 is a prerelease and
+# does not satisfy the platform's `engines.platformio >=6.2.0` check.
+#
 # This workflow uses the repo's own bin/build-<arch>.sh scripts so the
 # release/ directory is populated exactly like upstream packaging expects
 # (mtjson target, device-install scripts, nRF factory-erase uf2, OTA zip).
@@ -45,21 +49,20 @@ jobs:
 
       # Warm ~/.platformio per platform: avoids re-downloading toolchains on
       # every run and dodges PlatformIO registry rate limits on cold caches.
-      # Scoped to pio6119-py312: ensures no poisoned cache from 6.2.0 or Python 3.14/3.15.
+      # Scoped to pio620-py312 so caches from the 6.1.19 era (or a different
+      # penv/Python shape) are never restored.
       - name: Cache PlatformIO packages
         uses: actions/cache@v4
         with:
           path: ~/.platformio
-          key: pio6119-py312-${{ runner.os }}-${{ inputs.platform }}-${{ hashFiles('platformio.ini') }}
+          key: pio620-py312-${{ runner.os }}-${{ inputs.platform }}-${{ hashFiles('platformio.ini') }}
           restore-keys: |
-            pio6119-py312-${{ runner.os }}-${{ inputs.platform }}-
+            pio620-py312-${{ runner.os }}-${{ inputs.platform }}-
 
       - name: Guard against gutted tool-scons cache
-        # Self-heal: if tool-scons exists but its FortranCommon.py marker is
-        # missing (the 6.2.0 wipe leaves the manifest but empties the package,
-        # so a pinned PIO skips reinstall), drop the package and let the build
-        # fetch a fresh one. This is the exact "No module named
-        # 'SCons.Tool.FortranCommon'" ESP-link failure seen on 2026-10-16.
+        # Defensive: a cache restored from an interrupted install can leave the
+        # tool-scons manifest without SCons' files. Drop the package and let
+        # the build fetch a fresh one instead of failing at link time.
         run: |
           TS="$HOME/.platformio/packages/tool-scons"
           if [ -d "$TS" ] && ! find "$TS" -name FortranCommon.py -print -quit | grep -q .; then
@@ -69,43 +72,38 @@ jobs:
             echo "tool-scons OK or absent (PIO installs on demand)"
           fi
 
-      - name: Lock PlatformIO and ESP32 penv to 6.1.19
-        # PINNED: PlatformIO Core 6.2.0 (PyPI latest since 2026-09-05) wipes
-        # tool-scons during ESP-IDF builds — link then dies with
-        # "ModuleNotFoundError: SCons.Tool.FortranCommon" (community thread
-        # 54324; reproduced locally at 484s). 6.1.19 is the last known-good
-        # (matches Jenny's local builds). Do not un-pin until 6.2.1+ ships.
+      - name: Lock PlatformIO and ESP32 penv to 6.2.0
+        # espressif32 55.03.312-1 requires `engines.platformio >=6.2.0`.
+        # PyPI also has pioarduino 6.2.0.post1; a post release sorts below
+        # 6.2.0 for semver, so it fails that check. Pin both packages exactly,
+        # as upstream's gh-action-firmware container does.
         #
-        # Triple lock:
-        # 1. Host environment gets platformio==6.1.19
+        # Four locks:
+        # 1. Host environment gets platformio==6.2.0
         # 2. Seed ~/.platformio/appstate.json so after_upgrade() never triggers
-        # 3. Pre-create ~/.platformio/penv with pioarduino==6.1.19 so penv_setup.py
-        #    does not auto-upgrade penv to 6.2.0 via `uv pip install --upgrade pioarduino>=6.1.19`
-        # 4. Touch .piokeep on tool-scons if present, plus fallback FortranCommon shim
+        # 3. Pre-create ~/.platformio/penv with pioarduino==6.2.0 so
+        #    penv_setup.py does not resolve the post1 release
+        # 4. Export UV_CONSTRAINT/PIP_CONSTRAINT so any later uv/pip install
+        #    inside the build keeps the exact versions
         run: |
           mkdir -p "$HOME/.platformio/packages"
-          echo '{"last_version": "6.1.19", "last_check": {"platformio_upgrade": 2147483647, "prune_system": 2147483647}}' > "$HOME/.platformio/appstate.json"
-          pip install -U "platformio==6.1.19"
-          if [ ! -f "$HOME/.platformio/penv/bin/python" ] || ! "$HOME/.platformio/penv/bin/python" -c "import pioarduino; assert pioarduino.__version__ == '6.1.19'" 2>/dev/null; then
-            echo "Pre-creating ~/.platformio/penv pinned to 6.1.19..."
+          echo '{"last_version": "6.2.0", "last_check": {"platformio_upgrade": 2147483647, "prune_system": 2147483647}}' > "$HOME/.platformio/appstate.json"
+          pip install -U "platformio==6.2.0"
+          if [ ! -f "$HOME/.platformio/penv/bin/python" ] || ! "$HOME/.platformio/penv/bin/python" -c "import pioarduino; assert pioarduino.__version__ == '6.2.0'" 2>/dev/null; then
+            echo "Pre-creating ~/.platformio/penv pinned to 6.2.0..."
             rm -rf "$HOME/.platformio/penv"
             python -m venv "$HOME/.platformio/penv"
             "$HOME/.platformio/penv/bin/pip" install --upgrade "uv>=0.1.0"
-            "$HOME/.platformio/penv/bin/pip" install "pioarduino==6.1.19" "platformio==6.1.19"
+            "$HOME/.platformio/penv/bin/pip" install "pioarduino==6.2.0" "platformio==6.2.0"
           fi
+          printf '%s\n' 'pioarduino==6.2.0' 'platformio==6.2.0' > "$HOME/.platformio/constraints.txt"
+          {
+            echo "UV_CONSTRAINT=$HOME/.platformio/constraints.txt"
+            echo "PIP_CONSTRAINT=$HOME/.platformio/constraints.txt"
+          } >> "$GITHUB_ENV"
           if [ -d "$HOME/.platformio/packages/tool-scons" ]; then
             touch "$HOME/.platformio/packages/tool-scons/.piokeep"
           fi
-          for scons_tool_dir in $(find "$HOME/.platformio/packages" -maxdepth 3 -type d -name "Tool" 2>/dev/null); do
-            if [ -f "$scons_tool_dir/linkCommon/__init__.py" ] && [ ! -f "$scons_tool_dir/FortranCommon.py" ]; then
-              echo "Adding FortranCommon fallback shim to $scons_tool_dir"
-              printf '%s\n' \
-                '"""Fallback shim for SCons FortranCommon to prevent link crashes"""' \
-                'def isfortran(env, source): return False' \
-                'def add_all_to_env(env): pass' \
-                'def add_fortran_to_env(env): pass' > "$scons_tool_dir/FortranCommon.py"
-            fi
-          done
 
       - name: Build ${{ inputs.platform }}
         id: build

@@ -1,7 +1,7 @@
 # Nexus fork of build_one_target.yml — same manual single-target dispatch, but
-# the build job calls nexus_build_firmware.yml (direct pip-installed PlatformIO)
-# instead of build_firmware.yml, whose meshtastic/gh-action-firmware container
-# is broken since 2026-10-12 (SCons.Tool.FortranCommon link failure on ESP32s).
+# the build job calls nexus_build_firmware.yml (direct pip-installed PlatformIO
+# 6.2.0 + pioarduino 6.2.0) instead of build_firmware.yml, whose
+# meshtastic/gh-action-firmware container has been broken since 2026-10-12.
 # Shared upstream files stay untouched for clean upstream merges.
 name: Build One Target (Nexus)
 
@@ -44,7 +44,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -U platformio==6.1.19
+      - run: pip install -U platformio==6.2.0
       - name: Generate matrix
         id: jsonStep
         env:
