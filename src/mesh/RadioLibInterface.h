@@ -743,7 +743,7 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     // Frame hooks for modems whose frames are shorter than a Meshtastic packet (SX128x FLRC: 127 bytes).
     // The default sends and reads the whole radioBuffer as one frame.
     static const int RX_FRAME_PARTIAL = 1;
-    virtual int16_t startTransmitFrame(size_t numbytes) { return iface->startTransmit((uint8_t *)&radioBuffer, numbytes); }
+    virtual int16_t startTransmitFrame(size_t numbytes) { return launchTransmit(numbytes); }
     /** >0 while more frames of the current packet remain: wait this long, then sendNextFrame() */
     virtual uint32_t nextFrameDelayMsec() { return 0; }
     virtual bool sendNextFrame() { return false; }

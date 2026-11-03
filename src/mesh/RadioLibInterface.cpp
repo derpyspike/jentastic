@@ -526,6 +526,10 @@ void RadioLibInterface::deliverPendingIrqFromPoll(PendingISR cause)
 
 void RadioLibInterface::onNotify(uint32_t notification)
 {
+    // Frames the readout task captured whose ISR_RX a later notification overwrote. Deliver them, and re-arm as ISR_RX
+    // would unless this thread has moved the radio on.
+    if (notification != ISR_RX && deliverCapturedFrames() && isReceiving)
+        notify(ISR_RX, false);
 #ifdef PROFILE_PACKETS
     if (prof::isrAt && (notification == ISR_TX || notification == ISR_RX)) {
         prof::add(prof::ISR_LATENCY, micros() - prof::isrAt);
