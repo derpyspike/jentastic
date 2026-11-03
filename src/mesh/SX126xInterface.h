@@ -104,6 +104,8 @@ template <class T> class SX126xInterface : public RadioLibInterface
         return lora.getLoRaRxHeaderInfo(&cr, &hasCRC) == RADIOLIB_ERR_NONE;
     }
 
+    float readFrequencyError() override { return lora.getFrequencyError(); }
+
     // Sub-GHz only. isChannelActive() passes CAD_ON_4_SYMB; keep the two in step.
     uint8_t getCadSymbolCountSubGhz() const override { return 4; }
 

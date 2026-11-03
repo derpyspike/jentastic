@@ -105,6 +105,8 @@ template <class T> class SX128xInterface : public RadioLibInterface
         return lora.getLoRaRxHeaderInfo(&cr, &hasCRC) == RADIOLIB_ERR_NONE;
     }
 
+    float readFrequencyError() override { return lora.getFrequencyError(); }
+
     // 2.4 GHz only. isChannelActive() passes CAD_ON_8_SYMB; keep the two in step.
     uint8_t getCadSymbolCountWideLora() const override { return 8; }
 

@@ -1308,7 +1308,7 @@ template <typename T> bool SX126xInterface<T>::sleep()
 template <typename T> bool SX126xInterface<T>::resetAGC()
 {
     // Safety: don't reset mid-packet
-    if (sendingPacket != NULL || (isReceiving && isActivelyReceiving()))
+    if (isSending() || (isReceiving && isActivelyReceiving()))
         return false;
 
     LOG_DEBUG_RADIO("SX126x AGC reset: warm sleep + Calibrate(0x7F)");

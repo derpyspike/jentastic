@@ -93,6 +93,8 @@ class RF95Interface : public RadioLibInterface
         return lora->getLoRaRxHeaderInfo(&cr, &hasCRC) == RADIOLIB_ERR_NONE;
     }
 
+    float readFrequencyError() override { return lora->getFrequencyError(); }
+
   private:
     /** Some boards require GPIO control of tx vs rx paths */
     void setTransmitEnable(bool txon);

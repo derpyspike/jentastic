@@ -528,7 +528,8 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     struct CapturedRxInfo {
         int32_t rssi;
         float snr;
-        int16_t state; // readData()'s result
+        float frequencyError; // corrected frequency offset, read with the frame
+        int16_t state;        // readData()'s result
         uint16_t len;
         uint8_t rxCR;         // the LoRa header's raw coding rate, read with the frame
         bool hasCRC;          // the LoRa header's CRC flag, likewise
@@ -766,6 +767,10 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     /** The LoRa header's raw coding rate and CRC flag for the frame the chip holds now; false where it cannot report
      *  them. Read with the frame, not later: on a chip left listening the status describes whatever it is receiving. */
     virtual bool readRxHeaderInfo(uint8_t &, bool &) { return false; }
+
+    /** Corrected frequency offset for the frame the chip holds now. Read with the frame on the readout-task path, so
+     *  the phone/Nexus stats get this frame's offset rather than the next one's. Defaults to none. */
+    virtual float readFrequencyError() { return 0.0f; }
 
     /** Drop what the chip still holds of a frame nobody will read out. Only a chip that receives into a FIFO keeps it:
      *  there the next readout would start with the dropped frame's bytes. */

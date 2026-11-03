@@ -148,7 +148,7 @@ bool RadioLibInterface::canSendImmediately()
     // We wait _if_ we are partially though receiving a packet (rather than just merely waiting for one).
     // To do otherwise would be doubly bad because not only would we drop the packet that was on the way in,
     // we almost certainly guarantee no one outside will like the packet we are sending.
-    bool busyTx = sendingPacket != NULL;
+    bool busyTx = isSending(); // raw JenCore/RNode frames too: they never set sendingPacket
     // isActivelyReceiving() reads the chip over SPI. Unlocked, it can split the readout task's command and wedge BUSY for
     // RadioLib's whole BUSY timeout. The lock is recursive, so a caller already holding it re-enters.
     bool busyRx = false;
@@ -379,7 +379,7 @@ bool RadioLibInterface::findInTxQueue(NodeNum from, PacketId id)
 void RadioLibInterface::updateNoiseFloor()
 {
     // Only sample from idle receive mode. TX/RX-critical paths must return to radio work quickly.
-    if (!isReceiving || sendingPacket != NULL) {
+    if (!isReceiving || isSending()) {
         return;
     }
     // Ahead of the lock and the chip reads below, which then cost nothing on the iterations this skips
@@ -1687,9 +1687,15 @@ void RadioLibInterface::handleReceiveInterrupt(const CapturedRxInfo *captured)
 
             if (captured) {
                 // What addReceiveMetadata() reads, read by the task before the next frame could replace it
-                mp->rx_snr = captured->snr;
+                if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0)
+                    mp->rx_snr = meshtastic::NexusModule::altPseudoSnr((float)captured->rssi);
+                else
+                    mp->rx_snr = captured->snr;
                 mp->rx_rssi = captured->rssi;
                 mp->has_rx_rssi = true;
+                mp->rx_frequency_error = captured->frequencyError;
+                if (captured->headerInfoValid)
+                    mp->rx_coding_rate = captured->rxCR;
             } else {
                 addReceiveMetadata(mp);
             }
@@ -2170,6 +2176,7 @@ void RadioLibInterface::readOutFromTask()
     }
     f.info.snr = iface->getSNR();
     f.info.rssi = lround(iface->getRSSI());
+    f.info.frequencyError = readFrequencyError();
     f.info.len = (uint16_t)len;
     // Here, not where the radio thread accounts for the frame: by then the chip has been put back in RX - after a
     // resume it never left it - and its packet status describes the frame it is receiving now, not this one.
