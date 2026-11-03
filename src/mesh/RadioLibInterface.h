@@ -73,10 +73,12 @@ class LockingArduinoHal : public ArduinoHal
 // RadioLib's own default Vref, for a probe with no explicit voltage configured.
 #define TCXO_OPTIONAL_DEFAULT_VOLTAGE 1.6f
 
-// TCXO start-up delay programmed after every begin(), in place of RadioLib's 5000 us. A clear CAD leaves the chip on
-// its RC oscillator, so the TX after it waits this long before the PA ramps. Set it in variant.h for a slower TCXO.
+// Nexus: keep RadioLib's 5000 us default. The 2.8.2 base lowered this to 1000 us; after the periodic AGC reset's
+// warm sleep, SX1262 boards with a slow TCXO can fail to start it in 1 ms and arm RX deaf until the next TX.
+// A clear CAD leaves the chip on its RC oscillator, so the TX after it waits this long before the PA ramps.
+// Set it in variant.h for a slower TCXO.
 #ifndef TCXO_STARTUP_DELAY_US
-#define TCXO_STARTUP_DELAY_US 1000
+#define TCXO_STARTUP_DELAY_US 5000
 #endif
 
 // How long RadioLib waits on BUSY before failing a command; its own default is 1000 ms. A chip whose command was split
@@ -998,6 +1000,8 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     static void rxReadoutTaskMain(void *arg);
     /** One readout, from the task, with the RadioLib calls handleReceiveInterrupt() makes */
     void readOutFromTask();
+    /** Wake the radio thread for a captured frame without clobbering a pending TX/fragment notification. */
+    bool notifyReadout();
     /** Move the oldest captured frame into radioBuffer; false if there is none */
     bool takeCapturedFrame(CapturedRxInfo &info);
 

@@ -526,9 +526,9 @@ void RadioLibInterface::deliverPendingIrqFromPoll(PendingISR cause)
 
 void RadioLibInterface::onNotify(uint32_t notification)
 {
-    // Frames the readout task captured whose ISR_RX a later notification overwrote. Deliver them, and re-arm as ISR_RX
-    // would unless this thread has moved the radio on.
-    if (notification != ISR_RX && deliverCapturedFrames() && isReceiving)
+    // Frames the readout task captured: deliver them on any notification. The task's readData() clears RX_DONE, so the
+    // ISR_RX case below cannot rely on seeing a terminal IRQ. Re-notify only when this was not already ISR_RX.
+    if (deliverCapturedFrames() && isReceiving && notification != ISR_RX)
         notify(ISR_RX, false);
 #ifdef PROFILE_PACKETS
     if (prof::isrAt && (notification == ISR_TX || notification == ISR_RX)) {
@@ -2135,6 +2135,19 @@ void RadioLibInterface::rxReadoutTaskMain(void *arg)
     }
 }
 
+bool RadioLibInterface::notifyReadout()
+{
+    // One notification slot: a pending TX completion or fragment gap must not be
+    // overwritten. Its own onNotify() drains the captured ring at the top.
+    const uint32_t pending = pendingNotification();
+    if (pending == ISR_TX || pending == NEXT_FRAME)
+        return false;
+    // Any other pending value (a TX delay, a poll tick, or ISR_RX itself) can be
+    // replaced with ISR_RX: that path re-schedules the TX delay, and onNotify's
+    // top-level recovery delivers the ring.
+    return notify(ISR_RX, true);
+}
+
 /// The RadioLib calls handleReceiveInterrupt() and addReceiveMetadata() make, as soon as RX_DONE rises. Each takes the SPI
 /// lock for itself; the radio-sequence lock below is what keeps the whole readout out of the radio thread's sequences.
 void RadioLibInterface::readOutFromTask()
@@ -2146,7 +2159,7 @@ void RadioLibInterface::readOutFromTask()
         // A CAD handoff's RX that ends without a frame (TIMEOUT, or CRC_ERR / HEADER_ERR on a damaged header) can leave the
         // chip in standby. The radio thread clears the flags and re-arms; cleared here instead, the handoff stays open,
         // the chip deaf, until checkCadHandoffTimeout(). Plain RX leaves HEADER_ERR for checkStaleRxFlags() to judge.
-        if (cadHandoffRxEnded() && !notify(ISR_RX, !rxArmedBeforeTxDone)) {
+        if (cadHandoffRxEnded() && !notifyReadout()) {
             // The one notification slot already held a TX: that path re-arms RX itself, but nothing there would
             // clear a damaged header's flags, and a latched line raises no edge for the next frame's RX_DONE. So
             // clear them here, as this site did before the handoff end was handed to the radio thread, and leave
@@ -2166,7 +2179,7 @@ void RadioLibInterface::readOutFromTask()
             rxReadoutBadLength = rxReadoutBadLength + 1;
         else
             rxReadoutDropped = rxReadoutDropped + 1;
-        notify(ISR_RX, !rxArmedBeforeTxDone); // for the counter line, and the re-arm
+        notifyReadout(); // for the counter line, and the re-arm
         return;
     }
     CapturedFrame &f = rxRing[head];
@@ -2188,7 +2201,7 @@ void RadioLibInterface::readOutFromTask()
     rxReadoutFrames = rxReadoutFrames + 1;
     __asm__ __volatile__("" ::: "memory"); // the entry is written before the head that publishes it
     rxRingHead = next;
-    notify(ISR_RX, !rxArmedBeforeTxDone);
+    notifyReadout();
 }
 
 bool RadioLibInterface::takeCapturedFrame(CapturedRxInfo &info)

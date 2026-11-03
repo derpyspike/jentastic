@@ -36,6 +36,9 @@ class NotifiedWorkerThread : public OSThread
      */
     bool notifyLater(uint32_t delay, uint32_t v, bool overwrite);
 
+    /// The notification value currently pending, or 0.
+    uint32_t pendingNotification() const { return notification.load(); }
+
   protected:
     virtual void onNotify(uint32_t notification) = 0;
 
