@@ -7,9 +7,10 @@ SHORT_VERSION=$(bin/buildinfo.py short)
 
 BUILDDIR=.pio/build/$1
 OUTDIR=release
+mkdir -p "$OUTDIR"
 
 rm -f $OUTDIR/firmware*
-rm -r $OUTDIR/* || true
+rm -rf "$OUTDIR"/* || true
 
 # Important to pull latest version of libs into all device flavors, otherwise some devices might be stale
 platformio pkg install -e $1

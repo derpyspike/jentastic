@@ -7,9 +7,10 @@ SHORT_VERSION=`bin/buildinfo.py short`
 
 BUILDDIR=.pio/build/$1
 OUTDIR=release
+mkdir -p "$OUTDIR"
 
 rm -f $OUTDIR/firmware*
-rm -r $OUTDIR/* || true
+rm -rf "$OUTDIR"/* || true
 
 # Important to pull latest version of libs into all device flavors, otherwise some devices might be stale
 # platformio pkg install -e $1
@@ -20,10 +21,10 @@ pio --version
 echo "Building for $1 with $PLATFORMIO_BUILD_FLAGS"
 rm -f $BUILDDIR/firmware*
 
-# Guard against PlatformIO 6.2.0 auto-upgrade and gutted SCons Fortran bug
+# Guard against PlatformIO auto-upgrade; espressif32 55.03.312-1 needs 6.2.0.
 mkdir -p "$HOME/.platformio"
 if [ ! -f "$HOME/.platformio/appstate.json" ]; then
-  echo '{"last_version": "6.1.19", "last_check": {"platformio_upgrade": 2147483647, "prune_system": 2147483647}}' > "$HOME/.platformio/appstate.json"
+  echo '{"last_version": "6.2.0", "last_check": {"platformio_upgrade": 2147483647, "prune_system": 2147483647}}' > "$HOME/.platformio/appstate.json"
 fi
 
 # Ensure FortranCommon fallback exists in any installed SCons Tool directory
