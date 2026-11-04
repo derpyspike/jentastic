@@ -76,7 +76,7 @@ BUILDER_DEFAULT="default|jt-firmware|none|Nexus|JenT|no|no"        # Placeholder
 # Default target lists per builder (mirrors legacy scripts)
 # -----------------------------------------------------------------------------
 TARGETS_JENNY="heltec-v3 heltec-v4 station-g2 station-g3 tracker-t1000-e rak_wismeshtag seeed-xiao-s3 heltec-vision-master-e290-inkhud seeed_wio_tracker_L1 seeed_xiao_nrf52840_kit seeed_mesh_tracker_X1 rak3401-1watt nrf52_promicro_diy_tcxo nrf52_promicro_diy_sx1262"
-TARGETS_ADMINS="nrf52_promicro_diy_tcxo nrf52_promicro_diy_sx1262-noscreen xiaowa-esp32c3 t-deck-tft heltec-v4 seeed_solar_node rak_wismeshtag tracker-t1000-e seeed_mesh_tracker_X1 rak3401-1watt"
+TARGETS_ADMINS="nrf52_promicro_diy_sx1262-noscreen xiaowa-esp32c3 heltec-v4 rak_wismeshtag tracker-t1000-e seeed_mesh_tracker_X1 rak3401-1watt station-g3 rak3401-1watt"
 TARGETS_JAVI="nrf52_promicro_diy_tcxo nrf52_promicro_diy_sx1262-noscreen station-g2 rak3401-1watt"
 TARGETS_DEFAULT="$TARGETS_ADMINS"
 
