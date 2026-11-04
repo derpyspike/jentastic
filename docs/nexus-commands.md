@@ -350,7 +350,7 @@ Again: The 2.8 already does this automatically, but if you wanna override it man
 | `SETROLE` | `SETROLE <role> [RAM]` | Change device role. Append `RAM` for live in-memory change with role defaults applied without saving to flash and without rebooting (anti-flash-wear for solar threshold crossing). Accepted: `CLIENT`, `SENS`/`SENSOR`, `RTR`/`ROUTER`, `RTR_CLIENT`, `BASE`/`CLIENT_BASE`, `MUTE`/`CLIENT_MUTE`, `HIDDEN`/`CLIENT_HIDDEN`, `LOST`/`LOST_AND_FOUND`, `TAK`, `TAK_TRACKER`, or digit 0-13. | RAM: `JT: Role set to <role> (<n>) in RAM (no reboot).`<br>Flash: `JT: Role updated to <role> (<n>).` |
 | **`VOLT`** / `VOLTAGE` | `VOLT [LIST\|STATUS]`<br>`VOLT <1..4> OFF`<br>`VOLT WAKE`<br>`VOLT <1..4> <V\|mV> <HIGH\|LOW> <CMD\|HIB\|WAKE> [CH1..3\|BAT] [cmd...]` | 4-threshold voltage power automation engine (v68). Monitors battery or multi-channel INA voltage (3-reading debounce, 50 mV hysteresis). Actions:<br>• `CMD`: Execute local command (up to 31 chars)<br>• `HIB`: Enter timed 60s microamp deep sleep sniff loop<br>• `WAKE`: Wake from hibernation + run optional wake command<br>Channels: `BAT`/`CH1` (default), `CH2`, `CH3` (multi-channel INA3221). Persistent via `/nexus SAVE`. | `JT: Paging VOLT rules...`<br>`JT VOLT: [<slot>] <V> <DIR> <ACT> [<CH>] configured (RAM). Run /nexus SAVE to persist.` |
 | `LR2021_SF` / **`MULTISF`** / `MSF`| `LR2021_SF [SFs...]` | Configure LR2021 hardware multi-SF concurrent receiver channels with independent syncwords (compiled only with `USE_LR2021` / `ARCH_PORTDUINO`). Supports optional `:0xSW`, `:jc`, or `:mc` per channel. Example: `LR2021_SF 6 7 8:0x12` or `LR2021_SF 6 7 8:jc`. | `JT LR2021_SF: side=[SF6,SF7,SF8:0x12] stored and applied (n=<n>)`<br>`JT LR2021_SF: side=(empty) cleared (single-SF RX, n=0)` |
-| **`JENCORE`** / `JC` / `MC` / `JEN_CORE` / `MESHCORE` / `MCORE` | `JENCORE [STATUS\|POLICY]`<br>`JENCORE ON\|OFF`<br>`JENCORE IDENTITY` (alias `ID`)<br>`JENCORE RELAY <ON\|OFF>`<br>`JENCORE PATHSIZE [1-3]`<br>`JENCORE FLOODMAX [<gen> <unscoped> <advert>]`<br>`JENCORE DISCOVER`<br>`JENCORE NEIGHBORS`<br>`JENCORE TRACE [1\|2\|4] <hex>`<br>`JENCORE PING <hex>\|NEIGHBOR <n>`<br>`JENCORE TRACEALERT ON\|OFF`<br>`JENCORE BLOCK TRACE\|PING\|DISC ON\|OFF`<br>`JENCORE NAME <name>\|OFF`<br>`JENCORE REGION [STATUS\|ADD <name>\|DEL <name>\|HOME <name>\|UNSCOPED ON/OFF\|OFF]`<br>`JENCORE ADVERT [LOCAL\|INTERVAL <local-min> <flood-min>]`<br>`JENCORE CONTACTS`<br>`JENCORE CHANNELS [ADD <name\|#tag> [base64-psk]]`<br>`JENCORE HYBRID <ON\|OFF>`<br>`JENCORE STATS` | JenCore interop, repeater and companion subsystem. The master enable is **OFF** by default; while off, all sniff/relay/companion/advert paths are idle. Decodes DMs and group text on `JC:` (legacy `MC:`) channels and relays flood packets. `PATHSIZE` sets the normal packet path-hash width (1-3 bytes, default 3); TRACE uses its own 1/2/4-byte hash size. `FLOODMAX` sets MeshCore flood hop limits (defaults 64/64/8). `REGION` manages up to 4 transport-code regions; the first/`HOME` region scopes outgoing floods. `ADVERT` sends a manual advert (`LOCAL` = zero-hop) or sets automatic intervals (both **0 = off** by default). `DISCOVER`/`NEIGHBORS` probe and list zero-hop JenCore repeaters. `TRACE`/`PING` remember a tag and report the endpoint copy (or a 60 s timeout) back to the channel or sender that issued the command; the trace hash size is independent of `PATHSIZE`. `TRACEALERT` emits a phone-only text for every heard trace. `BLOCK` stops trace/ping participation or discovery replies. `NAME` overrides only the JenCore ADVERT name. `CHANNELS` seeds `JC:Public`, `JC:#test`, `JC:#bot` or adds `JC:<name>`; a `#tag` key derives as `SHA256("#tag")[:16]`. `HYBRID` enables the SX126x/SX128x hybrid syncword (`0x14B4`) RX path where supported. | Status:<br>`JT JENCORE:`<br>` Enabled: <ON\|OFF>`<br>` Relay: <ON\|OFF>`<br>` PathHash: <n> byte(s)`<br>` Regions: <n>`<br>` Advert: local=<n>min flood=<n>min`<br>` HybridSync: <ON (0x14B4)\|OFF\|N/A>`<br>` RxSeen: <n> (dup=<n>)`<br>` TxRelay: <n>`<br>` Contacts: <n>`<br>Others: `JT JENCORE: ON` / `JT JENCORE: OFF`<br>`JT JENCORE: PathHash = <n> byte(s)`<br>`JT JENCORE: flood_max=<g> unscoped=<u> advert=<a>`<br>`JT JENCORE: regions=<n> home=<name> unscoped=<ON\|OFF> \| <*home>, <others>`<br>`JT JENCORE: advert local=<n>min flood=<n>min (0=off)`<br>`JT JENCORE: <local\|flood> ADVERT queued`<br>`JT JENCORE: HybridSync <ON (0x14B4)\|OFF (standard 0x2B)>`<br>`JT JC STATS: ...` |
+| **`JENCORE`** / `JC` / `MC` / `JEN_CORE` / `MESHCORE` / `MCORE` | `JENCORE [STATUS\|POLICY]`<br>`JENCORE ON\|OFF`<br>`JENCORE IDENTITY` (alias `ID`)<br>`JENCORE RELAY <ON\|OFF>`<br>`JENCORE PATHSIZE [1-3]`<br>`JENCORE FLOODMAX [<gen> <unscoped> <advert>]`<br>`JENCORE DISCOVER`<br>`JENCORE NEIGHBORS`<br>`JENCORE TRACE [1\|2\|4] <hex>`<br>`JENCORE PING <hex>\|NEIGHBOR <n>`<br>`JENCORE TRACEALERT ON\|OFF`<br>`JENCORE BLOCK TRACE\|PING\|DISC ON\|OFF`<br>`JENCORE NAME <name>\|OFF`<br>`JENCORE REGION [STATUS\|ADD <name>\|DEL <name>\|HOME <name>\|UNSCOPED ON/OFF\|OFF]`<br>`JENCORE ADVERT [LOCAL\|INTERVAL <local-min> <flood-min>]`<br>`JENCORE CONTACTS`<br>`JENCORE CHANNELS [ADD <name\|#tag> [base64-psk]]`<br>`JENCORE HYBRID <ON\|OFF>`<br>`JENCORE STATS` | JenCore interop, repeater and companion subsystem. The master enable is **OFF** by default; while off, all sniff/relay/companion/advert paths are idle. Decodes DMs and group text on `JC:` (legacy `MC:`) channels and relays flood packets. `PATHSIZE` sets the normal packet path-hash width (1-3 bytes, default 3); TRACE uses its own 1/2/4-byte hash size. `FLOODMAX` sets MeshCore flood hop limits (defaults 64/64/8). `REGION` manages up to 4 transport-code regions; the first/`HOME` region scopes outgoing floods. `ADVERT` sends a manual advert (`LOCAL` = zero-hop) or sets automatic intervals (both **0 = off** by default). `DISCOVER`/`NEIGHBORS` probe and list zero-hop JenCore repeaters. `TRACE`/`PING` remember a tag and report the endpoint copy (or a 60 s timeout) back to the channel or sender that issued the command; the trace hash size is independent of `PATHSIZE`. `TRACEALERT` emits a phone-only text for every heard trace. `BLOCK` stops trace/ping participation or discovery replies. `NAME` overrides only the JenCore ADVERT name. `CHANNELS` seeds `JC:Public`, `JC:#test`, `JC:#bot` or adds `JC:<name>`; a `#tag` key derives as `SHA256("#tag")[:16]`. `HYBRID` enables the hybrid syncword RX path where supported: SX126x/SX128x `0x14B4`, or the LR11x0 single-byte `0x1B`. | Status:<br>`JT JENCORE:`<br>` Enabled: <ON\|OFF>`<br>` Relay: <ON\|OFF>`<br>` PathHash: <n> byte(s)`<br>` Regions: <n>`<br>` Advert: local=<n>min flood=<n>min`<br>` HybridSync: <ON (0x14B4)\|ON (0x1B)\|OFF\|N/A>`<br>` RxSeen: <n> (dup=<n>)`<br>` TxRelay: <n>`<br>` Contacts: <n>`<br>Others: `JT JENCORE: ON` / `JT JENCORE: OFF`<br>`JT JENCORE: PathHash = <n> byte(s)`<br>`JT JENCORE: flood_max=<g> unscoped=<u> advert=<a>`<br>`JT JENCORE: regions=<n> home=<name> unscoped=<ON\|OFF> \| <*home>, <others>`<br>`JT JENCORE: advert local=<n>min flood=<n>min (0=off)`<br>`JT JENCORE: <local\|flood> ADVERT queued`<br>`JT JENCORE: HybridSync <ON (0x14B4)\|OFF (standard 0x2B)>`<br>`JT JC STATS: ...` |
 | **`JRNODE`** / `RNODE` / `RN` / `JRN` | `JRNODE [STATUS]`<br>`JRNODE ON\|OFF`<br>`JRNODE MODE <BRIDGE\|STANDALONE\|OFF>`<br>`JRNODE TCP <ON\|OFF>`<br>`JRNODE BLE <ON\|OFF>`<br>`JRNODE TIER <5-12>` (alias `SF`) | Reticulum RNode engine. Starts **OFF** by default; `ON` selects BRIDGE. Exposes an RNode over TCP port 7633 (WiFi) and Nordic UART Service (BLE NUS, advertised as `RNode _XXXX`). In BRIDGE mode it runs concurrently with Meshtastic and JenCore, ACKing Reticulum parameter commands while keeping the configured tier. In STANDALONE mode the radio hardware is dedicated exclusively to Reticulum. | `JT JRNODE:`<br>` Enabled: <ON\|OFF>`<br>` Mode: <BRIDGE\|STANDALONE\|OFF>`<br>` Tier SF: <SF>`<br>` TCP: <ON\|OFF> (<conn\|idle>)`<br>` BLE: <ON\|OFF> (<conn\|idle>)`<br>` RxPkts: <n> (bytes=<n>)`<br>` TxPkts: <n> (bytes=<n>)`<br>` LastRSSI: <n>, SNR: <f>`<br>`JT JRNODE: ON (BRIDGE)`<br>`JT JRNODE: Mode <BRIDGE\|STANDALONE\|OFF>`<br>`JT JRNODE: TCP server <ON\|OFF>`<br>`JT JRNODE: BLE NUS <ON\|OFF>`<br>`JT JRNODE: Reticulum tier SF set to <SF>` |
 | `G3` / `FRONTEND` | `G3 [STATUS]` | Station G3 PA / LNA RF front-end control status (compiled only on `STATION_G3` builds). | `JT G3 STATUS`<br>`  PA  = <state>`<br>`  LNA = <state>`<br>`  vault: PA=<st> LNA=<st> (run /nexus SAVE to persist)` |
 | | `G3 LNA <ON\|OFF\|BYPASS>` | Set G3 frontend LNA state (RAM-only until SAVE). | `JT G3: LNA=<ON\|OFF> (GPIO10 OUTPUT <LOW\|HIGH> / bypassed). RAM-only — run /nexus SAVE to persist.` |
@@ -358,7 +358,7 @@ Again: The 2.8 already does this automatically, but if you wanna override it man
 | | `G3 REINIT` | Re-probe both jumper pads and re-apply front-end state. | `JT G3 REINIT`<br>`  PA  = <state>`<br>`  LNA = <state>` |
 | **`APC`** | `APC [STATUS]`<br>`APC ON [MIN=<dBm>]`<br>`APC OFF` | Automatic Power Control engine. Dynamically scales down TX power for direct 0-hop unicast packets (DMs, routing ACKs) based on the target node's last recorded SNR. Prevents receiver saturation, saves battery, and reduces unnecessary RF pollution. Example: `APC ON MIN=-9`. Persistent via `/nexus SAVE`. | `JT APC: <ON\|OFF> (Min: <dBm> dBm)`<br>`JT APC: ON (Min: <dBm> dBm, RAM). Run /nexus SAVE to persist.`<br>`JT APC: OFF (RAM). Run /nexus SAVE to persist.` |
 | **`SPLIT`** | `SPLIT [STATUS]`<br>`SPLIT OFF`<br>`SPLIT MSF <PRESET\|SF> [PWR=<dBm>] [ECHO] [MESHRELAY]`<br>`SPLIT ROOF <PRESET\|SF> [PWR=<dBm>] [ECHO] [MESHRELAY]`<br>`SPLIT CLIENT <PRESET\|SF> [PWR=<dBm>]` | Split-Tier Dual-Preset Engine (v69). Bridges outdoor community mesh and high-speed low-power indoor networks.<br>• `MSF`: Concurrent multi-SF bridge on LR2021 hardware (zero deafness, stock clients supported). E.g. Main=SF6 (`NarrowPlus`), Side=SF7 (`SFNarrow`).<br>• `ROOF`: Single-radio rooftop split (SX1262/SX1280/LR1121). Listens outside, repeats indoor packets at low power, repeats indoor client uplinks out to mesh.<br>• `CLIENT`: Asymmetric indoor client. Listens on indoor tier, transmits uplinks directly on outdoor mesh tier.<br>Options: `PWR=<dBm>` (default -9), `ECHO` (repeat indoor traffic indoors), `MESHRELAY` (repeat mesh traffic out to mesh), `NOZH` (disable zero-hop mask check). Persistent via `/nexus SAVE`. | `JT SPLIT: Mode=<mode> Alt=SF<sf>/<bw>k/<freq>MHz Pwr=<dBm> dBm Flags=0x<HEX>`<br>`JT SPLIT: <mode> configured (Alt=SF<sf>/<bw>k/<freq>MHz Pwr=<dBm> dBm, RAM). Run /nexus SAVE to persist.`<br>`JT SPLIT: OFF (RAM). Run /nexus SAVE to persist.` |
-| **`TIER`** | `TIER [STATUS]`<br>`TIER MADRID`<br>`TIER MAIN <MESHTASTIC\|RNODE\|MESHCORE> <syncword>`<br>`TIER SIDE <1-3> <SF5-12> <MESHTASTIC\|RNODE\|MESHCORE> <syncword>`<br>`TIER SIDE <1-3> OFF`<br>`TIER CLEAR`<br>`TIER OFF`<br>`TIER APPLY`<br>`TIER SAVE`<br>`TIER TX <1-3\|SF5-12>`<br>`TIER TXCHANNEL [<ch> <1-3\|SF5-12\|OFF>]` | Manual multi-SF tier table (**LR2021 targets only**). The main carrier comes from the current `config.lora`: set it with `SETLORA` first (wait ~5 s), declare `MAIN`, add sides in order (each SF higher than the main SF), then `APPLY`. `MADRID` stages the SF5 / 62.5 kHz / 869.618 MHz preset and enables JRNODE BRIDGE + JENCORE. `TX` picks the default Meshtastic TX side; `TXCHANNEL` overrides it per channel (stored by channel index, so renames survive). `CLEAR` zeroes the table, TX overrides and enable flag but leaves the main LoRa config untouched; `OFF` only disables the side detectors. `SAVE` writes the vault. | `JT TIER: <ON\|OFF> main=SF<sf>/<proto>:0x<SW> sides=<n> tx=<slot> txch=<n> \| <i>:SF<sf>/<proto>:0x<SW> ... [OK\|<reason>]`<br>`JT TIER: Madrid staged (SF5 JenRNode main, SF6/7 Meshtastic, SF8 MeshCore). Applying in 5s. Run /nexus SAVE.`<br>`JT TIER: main = SF<sf>/<proto>:0x<SW> (main SF comes from SETLORA; run TIER APPLY)`<br>`JT TIER: side <n> = SF<sf>/<proto>:0x<SW>` / `JT TIER: side <n> removed`<br>`JT TIER: table cleared (main LoRa config unchanged)`<br>`JT TIER: OFF (side detectors cleared; main LoRa config unchanged).`<br>`JT TIER: applied` / `JT TIER: rejected: <reason>`<br>`JT TIER: vault saved`<br>`JT TIER: Meshtastic TX tier = <n> / SF<sf>`<br>`JT TIER: TXCHANNEL <n> \| ch<idx>(<name>)=SF<sf>, ...`<br>`JT TIER: ch <idx> '<name>' -> tier <n> / SF<sf>` |
+| **`TIER`** | `TIER [STATUS]`<br>`TIER MADRID`<br>`TIER CAT`<br>`TIER MAIN <MESHTASTIC\|RNODE\|MESHCORE\|DOUBLESHARED\|TRIPLESHARED> <syncword>`<br>`TIER SIDE <1-3> <SF5-12> <MESHTASTIC\|RNODE\|MESHCORE\|DOUBLESHARED\|TRIPLESHARED> <syncword>`<br>`TIER SIDE <1-3> OFF`<br>`TIER CLEAR`<br>`TIER OFF`<br>`TIER APPLY`<br>`TIER SAVE`<br>`TIER TX <1-3\|SF5-12>`<br>`TIER TXCHANNEL [<ch> <1-3\|SF5-12\|OFF>]` | Manual multi-SF tier table (**LR2021 targets only**). The main carrier comes from the current `config.lora`: set it with `SETLORA` first (wait ~5 s), declare `MAIN`, add sides in order (each SF higher than the main SF), then `APPLY`. `MADRID` stages the SF5 / 62.5 kHz / 869.618 MHz preset, enables JRNODE BRIDGE + JENCORE, and defaults Meshtastic TX to SF7. `CAT` stages the same carrier with SF5 RNode, SF6 Meshtastic and SF7 Meshtastic+MeshCore (`TRIPLESHARED` on the 0x1B hybrid), TX SF7. `TX` picks the default Meshtastic TX side; `TXCHANNEL` overrides it per channel (stored by channel index, so renames survive). `CLEAR` zeroes the table, TX overrides and enable flag but leaves the main LoRa config untouched; `OFF` only disables the side detectors. `SAVE` writes the vault. | `JT TIER: <ON\|OFF> main=SF<sf>/<proto>:0x<SW> sides=<n> tx=<slot> txch=<n> \| <i>:SF<sf>/<proto>:0x<SW> ... [OK\|<reason>]`<br>`JT TIER: Madrid staged (SF5 JenRNode main, SF6/7 Meshtastic, SF8 MeshCore; Meshtastic TX SF7). Applying in 5s. Run /nexus SAVE.`<br>`JT TIER: Catalonia staged (SF5 JenRNode main, SF6 Meshtastic, SF7 Meshtastic+MeshCore on 0x1B; Meshtastic TX SF7). Applying in 5s. Run /nexus SAVE.`<br>`JT TIER: main = SF<sf>/<proto>:0x<SW> (main SF comes from SETLORA; run TIER APPLY)`<br>`JT TIER: side <n> = SF<sf>/<proto>:0x<SW>` / `JT TIER: side <n> removed`<br>`JT TIER: table cleared (main LoRa config unchanged)`<br>`JT TIER: OFF (side detectors cleared; main LoRa config unchanged).`<br>`JT TIER: applied` / `JT TIER: rejected: <reason>`<br>`JT TIER: vault saved`<br>`JT TIER: Meshtastic TX tier = <n> / SF<sf>`<br>`JT TIER: TXCHANNEL <n> \| ch<idx>(<name>)=SF<sf>, ...`<br>`JT TIER: ch <idx> '<name>' -> tier <n> / SF<sf>` |
 
 **PRESET settings reference** — presets accepted across Sub-GHz (`EU_868`, `EU_N_868`, `EU_866`) and 2.4 GHz (`LORA_24`):
 **Beware that the legality of each varies per country. Make sure to always verify and follow your local regulations.**
@@ -553,7 +553,7 @@ main SF; the table is then validated as a whole.
 | `RNODE` | Reticulum RNode traffic, usually `0x12`. |
 | `MESHCORE` | JenCore/MeshCore traffic, usually `0x12`. |
 | `DOUBLESHARED` | One detector on `0x12` carrying both RNode and MeshCore; each frame is classified by content (RNode heuristic first, then MeshCore). |
-| `TRIPLESHARED` | One detector carrying Meshtastic, RNode and MeshCore. Meshtastic must also use `0x12` on that detector; a frame that matches neither RNode nor MeshCore falls through to the Meshtastic parser. |
+| `TRIPLESHARED` | One detector carrying Meshtastic, RNode and MeshCore. Normally all three share the detector's syncword; with the `0x1B` hybrid it hears Meshtastic `0x2B` and MeshCore/RNode `0x12` on one SF (`TIER CAT`). A frame that matches neither RNode nor MeshCore falls through to the Meshtastic parser. |
 
 Validation rejects a table when a side SF is not above the main SF, two sides share an SF, the SF
 spread is more than 4, the detection-factor sum times bandwidth is not below `32e6`, a syncword is
@@ -563,7 +563,8 @@ three sides while the bandwidth is over 500 kHz or the main SF is 10 or higher.
 | Subcommand | What it does |
 |------------|--------------|
 | `TIER` / `TIER STATUS` | Prints mode, main SF/protocol/syncword, sides, TX slot, per-channel override count and the validation result. |
-| `TIER MADRID` | Loads the Madrid preset, disables `SPLIT`, enables `JRNODE BRIDGE` and `JENCORE`, and stages the matching LoRa settings: SF5, BW 62.5 kHz, CR 4/5, 869.618 MHz. Applies in 5 s; run `/nexus SAVE` to persist. |
+| `TIER MADRID` | Loads the Madrid preset, disables `SPLIT`, enables `JRNODE BRIDGE` and `JENCORE`, and stages the matching LoRa settings: SF5, BW 62.5 kHz, CR 4/5, 869.618 MHz. Meshtastic TX defaults to **SF7**. Applies in 5 s; run `/nexus SAVE` to persist. |
+| `TIER CAT` | Loads the Catalonia preset: SF5 RNode main, SF6 Meshtastic, SF7 `TRIPLESHARED` on the `0x1B` hybrid (Meshtastic + MeshCore). Meshtastic TX defaults to **SF7**. Same carrier/apply as Madrid. Aliases `CATALONIA`, `CATALUNYA`. |
 | `TIER MAIN <protocol> <syncword>` | Sets the main detector's protocol and syncword. The main SF is **not** part of this command; set it with `SETLORA`/`PRESET` first. Enables the table. |
 | `TIER SIDE <1-3> <SF5-12> <protocol> <syncword>` | Adds or replaces a side detector. Sides are added in order from 1, each SF must be above the main SF, and duplicate SFs are rejected. The first Meshtastic-capable side becomes the TX side when none is set. |
 | `TIER SIDE <1-3> OFF` | Removes a side, shifts the remaining sides down, and adjusts the TX slot. Removing the last side disables the table. |
@@ -579,13 +580,23 @@ three sides while the bandwidth is over 500 kHz or the main SF is 10 or higher.
 | Detector | SF | Protocol | Syncword | Role |
 |----------|----|----------|----------|------|
 | Main | 5 | `RNODE` | `0x12` | Reticulum RNode main carrier |
-| Side 1 | 6 | `MESHTASTIC` | `0x2B` | Meshtastic, default TX side |
-| Side 2 | 7 | `MESHTASTIC` | `0x2B` | Meshtastic, second tier |
+| Side 1 | 6 | `MESHTASTIC` | `0x2B` | Meshtastic |
+| Side 2 | 7 | `MESHTASTIC` | `0x2B` | Meshtastic, default TX side |
 | Side 3 | 8 | `MESHCORE` | `0x12` | JenCore/MeshCore |
 
 `TIER MADRID` also stages `config.lora` at SF5 / BW62.5 / CR4/5 / 869.618 MHz, disables `SPLIT`, and turns on the RNode BRIDGE and JenCore runtime gates. The LoRa settings apply 5 s after the reply; the table is RAM until `/nexus SAVE`. This is the preset to use for the Madrilenian SF5 RNode + SF6/7 Meshtastic + SF8 MeshCore deployment.
 
-> ℹ️ **Note:** `TIER MADRID` is the 869.618 MHz tier table. `PRESET MADRID24` is a completely different 2.4 GHz preset (SF9 / BW400 / 2482 MHz). They are not interchangeable.
+**What `TIER CAT` sets up**
+
+| Detector | SF | Protocol | Syncword | Role |
+|----------|----|----------|----------|------|
+| Main | 5 | `RNODE` | `0x12` | Reticulum RNode main carrier |
+| Side 1 | 6 | `MESHTASTIC` | `0x2B` | Meshtastic |
+| Side 2 | 7 | `TRIPLESHARED` | `0x1B` | Meshtastic + MeshCore (hybrid RX), default TX side |
+
+`TIER CAT` uses the same SF5 / BW62.5 / CR4/5 / 869.618 MHz staging and the same RNode/JenCore gates as Madrid. SF7 is a single `TRIPLESHARED` detector on the `0x1B` hybrid: it should hear Meshtastic `0x2B` and MeshCore/JenCore `0x12` on one SF, with frame-content classification. RNode is a harmless superset on that tier. The `0x1B` hybrid is bench-verified on LR1110/SX126x but **not yet on LR2021**, so validate with both a 0x2B and a 0x12 sender.
+
+> ℹ️ **Note:** `TIER MADRID` and `TIER CAT` are Sub-GHz tier tables. `PRESET MADRID24` is a completely different 2.4 GHz preset (SF9 / BW400 / 2482 MHz). They are not interchangeable.
 
 **`LR2021_SF` is the low-level escape hatch.** It programs the side-detector SF/syncword table directly and is RAM-only. It does not set a main `0x12` detector and does not persist; use `TIER` for normal operation.
 
@@ -605,8 +616,8 @@ which turns MeshCore text into normal channels/messages and direct messages into
 2. Put the radio on the MeshCore network's frequency, bandwidth and SF with `SETLORA`/`PRESET`.
 3. Match the syncword:
    - SX126x / SX128x: `JENCORE HYBRID ON` installs the `0x14B4` hybrid RX syncword, which hears both the normal `0x2B` and JenCore's `0x12` on the same SF.
-   - LR1110 / LR1121: the chip has one 1-byte syncword and no hybrid; use `SETSYNCWORD 0x12` (you then hear the `0x12` network only).
-   - LR2021: use a `TIER` side with `MESHCORE`/`0x12`, or `DOUBLESHARED`/`TRIPLESHARED`; `TIER MADRID` already puts MeshCore on side SF8.
+   - LR1110 / LR1120 / LR1121: `JENCORE HYBRID ON` uses the single-byte `0x1B` hybrid, which hears both `0x2B` and `0x12` on one SF (bench-verified on LR1110). Without it, use `SETSYNCWORD 0x12` for the `0x12` network only.
+   - LR2021: use a `TIER` side with `MESHCORE`/`0x12` (e.g. Madrid SF8), or `TIER CAT`'s SF7 `TRIPLESHARED` detector on the `0x1B` hybrid for Meshtastic+MeshCore on one SF (unproven on LR2021).
 4. `JENCORE ON`.
 5. Seed or add channels: `JENCORE CHANNELS` (see below).
 6. Configure regions: `JENCORE REGION ADD <name>`, `JENCORE REGION HOME <name>`, and `JENCORE REGION UNSCOPED ON` if the network sends unscoped floods.
@@ -626,7 +637,7 @@ which turns MeshCore text into normal channels/messages and direct messages into
 | `JENCORE FLOODMAX [<gen> <unscoped> <advert>]` | MeshCore flood hop limits, each 1–64 (defaults 64 / 64 / 8). |
 | `JENCORE DISCOVER` | Sends a zero-hop discovery request. Replies appear in `NEIGHBORS`. |
 | `JENCORE NEIGHBORS` | Lists discovered repeaters: public-key prefix, node type, SNR. |
-| `JENCORE TRACE [1\|2\|4] <path-hashes-hex>` | Sends a MeshCore TRACE over an explicit hash path. The hash size is selected independently of `PATHSIZE`; only 1, 2 and 4-byte traces are originated (a 3-byte request is rejected). The node remembers the tag and reports the endpoint copy with hop SNRs and elapsed time, or a 60-second timeout. The result is sent back to the same DM/channel/phone context the command came from. If no size is given, `PATHSIZE` 1/2 is used and `PATHSIZE` 3 asks you to specify 1/2/4. |
+| `JENCORE TRACE [1\|2\|4] <path-hashes-hex>` | Sends a MeshCore TRACE over an explicit hash path. The hash size is selected independently of `PATHSIZE`; only 1, 2 and 4-byte traces are originated (a 3-byte request is rejected). The node remembers the tag and reports the endpoint copy with hop SNRs and elapsed time, or a 60-second timeout. The result is sent back to the same DM/channel/phone context the command came from. If no size is given, `PATHSIZE` 1/2 is used; with `PATHSIZE` 3 the hash size is inferred from the supplied path (largest supported divisor, so `AABB` = one 2-byte hop). |
 | `JENCORE PING [<hex>\|NEIGHBOR <n>] [1\|2\|4]` | Sends a one-entry TRACE (a ping) to a repeater hash, a contact name, or the nth `NEIGHBORS` entry (default 4 bytes). Reports the target's forward SNR or a 60-second timeout. Known contact names are shown with their hash prefix. |
 | `JENCORE TRACEALERT ON\|OFF` | Phone-only text on the first Nexus channel for every heard JenCore TRACE/PING, deduplicated per tag for 10 seconds. Works even when relaying is off. |
 | `JENCORE BLOCK TRACE\|PING\|DISC ON\|OFF` | Stop participating in multi-hop traces, one-entry pings, or answering zero-hop neighbour discovery. Observation and `TRACEALERT` are unaffected. |
@@ -635,7 +646,7 @@ which turns MeshCore text into normal channels/messages and direct messages into
 | `JENCORE ADVERT [LOCAL\|INTERVAL <local-min> <flood-min>]` | Send an advert now (`LOCAL` = zero-hop, otherwise flood), or set automatic advert intervals in minutes (`0` = off, max 10080). |
 | `JENCORE CONTACTS` | Paged list of learned direct-message contacts (node number, name, public-key prefix). |
 | `JENCORE CHANNELS [ADD <name\|#tag> [base64-psk]]` | Seeds or adds group-text channels (details below). |
-| `JENCORE HYBRID ON\|OFF` | SX126x/SX128x only: enable/disable the `0x14B4` hybrid RX syncword. RAM-only and on by default; on other chips it replies “not supported”. |
+| `JENCORE HYBRID ON\|OFF` | SX126x/SX128x (`0x14B4`) and LR11x0 (`0x1B`): enable/disable the hybrid RX syncword. RAM-only and on by default; on LR2021 and other chips it replies “not supported” (use `TIER` there). |
 | `JENCORE STATS` | Contention/airtime statistics for the JenCore path. |
 
 **Channels and hashtag channels**
@@ -662,7 +673,7 @@ Group text sent on a `JC:` channel is encrypted as a MeshCore GRP_TXT and delive
 
 **Persistence.** Enabled/relay/path width and RNode persona are in vault v71; regions v72; advert intervals v74; flood limits v75. Channels live in the NodeDB channel table and are already saved. `HYBRID` is RAM-only. `/nexus SAVE` writes the vault; `/nexus LOAD` restores it.
 
-**SX1262 vs LR2021.** On SX1262 the hybrid syncword is the only way to hear both `0x2B` and `0x12` on one SF; there is no way to receive a different SF at the same time. On LR2021, dedicate a side detector to MeshCore (e.g. SF8/`0x12` in Madrid) and leave the main and other sides for Meshtastic/RNode; `TIER MADRID` configures exactly that. LR1110/LR1121 have neither hybrid nor side detectors: one syncword, so choose whether the node is on the Meshtastic or the MeshCore/RNode network.
+**SX1262 vs LR2021 vs LR11x0.** On SX1262 the hybrid syncword is the only way to hear both `0x2B` and `0x12` on one SF; there is no way to receive a different SF at the same time. On LR2021, dedicate a side detector to MeshCore (e.g. SF8/`0x12` in Madrid), or use `TIER CAT`'s SF7 `TRIPLESHARED` detector on the `0x1B` hybrid to hear Meshtastic `0x2B` and MeshCore `0x12` on one SF (`TIER MADRID` remains the multi-SF recipe). LR1110/1120/1121 have no side detectors; their 1-byte syncword can be set to the experimental `0x1B` hybrid to hear both `0x2B` and `0x12` (bench-verified on LR1110), or to `0x2B`/`0x12` for a single network.
 
 ### 7.4 JenRNode — Reticulum RNode
 
@@ -685,12 +696,12 @@ Persistence: the RNode mode, TCP/BLE flags and SF are stored in vault v71 and su
 
 ### 7.5 Hardware capability matrix
 
-| Radio family | Hybrid syncword (`0x14B4`) | MultiSF / `TIER` | `SPLIT MSF` | Notes |
-|--------------|:--------------------------:|:----------------:|:-----------:|-------|
-| SX126x (SX1262, SX1268, LLCC68) | ✅ | ❌ | ❌ | Single detector. Hybrid hears `0x2B` and `0x12` on the same SF; different SFs cannot be received concurrently. |
+| Radio family | Hybrid syncword | MultiSF / `TIER` | `SPLIT MSF` | Notes |
+|--------------|:---------------:|:----------------:|:-----------:|-------|
+| SX126x (SX1262, SX1268, LLCC68) | ✅ (`0x14B4`) | ❌ | ❌ | Single detector. Hybrid hears `0x2B` and `0x12` on the same SF; different SFs cannot be received concurrently. |
 | SX128x (2.4 GHz) | ✅ (`0x14B4`, unproven on hardware) | ❌ | ❌ | Single detector. Same-SF hybrid only. |
-| LR1110 / LR1120 / LR1121 | ❌ | ❌ | ❌ | One 1-byte syncword. Use `SETSYNCWORD 0x12` for RNode/JenCore. No concurrent Meshtastic `0x2B`. |
-| LR2021 | ❌ | ✅ | ✅ | One demodulator with parallel multi-SF detection: main + up to 3 side detectors, each with its own SF/syncword. |
+| LR1110 / LR1120 / LR1121 | ✅ (`0x1B`, bench-verified on LR1110) | ❌ | ❌ | One 1-byte syncword; `0x1B` hears both `0x2B` and `0x12` on one SF. No side detectors. |
+| LR2021 | ✅ via `TRIPLESHARED` `0x1B` (`TIER CAT`, unproven on LR2021) | ✅ | ✅ | One demodulator with parallel multi-SF detection: main + up to 3 side detectors, each with its own SF/syncword; `TIER CAT` uses a shared 0x1B SF7 detector. |
 | SX127x / RF95 | ❌ | ❌ | ❌ | No hybrid and no side detectors. |
 
 `TIER` is compiled only on LR2021 targets; on the other families the command is absent or reports
@@ -714,11 +725,11 @@ JRNODE TIER 7                   # RNode SF must match the RX SF
 SAVE
 ```
 
-**LR1110 / LR1121 (T1000-E and similar) — one syncword**
+**LR1110 / LR1121 (T1000-E and similar) — 0x1B hybrid**
 
 ```text
 SETLORA 7 62 5 869.618
-SETSYNCWORD 0x12                # MeshCore/RNode network; you leave 0x2B
+JENCORE HYBRID ON               # 0x1B: hear 0x2B and 0x12 on this SF (bench-proven on LR1110)
 JENCORE ON
 JENCORE CHANNELS
 JENCORE REGION ADD madrid
@@ -728,13 +739,15 @@ JRNODE TIER 7
 SAVE
 ```
 
+Without the hybrid, use `SETSYNCWORD 0x12` to sit on the MeshCore/RNode network only (you then
+leave Meshtastic `0x2B`).
+
 **LR2021 — Madrid tiers**
 
 ```text
 TIER MADRID                     # SF5 RNode, SF6/7 Meshtastic, SF8 MeshCore; LoRa applies in 5s
 # wait ~5 s
-TIER STATUS
-TIER TX 1                       # default Meshtastic TX = side 1 (SF6); use 2 for SF7
+TIER STATUS                     # Meshtastic TX defaults to SF7
 JENCORE CHANNELS
 JENCORE REGION ADD madrid
 JENCORE REGION HOME madrid
@@ -743,6 +756,22 @@ SAVE
 
 `TIER MADRID` already turns on JRNODE BRIDGE and JENCORE; the channel/region commands configure the
 companion side. Validate with `TIER STATUS`, `JENCORE STATUS` and `JENCORE DISCOVER`.
+
+**LR2021 — Catalonia tiers**
+
+```text
+TIER CAT                        # SF5 RNode, SF6 Meshtastic, SF7 Meshtastic+MeshCore (0x1B); LoRa applies in 5s
+# wait ~5 s
+TIER STATUS                     # Meshtastic TX defaults to SF7
+JENCORE CHANNELS
+JENCORE REGION ADD catalonia
+JENCORE REGION HOME catalonia
+SAVE
+```
+
+`TIER CAT` also turns on JRNODE BRIDGE and JENCORE. SF7 is a single `TRIPLESHARED`
+detector on the `0x1B` hybrid (Meshtastic + MeshCore); the `0x1B` behaviour is unproven on
+LR2021, so test both a `0x2B` and a `0x12` sender before relying on it.
 
 ### 7.7 Persistence summary
 

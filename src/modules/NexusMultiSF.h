@@ -194,8 +194,9 @@ inline bool validateMultiSF(const MultiSFConfig &cfg, uint8_t mainSf, float bwKH
     return true;
 }
 
-/// Madrid: SF5 RNode main, SF6/7 Meshtastic, SF8 MeshCore. The caller still has
-/// to put config.lora on SF5 / BW62.5 / CR5 / 869.618 MHz.
+/// Madrid: SF5 RNode main, SF6/7 Meshtastic, SF8 MeshCore. Meshtastic TX
+/// defaults to SF7. The caller still has to put config.lora on SF5 / BW62.5 /
+/// CR5 / 869.618 MHz.
 inline void makeMadridPreset(MultiSFConfig &cfg)
 {
     cfg = MultiSFConfig{};
@@ -204,10 +205,27 @@ inline void makeMadridPreset(MultiSFConfig &cfg)
     cfg.main_syncword = 0x12;
     cfg.main_tx_power = MULTISF_DEFAULT_POWER;
     cfg.side_count = 3;
-    cfg.meshtastic_tx_slot = 0;
+    cfg.meshtastic_tx_slot = 1; // SF7
     cfg.side[0] = TierConfig{1, 6, 0x2B, TIER_MESHTASTIC, MULTISF_DEFAULT_POWER, 0};
     cfg.side[1] = TierConfig{1, 7, 0x2B, TIER_MESHTASTIC, MULTISF_DEFAULT_POWER, 0};
     cfg.side[2] = TierConfig{1, 8, 0x12, TIER_MESHCORE, MULTISF_DEFAULT_POWER, 0};
+}
+
+/// Catalonia: SF5 RNode main, SF6 Meshtastic, SF7 Meshtastic + MeshCore.
+/// SF7 runs TRIPLESHARED on the 0x1B hybrid so one detector hears Meshtastic
+/// 0x2B and MeshCore/JenCore 0x12; RNode is a harmless superset on that tier.
+/// Meshtastic TX defaults to SF7. Same carrier as Madrid.
+inline void makeCataloniaPreset(MultiSFConfig &cfg)
+{
+    cfg = MultiSFConfig{};
+    cfg.enabled = 1;
+    cfg.main_protocol = TIER_RNODE;
+    cfg.main_syncword = 0x12;
+    cfg.main_tx_power = MULTISF_DEFAULT_POWER;
+    cfg.side_count = 2;
+    cfg.meshtastic_tx_slot = 1; // SF7
+    cfg.side[0] = TierConfig{1, 6, 0x2B, TIER_MESHTASTIC, MULTISF_DEFAULT_POWER, 0};
+    cfg.side[1] = TierConfig{1, 7, 0x1B, TIER_TRIPLESHARED, MULTISF_DEFAULT_POWER, 0};
 }
 
 inline bool multiSFHasProtocol(const MultiSFConfig &cfg, uint8_t protocol)

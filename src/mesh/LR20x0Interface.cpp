@@ -1025,6 +1025,10 @@ template <typename T> void LR20x0Interface<T>::applyReceiveConfig()
             // SetLoraModulationParams above disabled every side detector; re-arm the stored table now
             // that the main SF is back (the apply guard parks it while sf is above a side SF).
             static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
+        } else {
+            // Keep RX on the main word every arm: a side-tier TX override or a raw send may have
+            // left the chip on another sync.
+            lora.setSyncWord(effectiveMainSyncword());
         }
 #elif NEXUS_ENABLE_JENCORE_SNIFFER
         if (rnodeRadioDirty) {
@@ -1032,6 +1036,8 @@ template <typename T> void LR20x0Interface<T>::applyReceiveConfig()
             lora.setSpreadingFactor(this->sf);
             rnodeRadioDirty = false;
             static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
+        } else {
+            lora.setSyncWord(effectiveMainSyncword());
         }
 #endif
     } else {

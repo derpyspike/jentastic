@@ -5208,6 +5208,33 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
     else if (strcasecmp(cmd, "TIER") == 0 || strncasecmp(cmd, "TIER ", 5) == 0) {
         LR2021Interface *lr2021 = static_cast<LR2021Interface *>(RadioLibInterface::instance);
         const char *sub = skipToken(cmd);
+        auto stageTierPreset = [&](const char *label, const char *desc, void (*make)(nexus::MultiSFConfig &)) {
+            make(multiSFConfig);
+            splitConfig.mode = NEXUS_SPLIT_OFF;
+            const char *reason = nullptr;
+            if (!nexus::validateMultiSF(multiSFConfig, 5, 62.5f, &reason)) {
+                multiSFConfig.enabled = 0;
+                snprintf(replyMsg, sizeof(replyMsg), "JT TIER: %s rejected: %s", label, reason ? reason : "invalid");
+                return;
+            }
+#if NEXUS_ENABLE_RNODE
+            rnodeEngine.setMode(RNODE_MODE_BRIDGE);
+#endif
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+            JenCoreRepeater::setJenCoreEnabled(true);
+#endif
+            memset(&pendingConfig, 0, sizeof(pendingConfig));
+            pendingConfig.which_payload_variant = meshtastic_Config_lora_tag;
+            pendingConfig.payload_variant.lora = config.lora;
+            pendingConfig.payload_variant.lora.use_preset = false;
+            pendingConfig.payload_variant.lora.spread_factor = 5;
+            pendingConfig.payload_variant.lora.bandwidth = bwKHzToCode(62.5f);
+            pendingConfig.payload_variant.lora.coding_rate = 5;
+            pendingConfig.payload_variant.lora.override_frequency = 869.618f;
+            pendingLoRaConfig = true;
+            pendingLoRaApplyAt = Time::getMillis() + 5000;
+            snprintf(replyMsg, sizeof(replyMsg), "JT TIER: %s staged (%s). Applying in 5s. Run /nexus SAVE.", label, desc);
+        };
         if (!lr2021) {
             snprintf(replyMsg, sizeof(replyMsg), "JT TIER: LR2021 interface unavailable");
         } else if (!*sub || strcasecmp(sub, "STATUS") == 0) {
@@ -5232,32 +5259,13 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 snprintf(replyMsg + length, sizeof(replyMsg) - length, " [%s]", ok ? "OK" : (reason ? reason : "INVALID"));
             }
         } else if (strcasecmp(sub, "MADRID") == 0) {
-            nexus::makeMadridPreset(multiSFConfig);
-            splitConfig.mode = NEXUS_SPLIT_OFF;
-            const char *reason = nullptr;
-            if (!nexus::validateMultiSF(multiSFConfig, 5, 62.5f, &reason)) {
-                multiSFConfig.enabled = 0;
-                snprintf(replyMsg, sizeof(replyMsg), "JT TIER: Madrid rejected: %s", reason ? reason : "invalid");
-            } else {
-#if NEXUS_ENABLE_RNODE
-                rnodeEngine.setMode(RNODE_MODE_BRIDGE);
-#endif
-#if NEXUS_ENABLE_JENCORE_SNIFFER
-                JenCoreRepeater::setJenCoreEnabled(true);
-#endif
-                memset(&pendingConfig, 0, sizeof(pendingConfig));
-                pendingConfig.which_payload_variant = meshtastic_Config_lora_tag;
-                pendingConfig.payload_variant.lora = config.lora;
-                pendingConfig.payload_variant.lora.use_preset = false;
-                pendingConfig.payload_variant.lora.spread_factor = 5;
-                pendingConfig.payload_variant.lora.bandwidth = bwKHzToCode(62.5f);
-                pendingConfig.payload_variant.lora.coding_rate = 5;
-                pendingConfig.payload_variant.lora.override_frequency = 869.618f;
-                pendingLoRaConfig = true;
-                pendingLoRaApplyAt = Time::getMillis() + 5000;
-                snprintf(replyMsg, sizeof(replyMsg),
-                         "JT TIER: Madrid staged (SF5 JenRNode main, SF6/7 Meshtastic, SF8 MeshCore). Applying in 5s. Run /nexus SAVE.");
-            }
+            stageTierPreset("Madrid", "SF5 JenRNode main, SF6/7 Meshtastic, SF8 MeshCore; Meshtastic TX SF7",
+                            nexus::makeMadridPreset);
+        } else if (strcasecmp(sub, "CAT") == 0 || strcasecmp(sub, "CATALONIA") == 0 ||
+                   strcasecmp(sub, "CATALUNYA") == 0) {
+            stageTierPreset("Catalonia",
+                            "SF5 JenRNode main, SF6 Meshtastic, SF7 Meshtastic+MeshCore on 0x1B; Meshtastic TX SF7",
+                            nexus::makeCataloniaPreset);
         } else if (strncasecmp(sub, "MAIN", 4) == 0 && (sub[4] == '\0' || sub[4] == ' ')) {
             const char *rest = sub + 4;
             while (*rest == ' ')
@@ -5499,7 +5507,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             }
         } else {
             snprintf(replyMsg, sizeof(replyMsg),
-                     "JT TIER: usage: TIER [STATUS|MADRID|MAIN <proto> <sync>|SIDE <1-3> <SF5-12> <proto> <sync>|SIDE <1-3> OFF|CLEAR|OFF|APPLY|SAVE|TX <1-3|SF5-12>|TXCHANNEL <ch> <1-3|SF5-12|OFF>]");
+                     "JT TIER: usage: TIER [STATUS|MADRID|CAT|MAIN <proto> <sync>|SIDE <1-3> <SF5-12> <proto> <sync>|SIDE <1-3> OFF|CLEAR|OFF|APPLY|SAVE|TX <1-3|SF5-12>|TXCHANNEL <ch> <1-3|SF5-12|OFF>]");
         }
     }
 #endif
