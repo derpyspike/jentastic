@@ -1,13 +1,15 @@
 // Unit tests for the pure multi-SF tier validator in
-// src/modules/NexusMultiSF.h - the table used by the LR2021 Madrid layout
-// (main SF5 RNode, side SF6/7 Meshtastic, side SF8 MeshCore).
+// src/modules/NexusMultiSF.h - the tables used by the LR2021 Madrid and
+// Catalonia layouts.
 //
 // What is pinned:
-//   - validateMultiSF() accepts the Madrid preset at 62.5 kHz and rejects a
-//     side SF that is not above the main SF, duplicate SFs, spread > 4, and a
-//     detection-factor budget over 32e6 (including the main detector, which
-//     RadioLib's own check omits).
-//   - makeMadridPreset() produces exactly that table.
+//   - validateMultiSF() accepts the Madrid and Catalonia presets at 62.5 kHz
+//     and rejects a side SF that is not above the main SF, duplicate SFs,
+//     spread > 4, and a detection-factor budget over 32e6 (including the main
+//     detector, which RadioLib's own check omits).
+//   - makeMadridPreset() / makeCataloniaPreset() produce exactly those tables;
+//     both default Meshtastic TX to SF7.
+//   - Catalonia's SF7 is TRIPLESHARED on the 0x1B hybrid (Meshtastic + MeshCore).
 //   - the shared tier types: DOUBLESHARED carries RNode + MeshCore on one detector,
 //     TRIPLESHARED carries Meshtastic too, and only the latter can be the Meshtastic
 //     TX tier by itself.
@@ -41,8 +43,33 @@ static void test_madrid_preset_valid_at_62k5(void)
     TEST_ASSERT_EQUAL_UINT8(TIER_MESHTASTIC, cfg.side[0].protocol);
     TEST_ASSERT_EQUAL_UINT8(8, cfg.side[2].sf);
     TEST_ASSERT_EQUAL_UINT8(TIER_MESHCORE, cfg.side[2].protocol);
+    TEST_ASSERT_EQUAL_UINT8(1, cfg.meshtastic_tx_slot);
+    TEST_ASSERT_EQUAL_UINT8(7, cfg.side[cfg.meshtastic_tx_slot].sf);
     TEST_ASSERT_TRUE(multiSFHasProtocol(cfg, TIER_RNODE));
     TEST_ASSERT_TRUE(multiSFHasProtocol(cfg, TIER_MESHCORE));
+}
+
+static void test_catalonia_preset_valid_at_62k5(void)
+{
+    MultiSFConfig cfg;
+    makeCataloniaPreset(cfg);
+    const char *reason = nullptr;
+    TEST_ASSERT_TRUE(validateMultiSF(cfg, 5, 62.5f, &reason));
+    TEST_ASSERT_EQUAL_STRING("OK", reason);
+    TEST_ASSERT_EQUAL_UINT8(2, cfg.side_count);
+    TEST_ASSERT_EQUAL_UINT8(TIER_RNODE, cfg.main_protocol);
+    TEST_ASSERT_EQUAL_HEX8(0x12, cfg.main_syncword);
+    TEST_ASSERT_EQUAL_UINT8(6, cfg.side[0].sf);
+    TEST_ASSERT_EQUAL_UINT8(TIER_MESHTASTIC, cfg.side[0].protocol);
+    TEST_ASSERT_EQUAL_HEX8(0x2B, cfg.side[0].syncword);
+    TEST_ASSERT_EQUAL_UINT8(7, cfg.side[1].sf);
+    TEST_ASSERT_EQUAL_UINT8(TIER_TRIPLESHARED, cfg.side[1].protocol);
+    TEST_ASSERT_EQUAL_HEX8(0x1B, cfg.side[1].syncword);
+    TEST_ASSERT_EQUAL_UINT8(1, cfg.meshtastic_tx_slot);
+    TEST_ASSERT_EQUAL_UINT8(7, cfg.side[cfg.meshtastic_tx_slot].sf);
+    TEST_ASSERT_TRUE(multiSFHasProtocol(cfg, TIER_MESHTASTIC));
+    TEST_ASSERT_TRUE(multiSFHasProtocol(cfg, TIER_MESHCORE));
+    TEST_ASSERT_TRUE(multiSFHasProtocol(cfg, TIER_RNODE));
 }
 
 static void test_rejects_side_not_above_main(void)
@@ -198,6 +225,7 @@ void setup()
 {
     UNITY_BEGIN();
     RUN_TEST(test_madrid_preset_valid_at_62k5);
+    RUN_TEST(test_catalonia_preset_valid_at_62k5);
     RUN_TEST(test_rejects_side_not_above_main);
     RUN_TEST(test_rejects_duplicate_sf);
     RUN_TEST(test_rejects_spread_above_four);
