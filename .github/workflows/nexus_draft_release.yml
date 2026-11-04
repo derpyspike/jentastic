@@ -1,7 +1,8 @@
 name: Nexus Draft Release
 
 # Builds the firmware matrix and assembles a DRAFT GitHub release with
-# per-arch firmware zips attached. Publishing the draft is a manual step
+# per-arch firmware zips attached, plus an extra hybrid-only bundle for every
+# env whose name ends in -hybrid. Publishing the draft is a manual step
 # (publishing fires release_channels.yml, so keep the title in mind:
 # 'Beta'/'Alpha' in the title selects that packaging channel).
 #
@@ -180,6 +181,16 @@ jobs:
               echo "no artifacts for ${arch}, skipping"
             fi
           done
+
+          # Extra bundle with only the opt-in -hybrid subvariants (JenCore +
+          # RNode gates), across every architecture. The per-arch zips above
+          # already contain them too; this is the convenience download.
+          hybrid_dirs=(./artifacts/firmware-*-*-hybrid-*)
+          if (( ${#hybrid_dirs[@]} > 0 )); then
+            zip -9 -r "./zips/firmware-hybrid-${VERSION}.zip" "${hybrid_dirs[@]}"
+          else
+            echo "no hybrid artifacts, skipping"
+          fi
           {
             echo "files<<EOF"
             ls -1 ./zips/*.zip 2>/dev/null || true
