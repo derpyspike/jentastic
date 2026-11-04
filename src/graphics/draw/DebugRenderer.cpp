@@ -1,5 +1,5 @@
 #include "configuration.h"
-#if HAS_SCREEN
+#if HAS_SCREEN && !NEXUS_EXCLUDE_UI_DEBUG_FRAMES
 #include "../Screen.h"
 #include "DebugRenderer.h"
 #include "FSCommon.h"
@@ -598,6 +598,7 @@ void drawSystemScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x
 // ****************************
 // * Chirpy Screen      *
 // ****************************
+#if !NEXUS_EXCLUDE_UI_CHIRPY
 void drawChirpy(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
 {
     display->clear();
@@ -647,7 +648,8 @@ void drawChirpy(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int1
     textX = (display->getWidth() / 2) - textX_offset - (display->getStringWidth("World!") / 2);
     display->drawString(textX, getTextPositions(display)[line++], "World!");
 }
+#endif // !NEXUS_EXCLUDE_UI_CHIRPY
 
 } // namespace DebugRenderer
 } // namespace graphics
-#endif
+#endif // HAS_SCREEN && !NEXUS_EXCLUDE_UI_DEBUG_FRAMES

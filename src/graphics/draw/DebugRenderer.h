@@ -26,7 +26,9 @@ void drawLoRaFocused(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x,
 // System screen display
 void drawSystemScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
 // Chirpy screen display
+#if !NEXUS_EXCLUDE_UI_CHIRPY
 void drawChirpy(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
+#endif
 } // namespace DebugRenderer
 
 } // namespace graphics

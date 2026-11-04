@@ -43,8 +43,12 @@ extern NicheGraphics::BaseUIEInkDisplay *setupNicheGraphicsBaseUI();
 
 #include "DisplayFormatters.h"
 #include "TimeFormatters.h"
+#if !NEXUS_EXCLUDE_UI_CLOCK
 #include "draw/ClockRenderer.h"
+#endif
+#if !NEXUS_EXCLUDE_UI_DEBUG_FRAMES
 #include "draw/DebugRenderer.h"
+#endif
 #include "draw/MenuHandler.h"
 #include "draw/MessageRenderer.h"
 #include "draw/NodeListRenderer.h"
@@ -1392,7 +1396,9 @@ void Screen::setFrames(FrameFocus focus)
     uint8_t previousFrameCount = framesetInfo.frameCount;
     FramesetInfo fsi; // Location of specific frames, for applying focus parameter
 
+#if !NEXUS_EXCLUDE_UI_FAVORITES
     graphics::UIRenderer::rebuildFavoritedNodes();
+#endif
 
     LOG_DEBUG("Show standard frames");
     showingNormalScreen = true;
@@ -1411,6 +1417,7 @@ void Screen::setFrames(FrameFocus focus)
         focus = FOCUS_FAULT; // Change our "focus" parameter, to ensure we show the fault frame
     }
 
+#if !NEXUS_EXCLUDE_UI_CLOCK
 #if defined(DISPLAY_CLOCK_FRAME)
     if (!hiddenFrames.clock) {
         fsi.positions.clock = numframes;
@@ -1425,6 +1432,7 @@ void Screen::setFrames(FrameFocus focus)
         indicatorIcons.push_back(digital_icon_clock);
         PUSH_FRAME_TITLE("Clock");
     }
+#endif
 #endif
 
     if (!hiddenFrames.home) {
@@ -1501,6 +1509,7 @@ void Screen::setFrames(FrameFocus focus)
         PUSH_FRAME_TITLE("GPS");
     }
 #endif
+#if !NEXUS_EXCLUDE_UI_DEBUG_FRAMES
     if (RadioLibInterface::instance && !hiddenFrames.lora) {
         fsi.positions.lora = numframes;
         normalFrames[numframes++] = graphics::DebugRenderer::drawLoRaFocused;
@@ -1513,6 +1522,8 @@ void Screen::setFrames(FrameFocus focus)
         indicatorIcons.push_back(icon_system);
         PUSH_FRAME_TITLE("System");
     }
+#endif
+#if !NEXUS_EXCLUDE_UI_CLOCK
 #if !defined(DISPLAY_CLOCK_FRAME)
     if (!hiddenFrames.clock) {
         fsi.positions.clock = numframes;
@@ -1526,12 +1537,16 @@ void Screen::setFrames(FrameFocus focus)
         PUSH_FRAME_TITLE("Clock");
     }
 #endif
+#endif
+#if !NEXUS_EXCLUDE_UI_DEBUG_FRAMES
+#if !NEXUS_EXCLUDE_UI_CHIRPY
     if (!hiddenFrames.chirpy) {
         fsi.positions.chirpy = numframes;
         normalFrames[numframes++] = graphics::DebugRenderer::drawChirpy;
         indicatorIcons.push_back(chirpy_small);
         PUSH_FRAME_TITLE("Chirpy");
     }
+#endif
 
 #if HAS_WIFI && !defined(ARCH_PORTDUINO)
     if (!hiddenFrames.wifi && isWifiAvailable()) {
@@ -1540,6 +1555,7 @@ void Screen::setFrames(FrameFocus focus)
         indicatorIcons.push_back(icon_wifi);
         PUSH_FRAME_TITLE("WiFi");
     }
+#endif
 #endif
 
     // Beware of what changes you make in this code!
@@ -1578,6 +1594,7 @@ void Screen::setFrames(FrameFocus focus)
     if (numMeshNodes > 0)
         numMeshNodes--;
 
+#if !NEXUS_EXCLUDE_UI_FAVORITES
     if (!hiddenFrames.show_favorites) {
         // Temporary array to hold favorite node frames
         std::vector<FrameCallback> favoriteFrames;
@@ -1603,6 +1620,7 @@ void Screen::setFrames(FrameFocus focus)
             fsi.positions.lastFavorite = 255;
         }
     }
+#endif
 
     fsi.frameCount = numframes;   // Total framecount is used to apply FOCUS_PRESERVE
     this->frameCount = numframes; // Save frame count for use in custom overlay
@@ -2256,6 +2274,7 @@ int Screen::handleInputEvent(const InputEvent *event)
             return 0;
         }
     }
+#if !NEXUS_EXCLUDE_UI_FAVORITES
     // UP/DOWN on the compact favorite-node screen toggles compass+distance vs status/telemetry
     if (graphics::isCompactPanel(dispdev) && framesetInfo.positions.firstFavorite != 255 &&
         ui->getUiState()->currentFrame >= framesetInfo.positions.firstFavorite &&
@@ -2271,6 +2290,7 @@ int Screen::handleInputEvent(const InputEvent *event)
             return 0;
         }
     }
+#endif
 #endif
     // Use left or right input from a keyboard to move between frames,
     // so long as a mesh module isn't using these events for some other purpose
@@ -2380,11 +2400,15 @@ int Screen::handleInputEvent(const InputEvent *event)
                     }
                 } else if (moduleFrameHasMenu(this->ui->getUiState()->currentFrame)) {
                     menuHandler::environmentTelemetryMenu();
-                } else if (framesetInfo.positions.firstFavorite != 255 &&
+                }
+#if !NEXUS_EXCLUDE_UI_FAVORITES
+                else if (framesetInfo.positions.firstFavorite != 255 &&
                            this->ui->getUiState()->currentFrame >= framesetInfo.positions.firstFavorite &&
                            this->ui->getUiState()->currentFrame <= framesetInfo.positions.lastFavorite) {
                     menuHandler::favoriteBaseMenu();
-                } else if (this->ui->getUiState()->currentFrame == framesetInfo.positions.nodelist_nodes ||
+                }
+#endif
+                else if (this->ui->getUiState()->currentFrame == framesetInfo.positions.nodelist_nodes ||
                            this->ui->getUiState()->currentFrame == framesetInfo.positions.nodelist_location ||
                            this->ui->getUiState()->currentFrame == framesetInfo.positions.nodelist_lastheard ||
                            this->ui->getUiState()->currentFrame == framesetInfo.positions.nodelist_hopsignal ||

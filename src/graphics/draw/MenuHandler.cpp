@@ -1408,6 +1408,7 @@ void menuHandler::systemBaseMenu()
     screen->showOverlayBanner(bannerOptions);
 }
 
+#if !NEXUS_EXCLUDE_UI_FAVORITES
 void menuHandler::favoriteBaseMenu()
 {
     enum optionsNumbers { Back, Preset, Freetext, GoToChat, Remove, TraceRoute, enumEnd };
@@ -1483,6 +1484,7 @@ void menuHandler::favoriteBaseMenu()
     };
     screen->showOverlayBanner(bannerOptions);
 }
+#endif
 
 void menuHandler::positionBaseMenu()
 {
@@ -2466,6 +2468,7 @@ void menuHandler::shutdownMenu()
     screen->showOverlayBanner(bannerOptions);
 }
 
+#if !NEXUS_EXCLUDE_UI_FAVORITES
 void menuHandler::removeFavoriteMenu()
 {
 
@@ -2488,6 +2491,7 @@ void menuHandler::removeFavoriteMenu()
     };
     screen->showOverlayBanner(bannerOptions);
 }
+#endif
 
 void menuHandler::waypointBaseMenu()
 {
@@ -2659,11 +2663,15 @@ void menuHandler::testMenu()
     static int optionsEnumArray[6] = {Back};
     int options = 1;
 
+#if !NEXUS_EXCLUDE_UI_NUMBER_PICKER
     optionsArray[options] = "Number Picker";
     optionsEnumArray[options++] = NumberPicker;
+#endif
 
+#if !NEXUS_EXCLUDE_UI_CHIRPY
     optionsArray[options] = screen->isFrameHidden("chirpy") ? "Show Chirpy" : "Hide Chirpy";
     optionsEnumArray[options++] = ShowChirpy;
+#endif
 #ifdef HAS_I2S
     optionsArray[options] = "Test Announce";
     optionsEnumArray[options++] = TestAnnounce;
@@ -2680,14 +2688,20 @@ void menuHandler::testMenu()
     bannerOptions.optionsCount = options;
     bannerOptions.optionsEnumPtr = optionsEnumArray;
     bannerOptions.bannerCallback = [](int selected) -> void {
+#if !NEXUS_EXCLUDE_UI_NUMBER_PICKER
         if (selected == NumberPicker) {
             menuQueue = NumberTest;
             screen->runNow();
-        } else if (selected == ShowChirpy) {
+        } else
+#endif
+#if !NEXUS_EXCLUDE_UI_CHIRPY
+            if (selected == ShowChirpy) {
             screen->toggleFrameVisibility("chirpy");
             screen->setFrames(Screen::FOCUS_SYSTEM);
 
-        } else if (selected == TestAnnounce) {
+        } else
+#endif
+            if (selected == TestAnnounce) {
 #ifdef HAS_I2S
             audioThread->readAloud("This is a test of the emergency broadcast system. This is only a test.");
 #endif
@@ -2734,6 +2748,7 @@ void menuHandler::hostPowerOffMenu()
 #endif
 }
 
+#if !NEXUS_EXCLUDE_UI_NUMBER_PICKER
 void menuHandler::numberTest()
 {
     screen->showNumberPicker("Verify Nodenum:\n ", 30000, 8, true, [](uint32_t number_picked) -> void {
@@ -2741,6 +2756,7 @@ void menuHandler::numberTest()
         keyVerificationModule->sendInitialRequest(number_picked);
     });
 }
+#endif
 
 void menuHandler::wifiBaseMenu()
 {
@@ -2988,8 +3004,10 @@ void menuHandler::frameTogglesMenu()
     optionsArray[options] = screen->isFrameHidden("clock") ? "Show Clock" : "Hide Clock";
     optionsEnumArray[options++] = clock;
 
+#if !NEXUS_EXCLUDE_UI_FAVORITES
     optionsArray[options] = screen->isFrameHidden("show_favorites") ? "Show Favorites" : "Hide Favorites";
     optionsEnumArray[options++] = show_favorites;
+#endif
 
     optionsArray[options] = moduleConfig.telemetry.environment_screen_enabled ? "Hide Env. Telemetry" : "Show Env. Telemetry";
     optionsEnumArray[options++] = show_env_telemetry;
@@ -3055,11 +3073,15 @@ void menuHandler::frameTogglesMenu()
             screen->toggleFrameVisibility("clock");
             menuHandler::menuQueue = menuHandler::FrameToggles;
             screen->runNow();
-        } else if (selected == show_favorites) {
+        }
+#if !NEXUS_EXCLUDE_UI_FAVORITES
+        else if (selected == show_favorites) {
             screen->toggleFrameVisibility("show_favorites");
             menuHandler::menuQueue = menuHandler::FrameToggles;
             screen->runNow();
-        } else if (selected == show_env_telemetry) {
+        }
+#endif
+        else if (selected == show_env_telemetry) {
             moduleConfig.telemetry.environment_screen_enabled = !moduleConfig.telemetry.environment_screen_enabled;
             menuHandler::menuQueue = menuHandler::FrameToggles;
             screen->runNow();
@@ -3317,9 +3339,11 @@ void menuHandler::handleMenuSwitch(OLEDDisplay *display)
     case ManageNodeMenu:
         manageNodeMenu();
         break;
+#if !NEXUS_EXCLUDE_UI_FAVORITES
     case RemoveFavorite:
         removeFavoriteMenu();
         break;
+#endif
     case WaypointBaseMenu:
         waypointBaseMenu();
         break;
@@ -3341,9 +3365,11 @@ void menuHandler::handleMenuSwitch(OLEDDisplay *display)
     case TestMenu:
         testMenu();
         break;
+#if !NEXUS_EXCLUDE_UI_NUMBER_PICKER
     case NumberTest:
         numberTest();
         break;
+#endif
     case EnvironmentTelemetryMenu:
         environmentTelemetryMenu();
         break;

@@ -1,5 +1,5 @@
 #include "configuration.h"
-#if HAS_SCREEN
+#if HAS_SCREEN && !NEXUS_EXCLUDE_UI_CLOCK
 #include "ClockRenderer.h"
 #include "gps/RTC.h"
 #include "graphics/ScreenFonts.h"
@@ -499,4 +499,4 @@ void drawAnalogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16
 } // namespace ClockRenderer
 
 } // namespace graphics
-#endif
+#endif // HAS_SCREEN && !NEXUS_EXCLUDE_UI_CLOCK
