@@ -1026,6 +1026,11 @@ public:
     // by the JenCore trace alert; safe to call from the radio RX path.
     bool injectLocalNexusText(uint32_t channel, const char *text, size_t len, uint32_t fromNum);
 
+    // Append a compact "🧩 JC:<hops>h <width>B <path>" line when mp was
+    // synthesized from a JenCore frame; no-op for ordinary Meshtastic packets.
+    // pos stays inside [0, cap-1]. Returns true when a line was appended.
+    static bool appendJenCorePath(char *buf, size_t cap, int &pos, const meshtastic_MeshPacket &mp);
+
 #if NEXUS_ENABLE_JENCORE_SNIFFER
     /// Radio-thread trampoline registered on JenCoreRepeater.
     static void jenCoreTraceObserver(const uint8_t *raw, size_t len, const JenCoreRepeater::FrameInfo &info, float snr,

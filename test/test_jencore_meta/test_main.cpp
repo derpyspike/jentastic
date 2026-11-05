@@ -7,6 +7,11 @@
 //     "not JenCore => flags == 0" invariant that keeps the field absent;
 //   - copyPathTail() keeps the *tail* of the path (the immediate relay) and
 //     only ever returns whole hashes, flagging truncation;
+//   - formatPath() renders whole hashes and, when the path does not fit, keeps
+//     the first and last hop instead of dropping the immediate relay;
+//   - packetHopInfo()/pathHopLimit() report the JC hop count against the
+//     64-byte wire budget (64/32/21 for 1/2/3-byte hashes), not Meshtastic's
+//     7-hop hop_start field;
 //   - the fields survive a FromRadio encode/decode round-trip;
 //   - a max payload + max signature + full jc_path still encodes inside the
 //     512-byte FromRadio budget.
@@ -114,6 +119,87 @@ static void test_path_tail_invalid_inputs(void)
     TEST_ASSERT_EQUAL_UINT32(0, copyPathTail(out, 0, 3, out, sizeof(out), &truncated));
     TEST_ASSERT_EQUAL_UINT32(0, copyPathTail(out, 10, 0, out, sizeof(out), &truncated));
     TEST_ASSERT_EQUAL_UINT32(0, copyPathTail(out, 10, 3, out, 0, &truncated));
+}
+
+static void test_path_hash_size_from_flags(void)
+{
+    TEST_ASSERT_EQUAL_UINT8(1, pathHashSize(packFlags(true, false, false, 0, 0, 1, 0)));
+    TEST_ASSERT_EQUAL_UINT8(2, pathHashSize(packFlags(true, false, false, 0, 0, 2, 0)));
+    TEST_ASSERT_EQUAL_UINT8(3, pathHashSize(packFlags(true, false, false, 0, 0, 3, 0)));
+    // The field is two bits wide; a junk value above 3 clamps to the real max.
+    TEST_ASSERT_EQUAL_UINT8(HASH_SIZE_MAX, pathHashSize(0xFFFF));
+}
+
+static void test_format_path_full(void)
+{
+    const uint8_t path[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    char out[32];
+    const size_t n = formatPath(out, sizeof(out), path, sizeof(path), 3, false);
+    TEST_ASSERT_EQUAL_STRING("!aabbcc>!ddeeff", out);
+    TEST_ASSERT_EQUAL_UINT32(strlen(out), n);
+}
+
+static void test_format_path_keeps_first_and_last(void)
+{
+    // Four 2-byte hops need 23 bytes; 16 forces the middle out but must keep
+    // both ends (first and immediate relay).
+    const uint8_t path[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22};
+    char out[16];
+    const size_t n = formatPath(out, sizeof(out), path, sizeof(path), 2, false);
+    TEST_ASSERT_EQUAL_STRING("!aabb>..>!1122", out);
+    TEST_ASSERT_EQUAL_UINT32(strlen(out), n);
+}
+
+static void test_format_path_truncated_head_marker(void)
+{
+    const uint8_t path[] = {0xAA, 0xBB, 0xCC, 0xDD};
+    char out[32];
+    const size_t n = formatPath(out, sizeof(out), path, sizeof(path), 2, true);
+    TEST_ASSERT_EQUAL_STRING("..>!aabb>!ccdd", out);
+    TEST_ASSERT_EQUAL_UINT32(strlen(out), n);
+}
+
+static void test_format_path_empty(void)
+{
+    char out[8] = "xxxxxxx";
+    TEST_ASSERT_EQUAL_UINT32(0, formatPath(out, sizeof(out), nullptr, 0, 3, false));
+    TEST_ASSERT_EQUAL_STRING("", out);
+    TEST_ASSERT_EQUAL_UINT32(0, formatPath(out, sizeof(out), (const uint8_t *)"x", 1, 0, false));
+}
+
+static void test_path_hop_limit(void)
+{
+    // 64-byte wire path budget, whole hashes only.
+    TEST_ASSERT_EQUAL_UINT8(64, pathHopLimit(1));
+    TEST_ASSERT_EQUAL_UINT8(32, pathHopLimit(2));
+    TEST_ASSERT_EQUAL_UINT8(21, pathHopLimit(3));
+    TEST_ASSERT_EQUAL_UINT8(0, pathHopLimit(0));
+    TEST_ASSERT_EQUAL_UINT8(0, pathHopLimit(4));
+}
+
+static void test_packet_hop_info(void)
+{
+    meshtastic_MeshPacket p = meshtastic_MeshPacket_init_zero;
+    uint8_t hops = 99, limit = 99;
+
+    // Ordinary Meshtastic packet: no JC metadata.
+    TEST_ASSERT_FALSE(packetHopInfo(p, hops, limit));
+    TEST_ASSERT_EQUAL_UINT8(0, hops);
+    TEST_ASSERT_EQUAL_UINT8(0, limit);
+
+    // 2-byte hashes, 6 path bytes -> 3 hops, ceiling 32.
+    p.jc_flags = packFlags(true, false, false, 0, 0, 2, 0);
+    p.jc_path.size = 6;
+    TEST_ASSERT_TRUE(packetHopInfo(p, hops, limit));
+    TEST_ASSERT_EQUAL_UINT8(3, hops);
+    TEST_ASSERT_EQUAL_UINT8(32, limit);
+
+    // 3-byte hashes, direct (no path bytes) -> 0/21.
+    p.jc_flags = packFlags(true, false, false, 0, 0, 3, 0);
+    p.jc_path.size = 0;
+    TEST_ASSERT_TRUE(packetHopInfo(p, hops, limit));
+    TEST_ASSERT_EQUAL_UINT8(0, hops);
+    TEST_ASSERT_EQUAL_UINT8(21, limit);
 }
 
 static void test_fromradio_roundtrip(void)
@@ -253,6 +339,13 @@ void setup()
     RUN_TEST(test_path_tail_short_path_not_truncated);
     RUN_TEST(test_path_tail_one_byte_hashes);
     RUN_TEST(test_path_tail_invalid_inputs);
+    RUN_TEST(test_path_hash_size_from_flags);
+    RUN_TEST(test_format_path_full);
+    RUN_TEST(test_format_path_keeps_first_and_last);
+    RUN_TEST(test_format_path_truncated_head_marker);
+    RUN_TEST(test_format_path_empty);
+    RUN_TEST(test_path_hop_limit);
+    RUN_TEST(test_packet_hop_info);
     RUN_TEST(test_fromradio_roundtrip);
     RUN_TEST(test_declared_meshpacket_size_bounds_all_fields);
     RUN_TEST(test_max_payload_and_path_fit_fromradio);

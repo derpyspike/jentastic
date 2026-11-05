@@ -23,6 +23,7 @@
 // replace (look for "\%0[0-9]*l" in this file as the marker).
 
 #include "UptimeClock.h"
+#include "mesh/JenCoreMeta.h"
 #include "mesh/Throttle.h"
 #include "modules/NexusModule.h"
 #include "modules/NexusTxHook.h"
@@ -8918,10 +8919,14 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         // node num, and rx_rssi / rx_snr / rx_frequency_error are uninitialized →
         // we'd report all-zeroed metrics. Skip silently.
         if (isFromUs(&mp)) return;
-        // Report signal metrics of the command packet itself
-        uint32_t hopsUsed = (mp.hop_start >= mp.hop_limit) ? (mp.hop_start - mp.hop_limit) : 0;
+        // Report signal metrics of the command packet itself. JenCore paths are
+        // bounded by the 64-byte wire budget, not Meshtastic's 7-hop hop_start.
+        uint8_t jcHops = 0, jcLimit = 0;
+        const bool isJC = ::nexus::jen_core_meta::packetHopInfo(mp, jcHops, jcLimit);
+        uint32_t hopsUsed = isJC ? jcHops : ((mp.hop_start >= mp.hop_limit) ? (mp.hop_start - mp.hop_limit) : 0);
+        const uint32_t hopCeiling = isJC ? jcLimit : mp.hop_start;
 
-        int l = snprintf(replyMsg, sizeof(replyMsg), "JT RSSI:\n📡 Hops:%u/%u ", hopsUsed, mp.hop_start);
+        int l = snprintf(replyMsg, sizeof(replyMsg), "JT RSSI:\n📡 Hops:%u/%u ", hopsUsed, hopCeiling);
         if (l < 0 || (size_t)l >= sizeof(replyMsg)) l = sizeof(replyMsg) - 1;
 
         if (hopsUsed == 0) {
@@ -8929,7 +8934,10 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         } else {
             static char relayNames[64];
             memset(relayNames, 0, sizeof(relayNames));
-            uint8_t targetSuffix = (uint8_t)(mp.relay_node & 0xFF);
+            // JenCore-synthesized packets resolve their relay into jc_relay_node;
+            // mp.relay_node is only filled by the Meshtastic router.
+            uint32_t relayId = mp.jc_relay_node ? mp.jc_relay_node : mp.relay_node;
+            uint8_t targetSuffix = (uint8_t)(relayId & 0xFF);
             getRelayNames(relayNames, sizeof(relayNames), targetSuffix);
 
             if (relayNames[0] != '\0') {
@@ -8940,6 +8948,8 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             memset(relayNames, 0, sizeof(relayNames));
         }
 
+        if (l < 0 || (size_t)l >= sizeof(replyMsg)) l = sizeof(replyMsg) - 1;
+        NexusModule::appendJenCorePath(replyMsg, sizeof(replyMsg), l, mp);
         if (l < 0 || (size_t)l >= sizeof(replyMsg)) l = sizeof(replyMsg) - 1;
         l += snprintf(replyMsg + l, sizeof(replyMsg) - l, "📶 RSSI:%d SNR:%.1f\n🔬 Δf: %.0fHz CR:%d\n", (int)mp.rx_rssi, mp.rx_snr, mp.rx_frequency_error, nexusCRDisplay(mp.rx_coding_rate));
         if (l < 0 || (size_t)l >= sizeof(replyMsg)) l = sizeof(replyMsg) - 1;

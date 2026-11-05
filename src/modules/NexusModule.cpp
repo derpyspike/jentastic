@@ -21,8 +21,13 @@
 #endif
 #include "Channels.h"
 #include "MeshService.h"
+#include "mesh/JenCoreMeta.h"
 #if NEXUS_ENABLE_RNODE
 #include "mesh/RNodeEngine.h"
+#endif
+#if NEXUS_ENABLE_JENCORE_SNIFFER
+static_assert(::nexus::jen_core_meta::PATH_BYTES_MAX == JenCoreRepeater::MAX_PATH_SIZE,
+              "JenCore display hop ceiling must match the wire path budget");
 #endif
 #if NEXUS_ENABLE_JENCORE_SNIFFER
 #include "mesh/JenCoreCompanion.h"
@@ -1949,6 +1954,41 @@ void NexusModule::getRelayNames(char *buf, size_t bufSize, uint8_t suffix) {
     }
 }
 
+bool NexusModule::appendJenCorePath(char *buf, size_t cap, int &pos, const meshtastic_MeshPacket &mp)
+{
+    if (!buf || cap < 2 || !(mp.jc_flags & ::nexus::jen_core_meta::FLAG_IS_JENCORE))
+        return false;
+
+    if (pos < 0)
+        pos = 0;
+    if ((size_t)pos >= cap - 1)
+        pos = (int)(cap - 2);
+
+    auto advance = [&](int written) {
+        if (written <= 0)
+            return;
+        const size_t room = cap - 1 - (size_t)pos;
+        pos += (int)((size_t)written < room ? (size_t)written : room);
+    };
+
+    const uint8_t hashSize = ::nexus::jen_core_meta::pathHashSize(mp.jc_flags);
+    const bool truncated = (mp.jc_flags & ::nexus::jen_core_meta::FLAG_PATH_TRUNCATED) != 0;
+
+    advance(snprintf(buf + pos, cap - (size_t)pos, "🧩 JC:%uB ", (unsigned)hashSize));
+    if (mp.jc_path.size)
+        advance((int)::nexus::jen_core_meta::formatPath(buf + pos, cap - (size_t)pos, mp.jc_path.bytes, mp.jc_path.size,
+                                                        hashSize, truncated));
+
+    if ((size_t)pos < cap - 1) {
+        buf[pos++] = '\n';
+        buf[pos] = '\0';
+    } else {
+        buf[cap - 1] = '\0';
+        pos = (int)(cap - 1);
+    }
+    return true;
+}
+
 void NexusModule::applyBS(meshtastic_Telemetry *m) {
     // Internal telemetry hook. Public builds: empty body so external callers
     // (EnvironmentTelemetry.cpp) compile and simply do nothing. Private builds:
@@ -2185,7 +2225,12 @@ ProcessMessage NexusModule::handleReceived(const meshtastic_MeshPacket &mp) {
                     return ProcessMessage::CONTINUE;
                 }
 
-                uint32_t hopsUsed = (mp.hop_start >= mp.hop_limit) ? (mp.hop_start - mp.hop_limit) : 0;
+                // JenCore paths use the 64-byte wire budget (64/32/21 hops for
+                // 1/2/3-byte hashes), not Meshtastic's 7-hop hop_start field.
+                uint8_t jcHops = 0, jcLimit = 0;
+                const bool isJC = ::nexus::jen_core_meta::packetHopInfo(mp, jcHops, jcLimit);
+                uint32_t hopsUsed = isJC ? jcHops : ((mp.hop_start >= mp.hop_limit) ? (mp.hop_start - mp.hop_limit) : 0);
+                const uint32_t hopCeiling = isJC ? jcLimit : mp.hop_start;
 
                 // 1. Direct Filter: Only process if NOT a direct link, OR if direct ignore is disabled
                 if (hopsUsed == 0 && ping_ignore_direct) {
@@ -2232,54 +2277,79 @@ ProcessMessage NexusModule::handleReceived(const meshtastic_MeshPacket &mp) {
                         static char rMsg[200];
                         memset(rMsg, 0, sizeof(rMsg));
 
-                int l;
+                int l = 0;
+                // Safe append: a long custom header plus a long path can fill
+                // the 200-byte buffer, and the old `l += snprintf()` arithmetic
+                // underflowed once l passed the cap.
+                auto append = [&](const char *fmt, ...) __attribute__((format(printf, 2, 3))) {
+                    if (l < 0)
+                        l = 0;
+                    if ((size_t)l >= sizeof(rMsg) - 1) {
+                        l = sizeof(rMsg) - 1;
+                        rMsg[l] = '\0';
+                        return;
+                    }
+                    va_list ap;
+                    va_start(ap, fmt);
+                    const int w = vsnprintf(rMsg + l, sizeof(rMsg) - (size_t)l, fmt, ap);
+                    va_end(ap);
+                    if (w < 0 || (size_t)w >= sizeof(rMsg) - (size_t)l) {
+                        l = sizeof(rMsg) - 1;
+                        rMsg[l] = '\0';
+                    } else {
+                        l += w;
+                    }
+                };
                 if (custom_pping_active && pping_header[0] != '\0') {
-                    l = snprintf(rMsg, sizeof(rMsg), "%s\n", pping_header);
+                    append("%s\n", pping_header);
                 } else {
-                    l = snprintf(rMsg, sizeof(rMsg), "🤖Derpy Ping🤖\n");
+                    append("🤖Derpy Ping🤖\n");
                 }
-                l += snprintf(rMsg + l, sizeof(rMsg) - l, "📡 Hops:%u/%u ", hopsUsed, mp.hop_start);
+                append("📡 Hops:%u/%u ", hopsUsed, hopCeiling);
 
                 if (hopsUsed == 0) {
-                    l += snprintf(rMsg + l, sizeof(rMsg) - l, "(Direct)\n");
+                    append("(Direct)\n");
                 } else {
                     static char relayNames[64];
                     memset(relayNames, 0, sizeof(relayNames));
-                    uint8_t targetSuffix = (uint8_t)(mp.relay_node & 0xFF);
+                    // JenCore-synthesized packets resolve their relay into
+                    // jc_relay_node; mp.relay_node is only set by our router.
+                    uint32_t relayId = mp.jc_relay_node ? mp.jc_relay_node : mp.relay_node;
+                    uint8_t targetSuffix = (uint8_t)(relayId & 0xFF);
                     getRelayNames(relayNames, sizeof(relayNames), targetSuffix);
 
                     if (relayNames[0] != '\0') {
-                        l += snprintf(rMsg + l, sizeof(rMsg) - l, "Relay:%s (*%02x)\n", relayNames, targetSuffix);
+                        append("Relay:%s (*%02x)\n", relayNames, targetSuffix);
                     } else {
-                        l += snprintf(rMsg + l, sizeof(rMsg) - l, "Relay:*%02x\n", targetSuffix);
+                        append("Relay:*%02x\n", targetSuffix);
                     }
                     memset(relayNames, 0, sizeof(relayNames));
                 }
 
+                NexusModule::appendJenCorePath(rMsg, sizeof(rMsg), l, mp);
+
                 if (ping_rssi || ping_snr) {
-                    l += snprintf(rMsg + l, sizeof(rMsg) - l, "📶 ");
-                    if (ping_rssi) l += snprintf(rMsg + l, sizeof(rMsg) - l, "RSSI:%d ", (int)mp.rx_rssi);
-                    if (ping_snr) l += snprintf(rMsg + l, sizeof(rMsg) - l, "SNR:%.1f", mp.rx_snr);
-                    l += snprintf(rMsg + l, sizeof(rMsg) - l, "\n");
+                    append("📶 ");
+                    if (ping_rssi) append("RSSI:%d ", (int)mp.rx_rssi);
+                    if (ping_snr) append("SNR:%.1f", mp.rx_snr);
+                    append("\n");
                 }
 
                 if (ping_freqerr) {
                     // Nexus port (Nexus-28001, 2026-08-16): rx_frequency_error + rx_coding_rate
                     // both restored. PPING FREQERR now reports the live frequency error in Hz and
                     // the recovered coding rate (raw 1-7 -> display 5/6/7/8 short, 9/10/11 long).
-                    l += snprintf(rMsg + l, sizeof(rMsg) - l, "🔬 Δf: %.0fHz CR:%d\n",
-                                  mp.rx_frequency_error, nexusCRDisplay(mp.rx_coding_rate));
+                    append("🔬 Δf: %.0fHz CR:%d\n", mp.rx_frequency_error, nexusCRDisplay(mp.rx_coding_rate));
                 }
 
                 if (ping_bitmask) {
-                    if (l < 0 || (size_t)l >= sizeof(rMsg)) l = sizeof(rMsg) - 1;
                     bool om = (mp.decoded.has_bitfield && (mp.decoded.bitfield & BITFIELD_OK_TO_MQTT_MASK));
                     bool mqtt = mp.via_mqtt;
 
-                    l += snprintf(rMsg + l, sizeof(rMsg) - l, "🌐 OM:%d%s MQTT:%d%s UDP:%d",
-                                 om ? 1 : 0, !om ? "⚠️" : "",
-                                 mqtt ? 1 : 0, mqtt ? "⚠️" : "",
-                                 (mp.transport_mechanism == meshtastic_MeshPacket_TransportMechanism_TRANSPORT_MULTICAST_UDP) ? 1 : 0);
+                    append("🌐 OM:%d%s MQTT:%d%s UDP:%d",
+                           om ? 1 : 0, !om ? "⚠️" : "",
+                           mqtt ? 1 : 0, mqtt ? "⚠️" : "",
+                           (mp.transport_mechanism == meshtastic_MeshPacket_TransportMechanism_TRANSPORT_MULTICAST_UDP) ? 1 : 0);
 
                     // (SIGNATURE FLAG 2026-08-23) Append S:<emoji> to the flags line.
                     // Three states, intentionally a different palette than the auto-prefix
@@ -2297,7 +2367,7 @@ ProcessMessage NexusModule::handleReceived(const meshtastic_MeshPacket &mp) {
                     } else {
                         sigEmoji = "🟢"; // F0 9F 9F A2 — signed & verified
                     }
-                    l += snprintf(rMsg + l, sizeof(rMsg) - l, " S:%s", sigEmoji);
+                    append(" S:%s", sigEmoji);
                 }
 
                 // Send the reply back (Multi-routing: immediate local + deferred mesh)

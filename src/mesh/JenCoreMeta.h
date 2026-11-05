@@ -18,6 +18,9 @@ namespace nexus::jen_core_meta
 
 constexpr size_t PATH_CAP = sizeof(((meshtastic_MeshPacket *)nullptr)->jc_path.bytes);
 
+/// Largest path hash width JenCore uses (1, 2 or 3 bytes).
+constexpr uint8_t HASH_SIZE_MAX = 3;
+
 enum : uint16_t {
     FLAG_IS_JENCORE = 1u << 0,
     FLAG_REGION_SCOPED = 1u << 1,
@@ -92,6 +95,119 @@ inline void apply(meshtastic_MeshPacket &p, uint16_t flags, uint16_t relayNode, 
     p.jc_path.size = (pb_size_t)n;
     if (n)
         memcpy(p.jc_path.bytes, pathTail, n);
+}
+
+/// Path hash width encoded in jc_flags (1..3 bytes).
+inline uint8_t pathHashSize(uint16_t flags)
+{
+    const uint8_t size = (uint8_t)(((flags >> HASH_SIZE_SHIFT) & HASH_SIZE_MASK) + 1);
+    return size > HASH_SIZE_MAX ? HASH_SIZE_MAX : size;
+}
+
+/// Wire path budget shared by every JenCore node (MAX_PATH_SIZE in JenCoreRepeater).
+constexpr size_t PATH_BYTES_MAX = 64;
+
+/// Maximum hops a path of this hash width can carry inside the 64-byte budget:
+/// 64 for 1-byte, 32 for 2-byte, 21 for 3-byte hashes.
+inline uint8_t pathHopLimit(uint8_t hashSize)
+{
+    if (hashSize == 0 || hashSize > HASH_SIZE_MAX)
+        return 0;
+    return (uint8_t)(PATH_BYTES_MAX / hashSize);
+}
+
+/// Decode the JenCore hop count and its byte-budget ceiling from a packet.
+/// Returns false for ordinary Meshtastic packets (jc_flags absent).
+inline bool packetHopInfo(const meshtastic_MeshPacket &p, uint8_t &hops, uint8_t &limit)
+{
+    hops = 0;
+    limit = 0;
+    if (!(p.jc_flags & FLAG_IS_JENCORE))
+        return false;
+    const uint8_t hashSize = pathHashSize(p.jc_flags);
+    hops = hashSize ? (uint8_t)(p.jc_path.size / hashSize) : 0;
+    limit = pathHopLimit(hashSize);
+    return true;
+}
+
+/**
+ * Render a path as "!aabb>!ccdd", one '!'-prefixed hex label per whole hash.
+ * When the whole path does not fit in cap, keep the first and last hops and
+ * mark the elided middle with "..", so the immediate relay is never lost. A
+ * path whose head was ever cut (truncated) is prefixed "..>".
+ * Returns the content bytes written, excluding the NUL.
+ */
+inline size_t formatPath(char *out, size_t cap, const uint8_t *path, size_t pathBytes, uint8_t hashSize, bool truncated)
+{
+    if (!out || cap == 0)
+        return 0;
+    out[0] = '\0';
+    if (!path || hashSize == 0 || hashSize > HASH_SIZE_MAX)
+        return 0;
+
+    const size_t total = pathBytes / hashSize;
+    if (total == 0)
+        return 0;
+
+    const size_t label = 1 + 2 * (size_t)hashSize;
+    size_t pos = 0;
+    auto putChar = [&](char c) {
+        if (pos + 1 < cap)
+            out[pos++] = c;
+    };
+    auto putLabel = [&](size_t idx) {
+        const uint8_t *hash = path + idx * hashSize;
+        static const char hexd[] = "0123456789abcdef";
+        putChar('!');
+        for (uint8_t i = 0; i < hashSize; i++) {
+            putChar(hexd[hash[i] >> 4]);
+            putChar(hexd[hash[i] & 0x0F]);
+        }
+    };
+    auto room = [&]() { return cap - 1 - pos; };
+
+    if (truncated) {
+        putChar('.');
+        putChar('.');
+        putChar('>');
+    }
+
+    if (total == 1) {
+        putLabel(0);
+        out[pos] = '\0';
+        return pos;
+    }
+
+    // Two hops plus the separator are the floor. If not even that fits, keep
+    // the immediate relay (the hop the operator cares about) rather than none.
+    if (room() < label + 1 + label) {
+        putLabel(total - 1);
+        out[pos] = '\0';
+        return pos;
+    }
+
+    putLabel(0);
+    size_t next = 1;
+    const size_t reserveLast = 4 + label; // ">..>" + last label
+    while (next + 1 < total) {
+        if (room() < 1 + label + reserveLast)
+            break;
+        putChar('>');
+        putLabel(next);
+        next++;
+    }
+
+    if (next < total - 1) {
+        putChar('>');
+        putChar('.');
+        putChar('.');
+        putChar('>');
+    } else {
+        putChar('>');
+    }
+    putLabel(total - 1);
+    out[pos] = '\0';
+    return pos;
 }
 
 } // namespace nexus::jen_core_meta
