@@ -1539,7 +1539,8 @@ void RadioLibInterface::handleReceiveInterrupt(const CapturedRxInfo *captured)
                                                      getLastRxFrequencyError(), getLastRxCodingRate());
 #endif
                         jencoreRepeater.handleReceivedFrame((const uint8_t *)&radioBuffer, length, snr,
-                                                            getPacketTime(length, false), rssi);
+                                                            getPacketTime(length, false), rssi, getLastRxFrequencyError(),
+                                                            getLastRxCodingRate());
                         jencoreRepeater.rxAirtimeMs += rxMsec;
                         wakeJenCoreRelay();
                     } else {
@@ -1589,7 +1590,8 @@ void RadioLibInterface::handleReceiveInterrupt(const CapturedRxInfo *captured)
                                                      getLastRxFrequencyError(), getLastRxCodingRate());
 #endif
                         jencoreRepeater.handleReceivedFrame((const uint8_t *)&radioBuffer, length, snr,
-                                                            getPacketTime(length, false), rssi);
+                                                            getPacketTime(length, false), rssi, getLastRxFrequencyError(),
+                                                            getLastRxCodingRate());
                         jencoreRepeater.rxAirtimeMs += rxMsec;
                         wakeJenCoreRelay();
                     }
@@ -1626,7 +1628,8 @@ void RadioLibInterface::handleReceiveInterrupt(const CapturedRxInfo *captured)
                                           getLastRxCodingRate());
 #endif
             jencoreRepeater.handleReceivedFrame((const uint8_t *)&radioBuffer, length, iface->getSNR(),
-                                                getPacketTime(length, false), (int32_t)lround(iface->getRSSI()));
+                                                getPacketTime(length, false), (int32_t)lround(iface->getRSSI()),
+                                                getLastRxFrequencyError(), getLastRxCodingRate());
             wakeJenCoreRelay(); // when the adaptive relay delay elapses
             airTime->logAirtime(RX_LOG, rxMsec);
             jencoreRepeater.rxAirtimeMs += rxMsec;

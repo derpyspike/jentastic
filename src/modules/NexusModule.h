@@ -1029,9 +1029,10 @@ public:
 #if NEXUS_ENABLE_JENCORE_SNIFFER
     /// Radio-thread trampoline registered on JenCoreRepeater.
     static void jenCoreTraceObserver(const uint8_t *raw, size_t len, const JenCoreRepeater::FrameInfo &info, float snr,
-                                     int32_t rssi);
+                                     int32_t rssi, float freqErr, uint8_t cr);
     /// Correlate an endpoint copy with our active trace and emit generic trace alerts.
-    void onJenCoreTrace(const uint8_t *raw, size_t len, const JenCoreRepeater::FrameInfo &info, float snr, int32_t rssi);
+    void onJenCoreTrace(const uint8_t *raw, size_t len, const JenCoreRepeater::FrameInfo &info, float snr, int32_t rssi,
+                        float freqErr, uint8_t cr);
     /// runOnce(): send a captured endpoint result, or report the timeout.
     void serviceJenCoreTrace();
     bool jenCoreTraceActive() const { return jenTrace.active; }

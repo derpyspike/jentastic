@@ -115,7 +115,8 @@ class JenCoreRepeater
      * It runs on the radio RX path, so an observer must not block: copy what it needs and hand the work to a module
      * thread. raw/len/info stay valid only for the duration of the call.
      */
-    using TraceObserver = void (*)(const uint8_t *raw, size_t len, const FrameInfo &info, float snr, int32_t rssi);
+    using TraceObserver = void (*)(const uint8_t *raw, size_t len, const FrameInfo &info, float snr, int32_t rssi,
+                                   float freqErr, uint8_t cr);
     static void setTraceObserver(TraceObserver observer);
 
     /// Index of the configured region a transport-flood matches, or 0xFF when unscoped/unmatched.
@@ -143,7 +144,8 @@ class JenCoreRepeater
      * if enabled. airtimeMs is the frame's on-air time (RadioInterface::getPacketTime), used to
      * size the adaptive relay delay. rssi feeds the trace observer and is otherwise unused.
      */
-    void handleReceivedFrame(const uint8_t *raw, size_t len, float snr, uint32_t airtimeMs, int32_t rssi = 0);
+    void handleReceivedFrame(const uint8_t *raw, size_t len, float snr, uint32_t airtimeMs, int32_t rssi = 0,
+                             float freqErr = 0.0f, uint8_t cr = 0);
 
     /** True when at least one raw JenCore frame is queued for transmission. */
     bool hasPendingFrame() const;

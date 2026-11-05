@@ -4989,7 +4989,7 @@ void resolveJenCoreHash(const uint8_t *hash, uint8_t size, char *out, size_t cap
 }
 
 void formatJenCoreTraceResult(char *out, size_t cap, const uint8_t *raw, const JenCoreRepeater::FrameInfo &info, bool ping,
-                              float snr, int32_t rssi, uint32_t elapsedMs)
+                              float snr, int32_t rssi, uint32_t elapsedMs, float freqErr, uint8_t cr)
 {
     ::nexus::jen_core_policy::TraceSummary s;
     const uint8_t *payload = raw + info.header_len;
@@ -5008,12 +5008,13 @@ void formatJenCoreTraceResult(char *out, size_t cap, const uint8_t *raw, const J
         resolveJenCoreHash(payload + 9, s.hashSize, target, sizeof(target));
         // pathSnrs[0] is the target's receive SNR of our ping; snr is ours of its forward.
         const float hopSnr = pathSnrs ? (float)(int8_t)pathSnrs[0] / 4.0f : 0.0f;
-        traceAppend(out, cap, pos, "JT JC PING %s OK (%.2fs) hop=%.1fdB snr=%.1f rssi=%d", target, seconds, hopSnr, snr,
-                    (int)rssi);
+        traceAppend(out, cap, pos, "JT JC PING %s OK (%.2fs) hop=%.1fdB snr=%.1f rssi=%d FE:%.0fHz CR:%d", target, seconds,
+                    hopSnr, snr, (int)rssi, freqErr, nexusCRDisplay(cr));
         return;
     }
 
-    traceAppend(out, cap, pos, "JT JC TRACE tag=%08x %uB (%.2fs):\n", (unsigned)s.tag, (unsigned)s.hashSize, seconds);
+    traceAppend(out, cap, pos, "JT JC TRACE tag=%08x %uB (%.2fs) FE:%.0fHz CR:%d:\n", (unsigned)s.tag, (unsigned)s.hashSize,
+                seconds, freqErr, nexusCRDisplay(cr));
     const uint8_t hops = s.completedHops < s.requestedHops ? s.completedHops : s.requestedHops;
     for (uint8_t i = 0; i < hops; i++) {
         char label[64];
@@ -5027,13 +5028,14 @@ void formatJenCoreTraceResult(char *out, size_t cap, const uint8_t *raw, const J
 } // namespace
 
 void NexusModule::jenCoreTraceObserver(const uint8_t *raw, size_t len, const JenCoreRepeater::FrameInfo &info, float snr,
-                                       int32_t rssi)
+                                       int32_t rssi, float freqErr, uint8_t cr)
 {
     if (meshtastic::nexusModule)
-        meshtastic::nexusModule->onJenCoreTrace(raw, len, info, snr, rssi);
+        meshtastic::nexusModule->onJenCoreTrace(raw, len, info, snr, rssi, freqErr, cr);
 }
 
-void NexusModule::onJenCoreTrace(const uint8_t *raw, size_t len, const JenCoreRepeater::FrameInfo &info, float snr, int32_t rssi)
+void NexusModule::onJenCoreTrace(const uint8_t *raw, size_t len, const JenCoreRepeater::FrameInfo &info, float snr, int32_t rssi,
+                                 float freqErr, uint8_t cr)
 {
     if (!raw || info.payload_len < 9)
         return;
@@ -5048,7 +5050,7 @@ void NexusModule::onJenCoreTrace(const uint8_t *raw, size_t len, const JenCoreRe
             jenTrace.bestCompleted = s.completedHops;
         if (s.endpoint && !jenTraceResult.pending.load(std::memory_order_relaxed)) {
             formatJenCoreTraceResult(jenTraceResult.text, sizeof(jenTraceResult.text), raw, info, jenTrace.ping, snr, rssi,
-                                     Time::getMillis() - jenTrace.startMs);
+                                     Time::getMillis() - jenTrace.startMs, freqErr, cr);
             jenTraceResult.atMs = Time::getMillis();
             jenTraceResult.pending.store(true, std::memory_order_release);
         }
@@ -5071,10 +5073,17 @@ void NexusModule::onJenCoreTrace(const uint8_t *raw, size_t len, const JenCoreRe
     jenTraceAlertMarks[jenTraceAlertNext].ms = now;
     jenTraceAlertNext = (jenTraceAlertNext + 1) % JEN_TRACE_ALERT_MARKS;
 
-    char text[96];
-    snprintf(text, sizeof(text), "%s JC %s tag=%08x %u/%u hops %uB snr=%.1f", s.endpoint ? "✅" : "📡",
-             s.requestedHops <= 1 ? "PING" : "TRACE", (unsigned)s.tag, (unsigned)s.completedHops, (unsigned)s.requestedHops,
-             (unsigned)s.hashSize, snr);
+    char text[NEXUS_MAX_REPLY];
+    size_t pos = 0;
+    traceAppend(text, sizeof(text), pos, "%s JC %s tag=%08x %u/%u hops %uB snr=%.1f fe=%.0f cr=%d path=",
+                s.endpoint ? "✅" : "📡", s.requestedHops <= 1 ? "PING" : "TRACE", (unsigned)s.tag,
+                (unsigned)s.completedHops, (unsigned)s.requestedHops, (unsigned)s.hashSize, snr, freqErr,
+                nexusCRDisplay(cr));
+    for (uint8_t i = 0; i < s.requestedHops; i++) {
+        char label[64];
+        resolveJenCoreHash(payload + 9 + (size_t)i * s.hashSize, s.hashSize, label, sizeof(label));
+        traceAppend(text, sizeof(text), pos, "%s%s", i ? ">" : "", label);
+    }
 
     uint32_t from = nodeDB ? nodeDB->getNodeNum() : 0;
 #if NEXUS_ENABLE_JENCORE_COMPANION

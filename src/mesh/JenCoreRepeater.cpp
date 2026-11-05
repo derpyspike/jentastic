@@ -575,7 +575,8 @@ bool JenCoreRepeater::parse(const uint8_t *raw, size_t len, FrameInfo *out)
     return true;
 }
 
-void JenCoreRepeater::handleReceivedFrame(const uint8_t *raw, size_t len, float snr, uint32_t airtimeMs, int32_t rssi)
+void JenCoreRepeater::handleReceivedFrame(const uint8_t *raw, size_t len, float snr, uint32_t airtimeMs, int32_t rssi,
+                                          float freqErr, uint8_t cr)
 {
     (void)airtimeMs; // only used by the relay half
     FrameInfo info;
@@ -596,7 +597,7 @@ void JenCoreRepeater::handleReceivedFrame(const uint8_t *raw, size_t len, float 
     // toggle must work even when this node is not relaying (and even when the
     // trace is not addressed to us).
     if (info.payload_type == MC_PAYLOAD_TYPE_TRACE && traceObserver)
-        traceObserver(raw, len, info, snr, rssi);
+        traceObserver(raw, len, info, snr, rssi, freqErr, cr);
 
 #if NEXUS_ENABLE_JENCORE_RELAY
     const bool direct = info.route_type == MC_ROUTE_DIRECT || info.route_type == MC_ROUTE_TRANSPORT_DIRECT;
