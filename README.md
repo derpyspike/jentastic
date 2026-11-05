@@ -6,7 +6,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/Nexus%20Module-AGPL_v3-3B82F6.svg?style=flat-square)](docs/why-the-license.md)
 [![License: GPL v3](https://img.shields.io/badge/Meshtastic%20Upstream%20Base-GPL_v3-22C55E.svg?style=flat-square)](LICENSE)
-[![Upstream Base](https://img.shields.io/badge/Upstream%20Base-v2.8.1-10B981.svg?style=flat-square)](https://meshtastic.org)
+[![Upstream Base](https://img.shields.io/badge/Upstream%20Base-v2.8.2-10B981.svg?style=flat-square)](https://meshtastic.org)
 [![Hardware Support](https://img.shields.io/badge/Hardware-ESP32%20%7C%20nRF52%20-8B5CF6.svg?style=flat-square)](#building--flashing)
 
 [![Spanish Meshtastic Community](https://img.shields.io/badge/Community-Spanish%20Meshtastic%20Community-EF4444.svg?style=flat-square)](https://meshtastic.es)
