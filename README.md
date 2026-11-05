@@ -119,3 +119,25 @@ For these reasons, the CLI has become insanely useful: you can track signals, se
 ## What This Isn't
 
 This isn't a hard fork, and it isn't meant to be one. It is designed to be **completely interchangeable** with either the upstream official firmware or other custom firmwares, and never break compatibility on-air with either the mesh, standard channels, or phone client apps.
+
+---
+
+## Software bill of materials and bibliography.
+
+Nexus / Jentastic builds on the following open-source projects. Basically any project I have used code from.
+The full license texts and attribution are collected in [`LICENSES/`](LICENSES/README.md).
+
+| Component | Upstream | Maintainer / organisation | License | Used for |
+| --- | --- | --- | --- | --- |
+| Meshtastic firmware | <https://github.com/meshtastic/firmware> | Meshtastic project and contributors | GPL-3.0 | Upstream firmware base |
+| Meshtacore firmware | <https://github.com/xejarque/meshtacore-firmware> | Xavi (`xejarque`) and contributors | GPL-3.0 + AGPL-3.0 mix | Basis for JenCore; itself a fork of Jentastic |
+| MeshCore | <https://github.com/meshcore-dev/MeshCore> | Scott Powell / rippleradios.com; MeshCore project | MIT | JenCore protocol and implementation reference |
+| Dutch-MeshCore MeshCore | <https://github.com/Dutch-MeshCore/MeshCore> | Scott Powell / rippleradios.com; Dutch-MeshCore | MIT | JenCore reference fork for certain features. |
+| ZephCore | <https://github.com/liquidraver/ZephCore> | `liquidraver` and ZephCore contributors | MIT | I used it as base for my own (right now unpublished) DerpyCore, and copied over features to JC from it |
+| microReticulum | <https://github.com/attermann/microReticulum> | Chad Attermann (`attermann`) and contributors | Apache-2.0 | C++ Reticulum stack used for JenRNode |
+| microReticulum_Firmware | <https://github.com/attermann/microReticulum_Firmware> | Chad Attermann (`attermann`) and contributors | GPL-3.0 | RNode firmware reference for JenRNode |
+| RNode_Firmware | <https://github.com/markqvist/RNode_Firmware> | Mark Qvist (`markqvist`) and contributors | GPL-3.0 | Upstream RNode firmware; reference for JenRNode |
+| Columba | <https://github.com/torlando-tech/columba> | `torlando-tech` and Columba contributors | MPL-2.0 | Client API reference for JenRNode |
+
+---
+
