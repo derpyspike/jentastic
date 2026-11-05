@@ -378,11 +378,13 @@ bool RNodeEngine::looksLikeReticulumPacket(const uint8_t *raw, size_t len) const
         uint8_t rnode_hdr = raw[0];
         // Lower nibble: 0x00 (single) or 0x01 (split); bits 1..3 must be 0
         if ((rnode_hdr & 0x0E) == 0) {
-            uint8_t flags = raw[1];
+            // Reticulum flags: [7:6] header type, [5] context flag, [4] transport
+            // type, [3:2] destination type, [1:0] packet type. Every value is
+            // legal; the old (flags >> 5) & 3 check read header_type+context_flag
+            // as a reserved 2-bit field and rejected transported+ratcheted
+            // announces (0x71) while accepting plain ones (0x51).
             uint8_t hops = raw[2];
-            uint8_t prop_type = (flags >> 5) & 0x03;
-            // Propagation type: 0 (broadcast), 1 (transport), 2 (relayed); 3 is reserved
-            if (prop_type <= 2 && hops <= 64) {
+            if (hops <= 64) {
                 return true;
             }
         }
@@ -390,10 +392,8 @@ bool RNodeEngine::looksLikeReticulumPacket(const uint8_t *raw, size_t len) const
 
     // Case 2: Promiscuous raw Reticulum frame (no RNode 1-byte header): len >= 18
     if (promisc && len >= 18) {
-        uint8_t flags = raw[0];
         uint8_t hops = raw[1];
-        uint8_t prop_type = (flags >> 5) & 0x03;
-        if (prop_type <= 2 && hops <= 64) {
+        if (hops <= 64) {
             return true;
         }
     }
