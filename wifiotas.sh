@@ -24,6 +24,14 @@ set -e
 # .bin file, which we still need to know what to flash).
 FAST_MODE=false
 
+# Direct OTA helper: finish an update when the node is already in OTA mode
+# (port 3232 open, Meshtastic admin API on 4403 gone). --direct-ota forces it;
+# otherwise it is used automatically when the normal OTA command cannot connect.
+DIRECT_OTA_FORCE=false
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OTA_DIRECT_HELPER="${SCRIPT_DIR}/bin/ota-direct.py"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+
 # =============================================================================
 # ⚙️  HARDCODED NODE CONFIGURATION
 # =============================================================================
@@ -71,6 +79,26 @@ get_bin_file() {
     echo "$bin_file"
 }
 
+# Finish an OTA that is already running on the node's port-3232 endpoint.
+# Returns 0 on success, 1 on OTA failure, 2 when the node is not in OTA mode.
+try_direct_ota() {
+    local ip=$1
+    local bin_file=$2
+
+    if [ ! -f "$OTA_DIRECT_HELPER" ]; then
+        return 2
+    fi
+    if ! "$PYTHON_BIN" "$OTA_DIRECT_HELPER" --check "$ip" >/dev/null 2>&1; then
+        return 2
+    fi
+
+    echo "🩹 Node $ip is already in OTA mode; finishing the update directly on port 3232..."
+    if "$PYTHON_BIN" "$OTA_DIRECT_HELPER" "$ip" "$bin_file"; then
+        return 0
+    fi
+    return 1
+}
+
 # Helper function to perform the update on a single node
 update_node() {
     local node_var=$1
@@ -97,8 +125,8 @@ update_node() {
     echo "📦 Target Firmware: $bin_file"
     
     # ------------------ THE REBOOT DANCE ------------------
-    if [ "$FAST_MODE" = true ]; then
-        echo "⚡ FAST MODE: skipping pre-OTA reboot dance."
+    if [ "$FAST_MODE" = true ] || [ "$DIRECT_OTA_FORCE" = true ]; then
+        echo "⚡ Skipping pre-OTA reboot dance (fast/direct mode)."
     else
         echo "🔄 Initiating the double-reboot dance to stabilize the node..."
         
@@ -121,22 +149,38 @@ update_node() {
     while [ $attempt -le $max_attempts ]; do
         echo "⚡ OTA Attempt $attempt of $max_attempts..."
         
-        # Run the meshtastic OTA command
-        if meshtastic --host "$ip" --ota-update "$bin_file"; then
-            echo "✅ meshtastic command reported success!"
-            success=true
-            break
+        if [ "$DIRECT_OTA_FORCE" = true ]; then
+            echo "🩹 Direct OTA mode requested."
+            if try_direct_ota "$ip" "$bin_file"; then
+                success=true
+                break
+            fi
+            echo "⚠️ Direct OTA attempt $attempt failed."
         else
+            # Normal path: ask the running app to reboot into OTA mode.
+            if meshtastic --host "$ip" --ota-update "$bin_file"; then
+                echo "✅ meshtastic command reported success!"
+                success=true
+                break
+            fi
             echo "⚠️ OTA attempt $attempt failed."
-            if [ $attempt -lt $max_attempts ]; then
-                if [ "$FAST_MODE" = true ]; then
-                    echo "⚡ FAST MODE: skipping inter-attempt reboot; retrying immediately..."
-                else
-                    echo "⏳ Waiting 30 seconds for node to settle, then performing an emergency reboot before retrying..."
-                    sleep 30
-                    meshtastic --host "$ip" --reboot
-                    sleep 45
-                fi
+            # If the previous attempt was interrupted, the node is already in OTA
+            # mode and the admin API is gone. Finish it directly.
+            if try_direct_ota "$ip" "$bin_file"; then
+                echo "✅ Direct OTA completion succeeded!"
+                success=true
+                break
+            fi
+        fi
+
+        if [ $attempt -lt $max_attempts ]; then
+            if [ "$FAST_MODE" = true ] || [ "$DIRECT_OTA_FORCE" = true ]; then
+                echo "⚡ FAST/DIRECT MODE: skipping inter-attempt reboot; retrying immediately..."
+            else
+                echo "⏳ Waiting 30 seconds for node to settle, then performing an emergency reboot before retrying..."
+                sleep 30
+                meshtastic --host "$ip" --reboot
+                sleep 45
             fi
         fi
         attempt=$((attempt + 1))
@@ -175,15 +219,20 @@ update_node() {
 
 # --- Main CLI Argument Parsing ---
 usage() {
-    echo "Usage: $0 [--fast] <node_name_or_all>"
+    echo "Usage: $0 [--fast] [--direct-ota] <node_name_or_all>"
     echo "Examples:"
     echo "  $0 MT_FENNEKIN          -> Updates only Fennekin (full reboot dance + sanity checks)"
     echo "  $0 --fast MT_FENNEKIN   -> Updates only Fennekin (skip reboots + sanity)"
+    echo "  $0 --direct-ota MT_FENNEKIN -> Finish an update already stuck in OTA mode (port 3232)"
     echo "  $0 all                  -> Updates ALL configured nodes"
     echo "  $0 --fast all           -> Updates ALL configured nodes in fast mode"
     echo ""
     echo "--fast skips everything but the OTA command itself: no pre-OTA double reboot,"
     echo "no inter-attempt reboot, no post-OTA wait / ping / API check."
+    echo ""
+    echo "--direct-ota (or --resume-ota) skips the admin-API trigger and streams the"
+    echo "firmware straight to port 3232. It is also tried automatically when a normal"
+    echo "OTA attempt fails because the node is already sitting in OTA mode."
     echo ""
     echo "Available nodes:"
     for key in "${!NODE_IPS[@]}"; do
@@ -197,6 +246,8 @@ TARGET=""
 for arg in "$@"; do
     if [ "$arg" = "--fast" ]; then
         FAST_MODE=true
+    elif [ "$arg" = "--direct-ota" ] || [ "$arg" = "--resume-ota" ]; then
+        DIRECT_OTA_FORCE=true
     elif [ "$arg" = "-h" ] || [ "$arg" = "--help" ]; then
         usage
     elif [ -z "$TARGET" ]; then
