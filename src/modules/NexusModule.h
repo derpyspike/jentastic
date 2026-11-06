@@ -593,8 +593,8 @@ public:
         uint32_t version;    // 40
         uint64_t drop_mask;
         uint16_t ping_mask;  // Bit 0: Global, Bits 1-8: Channels
-        uint8_t  airtag_enabled;
-        char     airtag_key[28];
+        uint8_t  jentag_enabled;
+        char     jentag_key[28];
         char     groups[4][8]; // 4 slots, 8 chars each
         uint8_t  hop_mask_active;
         uint8_t  hop_mask_start;
@@ -1518,15 +1518,15 @@ inline uint8_t nexus_netscan_count = 0;
 
 } // namespace meshtastic
 
-// Nexus: AIRTAG (Apple Find My) state. Definitions live in NexusModule.cpp
+// Nexus: JenTag (OpenHaystack-compatible Find My) state. Definitions live in NexusModule.cpp
 // at file scope (not inside namespace meshtastic — the `using namespace
 // meshtastic;` declaration puts them in the global namespace). Pre-existed
-// the NexusCommands.cpp split and was used by NRF52Bluetooth.cpp's Apple
-// Find My scanner (which has its own extern decl at file scope). After the
+// the NexusCommands.cpp split and was used by NRF52Bluetooth.cpp's JenTag
+// advertiser (which has its own extern decl at file scope). After the
 // split (Aug 2026), NexusCommands.cpp's handleNexusCommand also uses
 // these — extern decls added here at file scope (not inside the meshtastic
 // namespace) so the linker symbol matches NRF52Bluetooth.cpp's expectation.
-#ifdef NEXUS_ENABLE_AIRTAG
-extern bool nexus_airtag_enabled;
-extern uint8_t nexus_airtag_key[28];
+#if NEXUS_ENABLE_JENTAG
+extern bool nexus_jentag_enabled;
+extern uint8_t nexus_jentag_key[28];
 #endif

@@ -22,6 +22,7 @@
 #include "Channels.h"
 #include "MeshService.h"
 #include "mesh/JenCoreMeta.h"
+#include "mesh/JenTag.h"
 #if NEXUS_ENABLE_RNODE
 #include "mesh/RNodeEngine.h"
 #endif
@@ -207,9 +208,9 @@ static inline meshtastic_User nexus_user_of(const meshtastic_NodeInfoLite *n) {
 #define BITFIELD_OK_TO_MQTT_MASK (1 << 0)
 #endif
 
-#ifdef NEXUS_ENABLE_AIRTAG
-bool nexus_airtag_enabled = false;
-uint8_t nexus_airtag_key[28] = {0}; // Apple public key (Base64 decoded)
+#if NEXUS_ENABLE_JENTAG
+bool nexus_jentag_enabled = false;
+uint8_t nexus_jentag_key[28] = {0}; // P-224 public key (Base64 decoded)
 #endif
 
 // v64: per-subsystem freeze flags. File-scope so NodeDB.cpp / WarmNodeStore.cpp
@@ -5460,6 +5461,11 @@ bool NexusModule::saveVault()
     if (ping_ignore_remote) v->ping_mask |= (1 << 14);
     if (ping_allow_dm) v->ping_mask |= (1 << 15);
 
+#if NEXUS_ENABLE_JENTAG
+    v->jentag_enabled = nexus_jentag_enabled ? 1 : 0;
+    memcpy(v->jentag_key, nexus_jentag_key, sizeof(v->jentag_key));
+#endif
+
     // Aliases (v30)
     for(int i=0; i<16; i++) {
         v->aliases[i] = nexus_aliases[i];
@@ -5693,6 +5699,13 @@ bool NexusModule::loadVault()
         ping_ignore_direct   = (v->ping_mask & (1 << 13)) != 0;
         ping_ignore_remote   = (v->ping_mask & (1 << 14)) != 0;
         ping_allow_dm        = (v->ping_mask & (1 << 15)) != 0;
+
+#if NEXUS_ENABLE_JENTAG
+        nexus_jentag_enabled = v->jentag_enabled != 0;
+        memcpy(nexus_jentag_key, v->jentag_key, sizeof(nexus_jentag_key));
+        if (!::nexus::jentag::keyIsSet(nexus_jentag_key))
+            nexus_jentag_enabled = false;
+#endif
 
         // Groups (string fields, bounded)
         for (int i = 0; i < 4; i++) {

@@ -24,6 +24,7 @@
 
 #include "UptimeClock.h"
 #include "mesh/JenCoreMeta.h"
+#include "mesh/JenTag.h"
 #include "mesh/Throttle.h"
 #include "modules/NexusModule.h"
 #include "modules/NexusTxHook.h"
@@ -5984,9 +5985,8 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         } else {
             // Build a paginated diff. We compare every persisted field in
             // NexusVault (v43) against its RAM counterpart so the operator
-            // can see exactly what /nexus SAVE will change. AirTag fields
-            // are intentionally skipped: saveVault() never writes them, so
-            // diffing would produce a constant spurious mismatch.
+            // can see exactly what /nexus SAVE will change. JenTag fields are
+            // persisted by saveVault() but are not part of this diff.
             startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "VAULT DIFF");
             int diffs = 0;
 
@@ -9674,16 +9674,16 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
 #endif
 
         // Build flag summary from compile-time Nexus defines. Order-stable
-        // (AIRTAG, ADV) for predictable diffs across rebuilds.
+        // (JENTAG, ADV) for predictable diffs across rebuilds.
         static char buildFlags[32];
         buildFlags[0] = '\0';
         size_t flagLen = 0;
-#if defined(NEXUS_ENABLE_AIRTAG)
+#if NEXUS_ENABLE_JENTAG
         if (flagLen > 0 && flagLen < sizeof(buildFlags) - 1) {
             buildFlags[flagLen++] = '+';
             buildFlags[flagLen] = '\0';
         }
-        strncpy(buildFlags + flagLen, "AIRTAG", sizeof(buildFlags) - flagLen - 1);
+        strncpy(buildFlags + flagLen, "JENTAG", sizeof(buildFlags) - flagLen - 1);
         flagLen = strlen(buildFlags);
 #endif
 #if defined(NEXUS_ENABLE_ADV)
@@ -9693,7 +9693,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         }
         strncpy(buildFlags + flagLen, "ADV", sizeof(buildFlags) - flagLen - 1);
 #endif
-        (void)flagLen; // referenced only when AIRTAG/ADV are compiled in
+        (void)flagLen; // referenced only when JENTAG/ADV are compiled in
         if (buildFlags[0] == '\0') strncpy(buildFlags, "none", sizeof(buildFlags) - 1);
 
         // Format build date from BUILD_EPOCH (Unix seconds, midnight UTC,
@@ -10286,31 +10286,46 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             }
         }
     }
-#ifdef NEXUS_ENABLE_AIRTAG
-    else if (strncasecmp(cmd, "AIRTAG ", 7) == 0) {
-        const char *p = cmd + 7;
+#if NEXUS_ENABLE_JENTAG
+    else if (strncasecmp(cmd, "JENTAG", 6) == 0 && (cmd[6] == '\0' || cmd[6] == ' ')) {
+        const char *p = cmd + 6;
         while (*p == ' ') p++;
-        if (strcasecmp(p, "OFF") == 0) {
-            nexus_airtag_enabled = false;
-            snprintf(replyMsg, sizeof(replyMsg), "JT: AirTag Beacon DISABLED");
+        const bool haveKey = ::nexus::jentag::keyIsSet(nexus_jentag_key);
+        if (*p == '\0' || strcasecmp(p, "STATUS") == 0) {
+            if (!haveKey)
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENTAG: OFF (no key)");
+            else
+                snprintf(replyMsg, sizeof(replyMsg), "JT JENTAG: %s key=%02x%02x%02x%02x...",
+                         nexus_jentag_enabled ? "ON" : "OFF", nexus_jentag_key[0], nexus_jentag_key[1],
+                         nexus_jentag_key[2], nexus_jentag_key[3]);
+        } else if (strcasecmp(p, "OFF") == 0) {
+            nexus_jentag_enabled = false;
+            snprintf(replyMsg, sizeof(replyMsg), "JT: JenTag beacon DISABLED");
         } else if (strcasecmp(p, "ON") == 0) {
-            if (nexus_airtag_key[0] == 0) {
-                snprintf(replyMsg, sizeof(replyMsg), "JT: AirTag Error - No Key set (use AIRTAG !key)");
+            if (!haveKey) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT: JenTag error - no key set (use JENTAG !<base64>)");
             } else {
-                nexus_airtag_enabled = true;
-                snprintf(replyMsg, sizeof(replyMsg), "JT: AirTag Beacon ENABLED (Key active)");
+                nexus_jentag_enabled = true;
+                snprintf(replyMsg, sizeof(replyMsg), "JT: JenTag beacon ENABLED");
             }
+        } else if (strcasecmp(p, "CLEAR") == 0 || strcasecmp(p, "RESET") == 0) {
+            memset(nexus_jentag_key, 0, sizeof(nexus_jentag_key));
+            nexus_jentag_enabled = false;
+            snprintf(replyMsg, sizeof(replyMsg), "JT: JenTag key cleared; save with /nexus SAVE");
         } else if (*p == '!') {
-            // Decoding the 28-byte public key (OpenHaystack keys are base64 encoded strings)
+            // OpenHaystack public keys are base64 and exactly 28 bytes (P-224).
+            uint8_t key[::nexus::jentag::KEY_LEN] = {};
             size_t written = 0;
-            if (nexus_base64_decode(nexus_airtag_key, sizeof(nexus_airtag_key), &written, p + 1) == 0) {
-                nexus_airtag_enabled = true;
-                snprintf(replyMsg, sizeof(replyMsg), "JT: AirTag Key SET and Beacon ENABLED");
+            if (nexus_base64_decode(key, sizeof(key), &written, p + 1) == 0 &&
+                written == ::nexus::jentag::KEY_LEN && ::nexus::jentag::keyIsSet(key)) {
+                memcpy(nexus_jentag_key, key, sizeof(nexus_jentag_key));
+                nexus_jentag_enabled = true;
+                snprintf(replyMsg, sizeof(replyMsg), "JT: JenTag key SET and beacon ENABLED (save with /nexus SAVE)");
             } else {
-                snprintf(replyMsg, sizeof(replyMsg), "JT: AirTag Error - Base64 Decode Failed");
+                snprintf(replyMsg, sizeof(replyMsg), "JT: JenTag error - need a 28-byte base64 key");
             }
         } else {
-            snprintf(replyMsg, sizeof(replyMsg), "JT: AirTag usage: AIRTAG ON|OFF|!<base64>");
+            snprintf(replyMsg, sizeof(replyMsg), "JT: JenTag usage: JENTAG ON|OFF|STATUS|CLEAR|!<base64>");
         }
     }
 #endif

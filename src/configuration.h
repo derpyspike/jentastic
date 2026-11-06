@@ -190,6 +190,18 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #error "NEXUS_ENABLE_JENCORE_HYBRID_SYNC requires NEXUS_ENABLE_JENCORE_SNIFFER"
 #endif
 
+// ===== JenTag (OpenHaystack-compatible Find My beacon) =====
+// nRF52 only for now: the advertisement lives in the Bluefruit BLE layer.
+// Enable per variant or with ./build-nexus.sh --jentag. NEXUS_ENABLE_AIRTAG is
+// accepted as a compatibility alias for older variant files.
+#ifndef NEXUS_ENABLE_JENTAG
+#ifdef NEXUS_ENABLE_AIRTAG
+#define NEXUS_ENABLE_JENTAG 1
+#else
+#define NEXUS_ENABLE_JENTAG 0
+#endif
+#endif
+
 // ===== Nexus BaseUI weight reduction (DEFAULT OFF) =====
 // Unlike MESHTASTIC_EXCLUDE_SCREEN, these leave the display in place and drop
 // individual feature frames from the legacy BaseUI frame loop. A variant opts

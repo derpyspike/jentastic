@@ -97,6 +97,7 @@ JENCORE_OVERRIDE=-1
 RNODE_OVERRIDE=-1
 STATSBOT_OVERRIDE=-1
 REPLYBOT_OVERRIDE=-1
+JENTAG_OVERRIDE=-1
 # FLASH DIET toggles: 0 = explicit off, 1 = explicit on, -1 = default (off).
 # These append compile-time excludes; none are enabled unless the CLI asks.
 DEBUG_LOG_OVERRIDE=-1    # 1 = MESHTASTIC_EXCLUDE_DEBUG_LOG (drop LOG_DEBUG only)
@@ -153,6 +154,9 @@ Options:
   --replybot                  Enable ReplyBotModule (-DNEXUS_ENABLE_REPLYBOT=1).
                               Disabled by default.
   --no-replybot               Explicitly keep ReplyBotModule disabled (default).
+  --jentag                    Enable the JenTag Find My/OpenHaystack BLE beacon
+                              (-DNEXUS_ENABLE_JENTAG=1). nRF52 targets only.
+  --no-jentag                 Explicitly keep JenTag disabled (default; symmetry flag).
   --no-debug-log              Drop LOG_DEBUG format strings only; INFO/WARN/ERROR stay
                               (-DMESHTASTIC_EXCLUDE_DEBUG_LOG=1, ~28 KB on nRF52).
   --debug-log                 Keep LOG_DEBUG (default).
@@ -186,6 +190,7 @@ Examples:
   $0 admins --no-evil                       # explicit safety build
   $0 jenny --private-build                 # enable private features
   $0 javi --targets tracker-t1000-e --jencore --rnode   # default-off bridges enabled
+  $0 jenny --targets tracker-t1000-e --jentag            # JenTag Find My beacon
   $0 jenny --targets nrf52_promicro_diy_sx1262 --jencore --rnode \
       --no-debug-log --no-emoji --no-beacon             # screen-on nRF52 flash diet
 EOF
@@ -283,6 +288,12 @@ parse_args() {
                 ;;
             --no-replybot)
                 REPLYBOT_OVERRIDE=0
+                ;;
+            --jentag)
+                JENTAG_OVERRIDE=1
+                ;;
+            --no-jentag)
+                JENTAG_OVERRIDE=0
                 ;;
             --no-debug-log)
                 DEBUG_LOG_OVERRIDE=1
@@ -575,6 +586,12 @@ run_builder() {
     elif [[ "$REPLYBOT_OVERRIDE" == "0" ]]; then
         replybot_source="CLI --no-replybot"
     fi
+    local jentag_active=0 jentag_source="default (disabled)"
+    if [[ "$JENTAG_OVERRIDE" == "1" ]]; then
+        jentag_active=1; jentag_source="CLI --jentag"
+    elif [[ "$JENTAG_OVERRIDE" == "0" ]]; then
+        jentag_source="CLI --no-jentag"
+    fi
 
     # FLASH DIET: opt-in compile-time excludes (default off; CLI-only)
     local debug_mute=0 debug_log_off=0 inputbroker_off=0 emoji_off=0 beacon_off=0
@@ -623,6 +640,9 @@ run_builder() {
     fi
     if [[ "$replybot_active" == "1" ]]; then
         base_flags+=" -DNEXUS_ENABLE_REPLYBOT=1"
+    fi
+    if [[ "$jentag_active" == "1" ]]; then
+        base_flags+=" -DNEXUS_ENABLE_JENTAG=1"
     fi
     if [[ "$debug_mute" == "1" ]]; then
         base_flags+=" -DDEBUG_MUTE=1"
@@ -677,6 +697,11 @@ run_builder() {
         echo "║  REPLYBOT: ON  (-DNEXUS_ENABLE_REPLYBOT=1) source: $replybot_source"
     else
         echo "║  REPLYBOT: OFF (disabled by default)      source: $replybot_source"
+    fi
+    if [[ "$jentag_active" == "1" ]]; then
+        echo "║  JENTAG  : ON  (-DNEXUS_ENABLE_JENTAG=1)  source: $jentag_source"
+    else
+        echo "║  JENTAG  : OFF (disabled by default)      source: $jentag_source"
     fi
     echo "║  DIET    : $diet_summary"
     if [[ -n "$PIO_EXTRA_TARGET" ]]; then

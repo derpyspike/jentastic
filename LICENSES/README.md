@@ -18,6 +18,7 @@ own terms remain in the root: `LICENSE` (GPL-3.0) and `LICENSE-AGPL`
 | RNode_Firmware | <https://github.com/markqvist/RNode_Firmware> | Mark Qvist (`markqvist`) and contributors | GPL-3.0 | [`GPL-3.0-RNode_Firmware.txt`](GPL-3.0-RNode_Firmware.txt) |
 | microReticulum_Firmware | <https://github.com/attermann/microReticulum_Firmware> | Chad Attermann (`attermann`) and contributors | GPL-3.0 | [`GPL-3.0-RNode_Firmware.txt`](GPL-3.0-RNode_Firmware.txt) |
 | Columba | <https://github.com/torlando-tech/columba> | `torlando-tech` and Columba contributors | MPL-2.0 | [`MPL-2.0.txt`](MPL-2.0.txt) |
+| OpenHaystack | <https://github.com/seemoo-lab/openhaystack> | Secure Mobile Networking Lab, TU Darmstadt | AGPL-3.0 | [`AGPL-3.0.txt`](AGPL-3.0.txt) |
 
 ## Attribution notes
 
@@ -35,5 +36,9 @@ own terms remain in the root: `LICENSE` (GPL-3.0) and `LICENSE-AGPL`
 - `Apache-2.0.txt` and `MPL-2.0.txt` are the standard license texts. The
   upstream repositories did not contain a separate NOTICE file when these
   copies were taken; the copyright holders are listed in the table above.
+- The JenTag BLE advertisement format follows OpenHaystack's ESP32 firmware
+  (`Firmware/ESP32/main/openhaystack_main.c`). OpenHaystack is AGPL-3.0; the
+  advertisement layout is reproduced for interoperability, and the upstream
+  project is credited here.
 - The license texts were retrieved from the upstream repositories on
   2026-11-05.
