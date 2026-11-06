@@ -202,6 +202,20 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #endif
 #endif
 
+// ===== microReticulum transport node (ESP32-S3 + PSRAM) =====
+// The native Reticulum stack needs the RNode framing/radio plumbing and a
+// PSRAM-backed allocator. Enable per variant or with ./build-nexus.sh
+// --microreticulum. Not available on flash/RAM-constrained targets.
+#ifndef NEXUS_ENABLE_MICRORETICULUM
+#define NEXUS_ENABLE_MICRORETICULUM 0
+#endif
+#if NEXUS_ENABLE_MICRORETICULUM && !NEXUS_ENABLE_RNODE
+#error "NEXUS_ENABLE_MICRORETICULUM requires NEXUS_ENABLE_RNODE"
+#endif
+#if NEXUS_ENABLE_MICRORETICULUM && !defined(BOARD_HAS_PSRAM)
+#error "NEXUS_ENABLE_MICRORETICULUM requires a PSRAM target"
+#endif
+
 // ===== Nexus BaseUI weight reduction (DEFAULT OFF) =====
 // Unlike MESHTASTIC_EXCLUDE_SCREEN, these leave the display in place and drop
 // individual feature frames from the legacy BaseUI frame loop. A variant opts

@@ -98,6 +98,7 @@ RNODE_OVERRIDE=-1
 STATSBOT_OVERRIDE=-1
 REPLYBOT_OVERRIDE=-1
 JENTAG_OVERRIDE=-1
+MICRORETICULUM_OVERRIDE=-1
 # FLASH DIET toggles: 0 = explicit off, 1 = explicit on, -1 = default (off).
 # These append compile-time excludes; none are enabled unless the CLI asks.
 DEBUG_LOG_OVERRIDE=-1    # 1 = MESHTASTIC_EXCLUDE_DEBUG_LOG (drop LOG_DEBUG only)
@@ -157,6 +158,10 @@ Options:
   --jentag                    Enable the JenTag Find My/OpenHaystack BLE beacon
                               (-DNEXUS_ENABLE_JENTAG=1). nRF52 targets only.
   --no-jentag                 Explicitly keep JenTag disabled (default; symmetry flag).
+  --microreticulum            Build a native microReticulum transport node
+                              (-DNEXUS_ENABLE_MICRORETICULUM=1 + RNode). Requires a
+                              -mrrns env with the microReticulum library, PSRAM.
+  --no-microreticulum         Explicitly keep microReticulum disabled (default).
   --no-debug-log              Drop LOG_DEBUG format strings only; INFO/WARN/ERROR stay
                               (-DMESHTASTIC_EXCLUDE_DEBUG_LOG=1, ~28 KB on nRF52).
   --debug-log                 Keep LOG_DEBUG (default).
@@ -191,6 +196,7 @@ Examples:
   $0 jenny --private-build                 # enable private features
   $0 javi --targets tracker-t1000-e --jencore --rnode   # default-off bridges enabled
   $0 jenny --targets tracker-t1000-e --jentag            # JenTag Find My beacon
+  $0 jenny --targets station-g2-mrrns --microreticulum   # native Reticulum transport node
   $0 jenny --targets nrf52_promicro_diy_sx1262 --jencore --rnode \
       --no-debug-log --no-emoji --no-beacon             # screen-on nRF52 flash diet
 EOF
@@ -294,6 +300,12 @@ parse_args() {
                 ;;
             --no-jentag)
                 JENTAG_OVERRIDE=0
+                ;;
+            --microreticulum|--mrrns)
+                MICRORETICULUM_OVERRIDE=1
+                ;;
+            --no-microreticulum|--no-mrrns)
+                MICRORETICULUM_OVERRIDE=0
                 ;;
             --no-debug-log)
                 DEBUG_LOG_OVERRIDE=1
@@ -592,6 +604,12 @@ run_builder() {
     elif [[ "$JENTAG_OVERRIDE" == "0" ]]; then
         jentag_source="CLI --no-jentag"
     fi
+    local microreticulum_active=0 microreticulum_source="default (disabled)"
+    if [[ "$MICRORETICULUM_OVERRIDE" == "1" ]]; then
+        microreticulum_active=1; microreticulum_source="CLI --microreticulum"
+    elif [[ "$MICRORETICULUM_OVERRIDE" == "0" ]]; then
+        microreticulum_source="CLI --no-microreticulum"
+    fi
 
     # FLASH DIET: opt-in compile-time excludes (default off; CLI-only)
     local debug_mute=0 debug_log_off=0 inputbroker_off=0 emoji_off=0 beacon_off=0
@@ -643,6 +661,9 @@ run_builder() {
     fi
     if [[ "$jentag_active" == "1" ]]; then
         base_flags+=" -DNEXUS_ENABLE_JENTAG=1"
+    fi
+    if [[ "$microreticulum_active" == "1" ]]; then
+        base_flags+=" -DNEXUS_ENABLE_RNODE=1 -DNEXUS_ENABLE_MICRORETICULUM=1"
     fi
     if [[ "$debug_mute" == "1" ]]; then
         base_flags+=" -DDEBUG_MUTE=1"
@@ -702,6 +723,11 @@ run_builder() {
         echo "║  JENTAG  : ON  (-DNEXUS_ENABLE_JENTAG=1)  source: $jentag_source"
     else
         echo "║  JENTAG  : OFF (disabled by default)      source: $jentag_source"
+    fi
+    if [[ "$microreticulum_active" == "1" ]]; then
+        echo "║  MRRNS   : ON  (-DNEXUS_ENABLE_MICRORETICULUM=1) source: $microreticulum_source"
+    else
+        echo "║  MRRNS   : OFF (disabled by default)      source: $microreticulum_source"
     fi
     echo "║  DIET    : $diet_summary"
     if [[ -n "$PIO_EXTRA_TARGET" ]]; then

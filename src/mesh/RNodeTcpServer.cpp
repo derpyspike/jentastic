@@ -33,7 +33,7 @@ void RNodeTcpServer::sendData(const uint8_t *data, size_t len)
 
 int32_t RNodeTcpServer::runOnce()
 {
-    if (!rnodeEngine.isTcpEnabled() || rnodeEngine.getMode() == RNODE_MODE_OFF) {
+    if (!rnodeEngine.isTcpEnabled() || rnodeEngine.getMode() == RNODE_MODE_OFF || rnodeEngine.isMicroReticulum()) {
         if (client && client.connected()) {
             client.stop();
             activeTcpClient.stop();

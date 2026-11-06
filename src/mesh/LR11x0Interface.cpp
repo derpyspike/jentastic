@@ -703,7 +703,7 @@ template <typename T> void LR11x0Interface<T>::applyReceiveConfig()
     if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
         lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent. Not sure why this is needed.
 #if NEXUS_ENABLE_RNODE
-        if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
+        if (rnodeEngine.isRadioExclusive()) {
             lora.setSyncWord(jencoreSyncWord);
             lora.setSpreadingFactor(rnodeEngine.getSf());
             rnodeRadioDirty = false;

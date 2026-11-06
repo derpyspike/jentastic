@@ -819,7 +819,7 @@ template <typename T> int16_t LR20x0Interface<T>::setSpreadingFactorLive(uint8_t
 
         bool sideDetectorsUsable = !meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0;
 #if NEXUS_ENABLE_RNODE
-        sideDetectorsUsable = sideDetectorsUsable && (rnodeEngine.getMode() != RNODE_MODE_STANDALONE);
+        sideDetectorsUsable = sideDetectorsUsable && (!rnodeEngine.isRadioExclusive());
 #endif
         if (sideDetectorsUsable)
             static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
@@ -1012,7 +1012,7 @@ template <typename T> void LR20x0Interface<T>::applyReceiveConfig()
     if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
         lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent. Not sure why this is needed.
 #if NEXUS_ENABLE_RNODE
-        if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
+        if (rnodeEngine.isRadioExclusive()) {
             lora.setSyncWord(0x12);
             lora.setSpreadingFactor(rnodeEngine.getSf());
             rnodeRadioDirty = false;

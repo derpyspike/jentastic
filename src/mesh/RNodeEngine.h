@@ -77,8 +77,9 @@
 // Supported operating modes
 enum RNodeMode : uint8_t {
     RNODE_MODE_OFF = 0,
-    RNODE_MODE_BRIDGE = 1,       // Concurrent Meshtastic + JenCore + Reticulum (Default)
-    RNODE_MODE_STANDALONE = 2    // Dedicated 100% Reticulum RNode
+    RNODE_MODE_BRIDGE = 1,          // Concurrent Meshtastic + JenCore + Reticulum (Default)
+    RNODE_MODE_STANDALONE = 2,      // Dedicated 100% Reticulum RNode (KISS host)
+    RNODE_MODE_MICRORETICULUM = 3   // Native microReticulum transport node (no KISS host)
 };
 
 enum RNodeClientType : uint8_t {
@@ -104,6 +105,16 @@ class RNodeEngine
     void setMode(RNodeMode m) { mode = m; }
     /// Master switch: false when the RNode/JenRNode persona is not activated.
     bool isEnabled() const { return mode != RNODE_MODE_OFF; }
+    /// Radio-exclusive personas: the driver uses the RNode syncword/SF and the
+    /// Meshtastic router must not treat the frames as its own.
+    bool isRadioExclusive() const { return mode == RNODE_MODE_STANDALONE || mode == RNODE_MODE_MICRORETICULUM; }
+    bool isMicroReticulum() const { return mode == RNODE_MODE_MICRORETICULUM; }
+
+    /// Reassembled RNode payload sink for the native microReticulum engine.
+    using RNodeFrameSink = void (*)(const uint8_t *payload, size_t len, float snr, int32_t rssi);
+    void setFrameSink(RNodeFrameSink fn) { frameSink = fn; }
+    /// Framed TX for the native microReticulum engine (RNode header + split).
+    bool queueMicroReticulumFrame(const uint8_t *data, size_t len);
 
     uint8_t getSf() const { return lora_sf; }
     void setSf(uint8_t sf) { lora_sf = sf; }
@@ -163,6 +174,7 @@ class RNodeEngine
   private:
     void dispatchCommand(RNodeClientType client);
     void queueTxToRadio(const uint8_t *data, size_t len);
+    void sendFramedToRadio(const uint8_t *data, size_t len);
     bool deliverReticulumFrame(const uint8_t *raw, size_t len, float snr, int32_t rssi);
     void deliverCompleteFrame(const uint8_t *payload, size_t len, float snr, int32_t rssi);
 
@@ -182,6 +194,7 @@ class RNodeEngine
 
     RNodeWriteFn tcpWriteFn = nullptr;
     RNodeWriteFn bleWriteFn = nullptr;
+    RNodeFrameSink frameSink = nullptr;
 
     // Modem parameter state (echoed or set)
     uint32_t lora_freq = 869618000; // Default Madrid 869.618 MHz

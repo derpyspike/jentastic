@@ -26,6 +26,9 @@
 #if NEXUS_ENABLE_RNODE
 #include "mesh/RNodeEngine.h"
 #endif
+#if NEXUS_ENABLE_MICRORETICULUM
+#include "mesh/MicroReticulumEngine.h"
+#endif
 #if NEXUS_ENABLE_JENCORE_SNIFFER
 static_assert(::nexus::jen_core_meta::PATH_BYTES_MAX == JenCoreRepeater::MAX_PATH_SIZE,
               "JenCore display hop ceiling must match the wire path budget");
@@ -2818,6 +2821,25 @@ void NexusModule::applyTS(uint32_t *traceId) {
 int32_t NexusModule::runOnce() {
     uint32_t now = Time::getMillis();
 
+#if NEXUS_ENABLE_MICRORETICULUM
+    // Keep the native RNS stack in step with the persisted RNode persona. A
+    // failed start is retried slowly rather than allocating every tick.
+    if (rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM) {
+        static uint32_t lastRnsStartTry = 0;
+        if (!microReticulumEngine.isActive() &&
+            (lastRnsStartTry == 0 || Throttle::hasElapsed(lastRnsStartTry, 30000))) {
+            lastRnsStartTry = now;
+            // The LoRa preset is authoritative in this mode; the driver's
+            // RNode persona branch reads the SF from rnodeEngine.
+            rnodeEngine.setSf(config.lora.spread_factor);
+            microReticulumEngine.start();
+        }
+        microReticulumEngine.loop();
+    } else if (microReticulumEngine.isActive()) {
+        microReticulumEngine.stop();
+    }
+#endif
+
     // 0. Delayed InputBroker Hook (Ensure inputBroker is initialized)
     if (!input_hooked && inputBroker) {
         inputEventObserver->observe(inputBroker);
@@ -3232,6 +3254,11 @@ int32_t NexusModule::runOnce() {
         last_volt_check_ms = now;
         runVoltageAutomations();
     }
+
+#if NEXUS_ENABLE_MICRORETICULUM
+    if (microReticulumEngine.isActive())
+        return 20;
+#endif
 
     if (noise_sampling_active || freqscan_active)
         return 50;
@@ -5820,7 +5847,12 @@ bool NexusModule::loadVault()
             const bool legacyJen = v->version < 71;
 #if NEXUS_ENABLE_RNODE
             const uint8_t rmode = v->jen_config.rnode_mode;
-            rnodeEngine.setMode(rmode <= 2 ? (RNodeMode)rmode : RNODE_MODE_OFF);
+#if NEXUS_ENABLE_MICRORETICULUM
+            const uint8_t maxRnodeMode = 3;
+#else
+            const uint8_t maxRnodeMode = 2;
+#endif
+            rnodeEngine.setMode(rmode <= maxRnodeMode ? (RNodeMode)rmode : RNODE_MODE_OFF);
             rnodeEngine.setTcpEnabled(legacyJen ? true : (v->jen_config.rnode_tcp != 0));
             rnodeEngine.setBleEnabled(legacyJen ? true : (v->jen_config.rnode_ble != 0));
             if (v->jen_config.rnode_sf >= 5 && v->jen_config.rnode_sf <= 12)

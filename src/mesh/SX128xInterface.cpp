@@ -635,7 +635,7 @@ template <typename T> void SX128xInterface<T>::startReceive()
             }
 #endif
 #if NEXUS_ENABLE_RNODE
-            if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
+            if (rnodeEngine.isRadioExclusive()) {
                 lora.setSyncWord(0x12);
                 lora.setSpreadingFactor(rnodeEngine.getSf());
                 rnodeRadioDirty = false;

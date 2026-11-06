@@ -25,6 +25,9 @@
 #include "UptimeClock.h"
 #include "mesh/JenCoreMeta.h"
 #include "mesh/JenTag.h"
+#if NEXUS_ENABLE_MICRORETICULUM
+#include "mesh/MicroReticulumEngine.h"
+#endif
 #include "mesh/Throttle.h"
 #include "modules/NexusModule.h"
 #include "modules/NexusTxHook.h"
@@ -3059,6 +3062,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         const char *sub = skipToken(cmd);
         if (!*sub || strcasecmp(sub, "STATUS") == 0) {
             const char *modeStr = (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) ? "STANDALONE" :
+                                  (rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM) ? "MICRORETICULUM" :
                                   (rnodeEngine.getMode() == RNODE_MODE_BRIDGE) ? "BRIDGE" : "OFF";
             snprintf(replyMsg, sizeof(replyMsg),
                      "JT JRNODE:\n Enabled: %s\n Mode: %s\n Tier SF: %u\n TCP: %s (%s)\n BLE: %s (%s)\n RxPkts: %u (bytes=%u)\n TxPkts: %u (bytes=%u)\n LastRSSI: %d, SNR: %.1f",
@@ -3080,6 +3084,15 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         } else if (strcasecmp(sub, "MODE STANDALONE") == 0 || strcasecmp(sub, "STANDALONE") == 0) {
             rnodeEngine.setMode(RNODE_MODE_STANDALONE);
             snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: Mode STANDALONE (Dedicated Reticulum RNode)");
+        } else if (strcasecmp(sub, "MODE MICRORETICULUM") == 0 || strcasecmp(sub, "MICRORETICULUM") == 0 ||
+                   strcasecmp(sub, "MODE RNS") == 0 || strcasecmp(sub, "MODE MRRNS") == 0) {
+#if NEXUS_ENABLE_MICRORETICULUM
+            rnodeEngine.setMode(RNODE_MODE_MICRORETICULUM);
+            rnodeEngine.setSf(config.lora.spread_factor);
+            snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: Mode MICRORETICULUM (native transport node; /nexus SAVE)");
+#else
+            snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: microReticulum not compiled in");
+#endif
         } else if (strcasecmp(sub, "TCP ON") == 0 || strcasecmp(sub, "TCP 1") == 0) {
             rnodeEngine.setTcpEnabled(true);
             snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: TCP server ON (port 7633)");
@@ -3103,6 +3116,32 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             }
         } else {
             snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: Usage: JRNODE [ON/OFF|STATUS|MODE BRIDGE/STANDALONE/OFF|TCP ON/OFF|BLE ON/OFF|TIER <5-12>] (RNODE alias)");
+        }
+    }
+#endif
+#if NEXUS_ENABLE_MICRORETICULUM
+    else if (strcasecmp(cmd, "RNS") == 0 || strncasecmp(cmd, "RNS ", 4) == 0) {
+        const char *sub = skipToken(cmd);
+        if (!*sub || strcasecmp(sub, "STATUS") == 0) {
+            if (microReticulumEngine.isActive())
+                snprintf(replyMsg, sizeof(replyMsg), "JT RNS: ON role=transport rx=%u tx=%u drop=%u",
+                         (unsigned)microReticulumEngine.rxPackets, (unsigned)microReticulumEngine.txPackets,
+                         (unsigned)microReticulumEngine.dropped);
+            else
+                snprintf(replyMsg, sizeof(replyMsg), "JT RNS: OFF (mode=%s)",
+                         rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM ? "requested" : "off");
+        } else if (strcasecmp(sub, "ON") == 0) {
+            rnodeEngine.setMode(RNODE_MODE_MICRORETICULUM);
+            rnodeEngine.setSf(config.lora.spread_factor);
+            snprintf(replyMsg, sizeof(replyMsg), "JT RNS: MICRORETICULUM requested (save with /nexus SAVE)");
+        } else if (strcasecmp(sub, "OFF") == 0) {
+            rnodeEngine.setMode(RNODE_MODE_OFF);
+            snprintf(replyMsg, sizeof(replyMsg), "JT RNS: OFF");
+        } else if (strcasecmp(sub, "RESTART") == 0) {
+            microReticulumEngine.stop();
+            snprintf(replyMsg, sizeof(replyMsg), "JT RNS: restarting native stack");
+        } else {
+            snprintf(replyMsg, sizeof(replyMsg), "JT RNS: usage: RNS ON|OFF|STATUS|RESTART");
         }
     }
 #endif

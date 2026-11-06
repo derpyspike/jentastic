@@ -440,7 +440,7 @@ void RF95Interface::startReceive()
     int16_t err = trySetStandby();
     if (err == RADIOLIB_ERR_NONE) {
 #if NEXUS_ENABLE_RNODE
-        if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
+        if (rnodeEngine.isRadioExclusive()) {
             lora->setSyncWord(0x12);
             if (rnodeEngine.getSf() >= 6)
                 lora->setSpreadingFactor(rnodeEngine.getSf());

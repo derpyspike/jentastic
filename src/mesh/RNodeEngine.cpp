@@ -156,7 +156,7 @@ void RNodeEngine::dispatchCommand(RNodeClientType client)
     case RNODE_CMD_SF: {
         if (p->len >= 1) {
             lora_sf = p->buf[0];
-            if (mode == RNODE_MODE_STANDALONE) {
+            if (isRadioExclusive()) {
                 RadioLibInterface *rli = static_cast<RadioLibInterface *>(RadioLibInterface::instance);
                 if (rli)
                     rli->setSpreadingFactorLive(lora_sf);
@@ -234,40 +234,61 @@ void RNodeEngine::dispatchCommand(RNodeClientType client)
     }
 }
 
+void RNodeEngine::sendFramedToRadio(const uint8_t *data, size_t len)
+{
+    RadioLibInterface *rli = static_cast<RadioLibInterface *>(RadioLibInterface::instance);
+    if (!rli || !data || len == 0)
+        return;
+
+    // Standard RNode mode: prepend a 1-byte radio header (sequence nibble + FLAG_SPLIT). Packets
+    // over 254 payload bytes are split into frames sharing that sequence nibble, exactly as
+    // RNode_Firmware::transmit does.
+    constexpr size_t MAX_PAYLOAD = MAX_RADIO_FRAME_LEN - 2; // header + 254 stays within 255
+    const uint8_t seq = (tx_seq++ << 4) & 0xF0;
+    if (len <= MAX_PAYLOAD) {
+        uint8_t txBuf[MAX_RADIO_FRAME_LEN];
+        txBuf[0] = seq;
+        memcpy(&txBuf[1], data, len);
+        rli->queueRNodeFrame(txBuf, len + 1);
+    } else {
+        for (size_t off = 0; off < len; off += MAX_PAYLOAD) {
+            const size_t n = (len - off > MAX_PAYLOAD) ? MAX_PAYLOAD : (len - off);
+            uint8_t txBuf[MAX_RADIO_FRAME_LEN];
+            txBuf[0] = seq | 0x01; // FLAG_SPLIT
+            memcpy(&txBuf[1], data + off, n);
+            if (!rli->queueRNodeFrame(txBuf, n + 1))
+                return;
+        }
+    }
+}
+
+bool RNodeEngine::queueMicroReticulumFrame(const uint8_t *data, size_t len)
+{
+    if (!data || len == 0 || mode != RNODE_MODE_MICRORETICULUM)
+        return false;
+    sendFramedToRadio(data, len);
+    return true;
+}
+
 void RNodeEngine::queueTxToRadio(const uint8_t *data, size_t len)
 {
     if (!data || len == 0 || mode == RNODE_MODE_OFF)
         return;
 
-    RadioLibInterface *rli = static_cast<RadioLibInterface *>(RadioLibInterface::instance);
-    if (!rli)
+    // The native microReticulum engine frames its own payloads; KISS clients are
+    // not the transport in that mode.
+    if (mode == RNODE_MODE_MICRORETICULUM)
         return;
 
     if (!promisc) {
-        // Standard RNode mode: prepend a 1-byte radio header (sequence nibble + FLAG_SPLIT). Packets
-        // over 254 payload bytes are split into frames sharing that sequence nibble, exactly as
-        // RNode_Firmware::transmit does.
-        constexpr size_t MAX_PAYLOAD = MAX_RADIO_FRAME_LEN - 2; // header + 254 stays within 255
-        const uint8_t seq = (tx_seq++ << 4) & 0xF0;
-        if (len <= MAX_PAYLOAD) {
-            uint8_t txBuf[MAX_RADIO_FRAME_LEN];
-            txBuf[0] = seq;
-            memcpy(&txBuf[1], data, len);
-            rli->queueRNodeFrame(txBuf, len + 1);
-        } else {
-            for (size_t off = 0; off < len; off += MAX_PAYLOAD) {
-                const size_t n = (len - off > MAX_PAYLOAD) ? MAX_PAYLOAD : (len - off);
-                uint8_t txBuf[MAX_RADIO_FRAME_LEN];
-                txBuf[0] = seq | 0x01; // FLAG_SPLIT
-                memcpy(&txBuf[1], data + off, n);
-                if (!rli->queueRNodeFrame(txBuf, n + 1))
-                    return;
-            }
-        }
+        sendFramedToRadio(data, len);
     } else {
+        RadioLibInterface *rli = static_cast<RadioLibInterface *>(RadioLibInterface::instance);
+        if (!rli)
+            return;
         // queueRNodeFrame rejects anything over MAX_LORA_PAYLOAD_LEN (255, the hard PHY limit) - MAX_RADIO_FRAME_LEN
         // (256) is too loose a bound here and let oversized frames vanish silently instead of being rejected up front.
-        if (len == 0 || len > MAX_LORA_PAYLOAD_LEN) {
+        if (len > MAX_LORA_PAYLOAD_LEN) {
             LOG_WARN("RNode promiscuous TX dropped: len=%u exceeds max LoRa payload %u", (unsigned)len, (unsigned)MAX_LORA_PAYLOAD_LEN);
             return;
         }
@@ -311,6 +332,13 @@ void RNodeEngine::deliverCompleteFrame(const uint8_t *payload, size_t len, float
     lastRssi = rssi;
     rxPackets++;
     rxBytes += len;
+
+    if (mode == RNODE_MODE_MICRORETICULUM) {
+        if (frameSink)
+            frameSink(payload, len, snr, rssi);
+        LOG_DEBUG("RNode RX -> microReticulum: len=%u", (unsigned)len);
+        return;
+    }
 
     uint8_t rssiVal = (uint8_t)(lastRssi + RNODE_RSSI_OFFSET);
     sendKissFrame(RNODE_CMD_STAT_RSSI, &rssiVal, 1);
