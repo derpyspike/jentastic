@@ -2832,12 +2832,18 @@ int32_t NexusModule::runOnce() {
     // failed start is retried slowly rather than allocating every tick.
     if (rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM) {
         static uint32_t lastRnsStartTry = 0;
+        // Consume the request only while down, so an operator RESTART is never
+        // swallowed by a tick that found the stack still running.
+        const bool restartNow = !microReticulumEngine.isActive() && microReticulumEngine.consumeRestartRequest();
         if (!microReticulumEngine.isActive() &&
-            (lastRnsStartTry == 0 || Throttle::hasElapsed(lastRnsStartTry, 30000))) {
+            (restartNow || lastRnsStartTry == 0 || Throttle::hasElapsed(lastRnsStartTry, 30000))) {
             lastRnsStartTry = now;
             // The LoRa preset is authoritative in this mode; the driver's
-            // RNode persona branch reads the SF from rnodeEngine.
-            rnodeEngine.setSf(config.lora.spread_factor);
+            // RNode persona branch reads the SF from rnodeEngine. Take it from
+            // the driver, not config.lora.spread_factor - that field is 0 under
+            // a preset, which would program SF 0 and persist it to the vault.
+            if (RadioLibInterface::instance)
+                rnodeEngine.setSf(RadioLibInterface::instance->getSF());
             microReticulumEngine.start();
         }
         microReticulumEngine.loop();

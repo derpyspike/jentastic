@@ -1570,7 +1570,8 @@ void RadioLibInterface::handleReceiveInterrupt(const CapturedRxInfo *captured)
 #if NEXUS_ENABLE_RNODE
                 if (!handled && rnodeEngine.getMode() != RNODE_MODE_OFF) {
                     // Keep the content heuristic here: the detector says "0x12 family", not RNode.
-                    const bool isOurMeshPacket = (rnodeEngine.getMode() == RNODE_MODE_BRIDGE) &&
+                    const bool isOurMeshPacket = (rnodeEngine.getMode() == RNODE_MODE_BRIDGE ||
+                                                  rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM) &&
                                                  ((length >= sizeof(PacketHeader) &&
                                                    (radioBuffer.header.to == nodeDB->getNodeNum() ||
                                                     radioBuffer.header.from == nodeDB->getNodeNum())) ||
@@ -1657,7 +1658,8 @@ void RadioLibInterface::handleReceiveInterrupt(const CapturedRxInfo *captured)
 #endif
 #if NEXUS_ENABLE_RNODE
         if (!multiSF && rnodeEngine.getMode() != RNODE_MODE_OFF) {
-            const bool isOurMeshPacket = (rnodeEngine.getMode() == RNODE_MODE_BRIDGE) &&
+            const bool isOurMeshPacket = (rnodeEngine.getMode() == RNODE_MODE_BRIDGE ||
+                                          rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM) &&
                                          ((length >= sizeof(PacketHeader) &&
                                            (radioBuffer.header.to == nodeDB->getNodeNum() ||
                                             radioBuffer.header.from == nodeDB->getNodeNum())) ||

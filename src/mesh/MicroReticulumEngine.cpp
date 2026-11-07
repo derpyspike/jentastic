@@ -76,6 +76,7 @@ bool MicroReticulumEngine::start()
         *loraInterface = radioImpl;
         loraInterface->mode(RNS::Type::Interface::MODE_GATEWAY);
         RNS::Transport::register_interface(*loraInterface);
+        interfaceRegistered = true;
         loraInterface->start();
 
         reticulum->transport_enabled(true); // this is a transport node, not just an endpoint
@@ -101,15 +102,19 @@ bool MicroReticulumEngine::start()
 
 void MicroReticulumEngine::stop()
 {
-    if (!active && !radioImpl && !filesystem)
+    if (!active && !radioImpl && !filesystem && !interfaceRegistered)
         return;
 
     try {
-        if (active) {
+        if (active)
             RNS::Transport::persist_data();
-            rnodeEngine.setFrameSink(nullptr);
-            if (loraInterface)
-                RNS::Transport::deregister_interface(*loraInterface);
+        rnodeEngine.setFrameSink(nullptr);
+        // Keyed on interfaceRegistered, not active: a start() that threw after
+        // register_interface() never set active, and skipping the deregister here
+        // left Transport holding a pointer to the interface deleted just below.
+        if (interfaceRegistered && loraInterface) {
+            RNS::Transport::deregister_interface(*loraInterface);
+            interfaceRegistered = false;
         }
     } catch (const std::exception &e) {
         LOG_WARN("microReticulum: teardown exception: %s", e.what());
@@ -126,6 +131,9 @@ void MicroReticulumEngine::stop()
         loraInterface = nullptr;
         radioImpl = nullptr;
     }
+    // The pointer is gone either way; never let a throwing deregister above leave
+    // the flag set and have the next stop() hand Transport a dangling interface.
+    interfaceRegistered = false;
     if (reticulum) {
         delete reticulum;
         reticulum = nullptr;

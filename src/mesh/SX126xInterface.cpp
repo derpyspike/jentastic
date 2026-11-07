@@ -753,12 +753,17 @@ template <typename T> void SX126xInterface<T>::applyReceiveConfig()
         // Hybrid RX (0x14B4) hears both RNode 0x12 and Meshtastic 0x2B; keep
         // it when compiled in, otherwise the RNode word is the only one heard.
 #if NEXUS_ENABLE_HYBRID_SYNC
-        if (!this->hybridSyncEnabled)
+        if (!this->hybridSyncEnabled) {
             lora.setSyncWord(0x12);
+            lora.setSpreadingFactor(rnodeEngine.getSf());
+        } else {
+            // Hybrid: one detector carries both protocols, so stay on the main SF.
+            lora.setSpreadingFactor(this->sf);
+        }
 #else
         lora.setSyncWord(0x12);
-#endif
         lora.setSpreadingFactor(rnodeEngine.getSf());
+#endif
         rnodeRadioDirty = false;
         rnodeWasStandalone = true; // restore the main config when leaving micro
     } else if (rnodeRadioDirty || rnodeWasStandalone) {

@@ -711,14 +711,18 @@ template <typename T> void LR11x0Interface<T>::applyReceiveConfig()
         } else if (rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM) {
             // Hybrid RX (0x1B) hears both RNode 0x12 and Meshtastic 0x2B.
 #if NEXUS_ENABLE_HYBRID_SYNC
-            if (this->hybridSyncEnabled)
+            if (this->hybridSyncEnabled) {
                 applyMainSyncWord();
-            else
+                // Hybrid: one detector carries both protocols, so stay on the main SF.
+                lora.setSpreadingFactor(this->sf);
+            } else {
                 lora.setSyncWord(jencoreSyncWord);
+                lora.setSpreadingFactor(rnodeEngine.getSf());
+            }
 #else
             lora.setSyncWord(jencoreSyncWord);
-#endif
             lora.setSpreadingFactor(rnodeEngine.getSf());
+#endif
             rnodeRadioDirty = false;
             rnodeWasStandalone = true;
         } else if (rnodeRadioDirty || rnodeWasStandalone) {

@@ -1022,11 +1022,16 @@ template <typename T> void LR20x0Interface<T>::applyReceiveConfig()
         } else if (rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM) {
             // Keep the LR2021 TIER main detector for Meshtastic and re-arm the
             // stored table (including the RNode side detector) after a raw TX.
+            // The sync word stays outside the guard: it is re-applied every arm so a
+            // HYBRID toggle takes effect without a reconfigure. The detector table is
+            // not - rewriting it on every arm costs an SPI burst on the RX hot path.
             lora.setSyncWord(effectiveMainSyncword());
-            lora.setSpreadingFactor(this->sf);
-            rnodeRadioDirty = false;
-            rnodeWasStandalone = false;
-            static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
+            if (rnodeRadioDirty || rnodeWasStandalone) {
+                lora.setSpreadingFactor(this->sf);
+                rnodeRadioDirty = false;
+                rnodeWasStandalone = false;
+                static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
+            }
         } else if (rnodeRadioDirty || rnodeWasStandalone) {
             lora.setSyncWord(effectiveMainSyncword());
             lora.setSpreadingFactor(this->sf);

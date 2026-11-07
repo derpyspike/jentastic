@@ -3108,7 +3108,9 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                    strcasecmp(sub, "MODE RNS") == 0 || strcasecmp(sub, "MODE MRRNS") == 0) {
 #if NEXUS_ENABLE_MICRORETICULUM
             rnodeEngine.setMode(RNODE_MODE_MICRORETICULUM);
-            rnodeEngine.setSf(config.lora.spread_factor);
+            // config.lora.spread_factor is 0 under a preset; the live SF is on the driver.
+            if (RadioLibInterface::instance)
+                rnodeEngine.setSf(RadioLibInterface::instance->getSF());
             snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: Mode MICRORETICULUM (native transport node; /nexus SAVE)");
 #else
             snprintf(replyMsg, sizeof(replyMsg), "JT JRNODE: microReticulum not compiled in");
@@ -3156,8 +3158,10 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 snprintf(replyMsg, sizeof(replyMsg), "JT RNS: OFF (mode=%s) hybrid=%s",
                          rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM ? "requested" : "off", hybrid);
         } else if (strcasecmp(sub, "ON") == 0) {
-            rnodeEngine.setMode(RNODE_MODE_MICRORETICULUM);
-            rnodeEngine.setSf(config.lora.spread_factor);
+            // Check the preconditions before switching mode: reporting a failure while
+            // having already armed the mode would start the stack anyway and let
+            // /nexus SAVE persist a state the operator was told did not take.
+            bool canEnable = true;
 #if (defined(USE_LR2021) || defined(ARCH_PORTDUINO)) && !RADIOLIB_EXCLUDE_LR2021
             bool hasRnodeTier = multiSFConfig.enabled &&
                                 nexus::tierCarriesProtocol(multiSFConfig.main_protocol, nexus::TIER_RNODE);
@@ -3170,17 +3174,26 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                     }
                 }
             }
-            if (!hasRnodeTier)
+            canEnable = hasRnodeTier;
+#endif
+            if (!canEnable) {
                 snprintf(replyMsg, sizeof(replyMsg),
                          "JT RNS: LR2021 needs a TIER RNODE side (TIER SIDE <n> <sf> RNODE 0x12)");
-            else
-#endif
+            } else {
+                rnodeEngine.setMode(RNODE_MODE_MICRORETICULUM);
+                // config.lora.spread_factor is 0 under a preset; the live SF is on the driver.
+                if (RadioLibInterface::instance)
+                    rnodeEngine.setSf(RadioLibInterface::instance->getSF());
                 snprintf(replyMsg, sizeof(replyMsg), "JT RNS: MICRORETICULUM requested (save with /nexus SAVE)");
+            }
         } else if (strcasecmp(sub, "OFF") == 0) {
             rnodeEngine.setMode(RNODE_MODE_OFF);
             snprintf(replyMsg, sizeof(replyMsg), "JT RNS: OFF");
         } else if (strcasecmp(sub, "RESTART") == 0) {
             microReticulumEngine.stop();
+            // Clear runOnce()'s 30 s retry throttle, otherwise a restart issued soon
+            // after a start attempt leaves the node a black hole until it expires.
+            microReticulumEngine.requestRestart();
             snprintf(replyMsg, sizeof(replyMsg), "JT RNS: restarting native stack");
 #if NEXUS_ENABLE_HYBRID_SYNC
         } else if (strcasecmp(sub, "HYBRID ON") == 0 || strcasecmp(sub, "HYBRID OFF") == 0) {

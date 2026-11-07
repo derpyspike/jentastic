@@ -234,11 +234,11 @@ void RNodeEngine::dispatchCommand(RNodeClientType client)
     }
 }
 
-void RNodeEngine::sendFramedToRadio(const uint8_t *data, size_t len)
+bool RNodeEngine::sendFramedToRadio(const uint8_t *data, size_t len)
 {
     RadioLibInterface *rli = static_cast<RadioLibInterface *>(RadioLibInterface::instance);
     if (!rli || !data || len == 0)
-        return;
+        return false;
 
     // Standard RNode mode: prepend a 1-byte radio header (sequence nibble + FLAG_SPLIT). Packets
     // over 254 payload bytes are split into frames sharing that sequence nibble, exactly as
@@ -249,25 +249,32 @@ void RNodeEngine::sendFramedToRadio(const uint8_t *data, size_t len)
         uint8_t txBuf[MAX_RADIO_FRAME_LEN];
         txBuf[0] = seq;
         memcpy(&txBuf[1], data, len);
-        rli->queueRNodeFrame(txBuf, len + 1);
-    } else {
-        for (size_t off = 0; off < len; off += MAX_PAYLOAD) {
-            const size_t n = (len - off > MAX_PAYLOAD) ? MAX_PAYLOAD : (len - off);
-            uint8_t txBuf[MAX_RADIO_FRAME_LEN];
-            txBuf[0] = seq | 0x01; // FLAG_SPLIT
-            memcpy(&txBuf[1], data + off, n);
-            if (!rli->queueRNodeFrame(txBuf, n + 1))
-                return;
-        }
+        return rli->queueRNodeFrame(txBuf, len + 1);
     }
+
+    // Reject a split up front rather than emit a prefix the peer can never reassemble:
+    // a partial send would still be reported as sent and suppress the stack's retransmit.
+    const size_t frames = (len + MAX_PAYLOAD - 1) / MAX_PAYLOAD;
+    if (!rli->hasRNodeTxRoom(frames)) {
+        LOG_WARN("RNode split TX dropped: need %u queue slots, len=%u", (unsigned)frames, (unsigned)len);
+        return false;
+    }
+    for (size_t off = 0; off < len; off += MAX_PAYLOAD) {
+        const size_t n = (len - off > MAX_PAYLOAD) ? MAX_PAYLOAD : (len - off);
+        uint8_t txBuf[MAX_RADIO_FRAME_LEN];
+        txBuf[0] = seq | 0x01; // FLAG_SPLIT
+        memcpy(&txBuf[1], data + off, n);
+        if (!rli->queueRNodeFrame(txBuf, n + 1))
+            return false;
+    }
+    return true;
 }
 
 bool RNodeEngine::queueMicroReticulumFrame(const uint8_t *data, size_t len)
 {
     if (!data || len == 0 || mode != RNODE_MODE_MICRORETICULUM)
         return false;
-    sendFramedToRadio(data, len);
-    return true;
+    return sendFramedToRadio(data, len);
 }
 
 void RNodeEngine::queueTxToRadio(const uint8_t *data, size_t len)
@@ -304,9 +311,15 @@ bool RNodeEngine::handleReceivedRadioPacket(const uint8_t *raw, size_t len, floa
 
     // Hybrid RX sees Meshtastic 0x2B as well as RNode 0x12. Only hand
     // Reticulum-looking frames to the native stack; the rest must continue to
-    // the Meshtastic router.
-    if (mode == RNODE_MODE_MICRORETICULUM && !looksLikeReticulumPacket(raw, len))
-        return false;
+    // the Meshtastic router. The continuation of a split we are already
+    // reassembling is exempt: its payload bytes are opaque, so the content
+    // heuristic would reject the tail and strand the buffer half-filled.
+    if (mode == RNODE_MODE_MICRORETICULUM) {
+        const bool splitTail =
+            !promisc && splitActive && (raw[0] & 0x01) != 0 && (uint8_t)(raw[0] >> 4) == splitSeq;
+        if (!splitTail && !looksLikeReticulumPacket(raw, len))
+            return false;
+    }
 
     if (mode == RNODE_MODE_BRIDGE) {
         if ((!tcpConnected && !bleConnected) || !looksLikeReticulumPacket(raw, len)) {

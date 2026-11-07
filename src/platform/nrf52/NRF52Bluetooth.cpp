@@ -322,7 +322,9 @@ void startAdv(void)
         ::nexus::jentag::deriveAddress(nexus_jentag_key, derived);
         ble_gap_addr_t addr = {};
         addr.addr_type = BLE_GAP_ADDR_TYPE_RANDOM_STATIC;
-        memcpy(addr.addr, derived, sizeof(derived));
+        // ble_gap_addr_t.addr is LSB-first; deriveAddress() yields MSB-first.
+        for (size_t i = 0; i < sizeof(derived); i++)
+            addr.addr[i] = derived[sizeof(derived) - 1 - i];
         if (!Bluefruit.setAddr(&addr))
             LOG_WARN("Nexus: JenTag random address was not applied");
 

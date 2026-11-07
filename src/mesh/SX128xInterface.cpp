@@ -642,12 +642,17 @@ template <typename T> void SX128xInterface<T>::startReceive()
                 rnodeWasStandalone = true;
             } else if (rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM) {
 #if NEXUS_ENABLE_HYBRID_SYNC
-                if (!this->hybridSyncEnabled)
+                if (!this->hybridSyncEnabled) {
                     lora.setSyncWord(0x12);
+                    lora.setSpreadingFactor(rnodeEngine.getSf());
+                } else {
+                    // Hybrid: one detector carries both protocols, so stay on the main SF.
+                    lora.setSpreadingFactor(this->sf);
+                }
 #else
                 lora.setSyncWord(0x12);
-#endif
                 lora.setSpreadingFactor(rnodeEngine.getSf());
+#endif
                 rnodeRadioDirty = false;
                 rnodeWasStandalone = true;
             } else if (rnodeRadioDirty || rnodeWasStandalone) {

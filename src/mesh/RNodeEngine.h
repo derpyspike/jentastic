@@ -174,7 +174,9 @@ class RNodeEngine
   private:
     void dispatchCommand(RNodeClientType client);
     void queueTxToRadio(const uint8_t *data, size_t len);
-    void sendFramedToRadio(const uint8_t *data, size_t len);
+    /** Returns false when the radio rejected the frame, so callers can tell the
+        stack the packet did not go out instead of counting a phantom TX. */
+    bool sendFramedToRadio(const uint8_t *data, size_t len);
     bool deliverReticulumFrame(const uint8_t *raw, size_t len, float snr, int32_t rssi);
     void deliverCompleteFrame(const uint8_t *payload, size_t len, float snr, int32_t rssi);
 

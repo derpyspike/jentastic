@@ -592,6 +592,9 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
 #if NEXUS_ENABLE_RNODE
     /** Queue a raw Reticulum RNode frame for transmission on the Reticulum tier. */
     bool queueRNodeFrame(const uint8_t *bytes, size_t len) override;
+    /** Room for `frames` more RNode frames. A split must fit whole or not go at all:
+        half a packet on air is worse than none, and the sender reports it as sent. */
+    bool hasRNodeTxRoom(size_t frames) const { return rnodeTxCount + frames <= RNODE_TX_QUEUE_SIZE; }
     void maybeSendRNodeFrame();
 #endif
 

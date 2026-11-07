@@ -202,9 +202,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // nRF52 only for now: the advertisement lives in the Bluefruit BLE layer.
 // Enable per variant or with ./build-nexus.sh --jentag. NEXUS_ENABLE_AIRTAG is
 // accepted as a compatibility alias for older variant files.
+// The alias honours a value when one is given, so -DNEXUS_ENABLE_AIRTAG=0 opts out
+// rather than silently enabling. Bare -DNEXUS_ENABLE_AIRTAG is 1 to the compiler and
+// still means "on"; the +0 only covers a valueless #define in a variant header.
 #ifndef NEXUS_ENABLE_JENTAG
 #ifdef NEXUS_ENABLE_AIRTAG
-#define NEXUS_ENABLE_JENTAG 1
+#define NEXUS_ENABLE_JENTAG ((NEXUS_ENABLE_AIRTAG + 0) != 0)
 #else
 #define NEXUS_ENABLE_JENTAG 0
 #endif

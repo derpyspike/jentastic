@@ -49,6 +49,8 @@ inline void buildAdvertisement(const uint8_t key[KEY_LEN], uint8_t out[ADVERT_LE
 }
 
 /// BLE random static address derived from the public key, as OpenHaystack does.
+/// Written MSB-first, the order Apple and ESP-IDF's esp_bd_addr_t use. nRF5's
+/// ble_gap_addr_t.addr is LSB-first, so that port must reverse these six bytes.
 inline void deriveAddress(const uint8_t key[KEY_LEN], uint8_t addr[6])
 {
     addr[0] = (uint8_t)(key[0] | 0xC0);

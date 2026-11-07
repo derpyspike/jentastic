@@ -39,6 +39,17 @@ class MicroReticulumEngine
     void loop();
     bool isActive() const { return active; }
 
+    /// Ask the module loop to start the stack on its next tick, bypassing the
+    /// retry throttle once. Without it a restart waits out the whole window.
+    void requestRestart() { restartRequested = true; }
+    /// True once per requestRestart(); clears the request.
+    bool consumeRestartRequest()
+    {
+        const bool r = restartRequested;
+        restartRequested = false;
+        return r;
+    }
+
     /// Radio-thread entry point (RNode frame sink).
     void onRadioFrame(const uint8_t *payload, size_t len, float snr, int32_t rssi);
 
@@ -54,6 +65,10 @@ class MicroReticulumEngine
     void drainRx();
 
     bool active = false;
+    /// Tracks register_interface() separately from `active`: start() can throw
+    /// between the two, and stop() must still deregister what it registered.
+    bool interfaceRegistered = false;
+    bool restartRequested = false;
     RNS::Reticulum *reticulum = nullptr;
     RNS::Interface *loraInterface = nullptr;
     RadioInterface *radioImpl = nullptr;
