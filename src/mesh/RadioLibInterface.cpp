@@ -264,6 +264,12 @@ bool RadioLibInterface::receiveDetected(uint16_t irq, unsigned long syncWordHead
 /// bluetooth comms code.  If the txmit queue is empty it might return an error
 ErrorCode RadioLibInterface::send(meshtastic_MeshPacket *p)
 {
+#if NEXUS_ENABLE_JENWAN
+    if (externalRadioOwner) {
+        packetPool.release(p);
+        return ERRNO_DISABLED;
+    }
+#endif
 
 #ifndef DISABLE_WELCOME_UNSET
 
@@ -378,6 +384,10 @@ bool RadioLibInterface::findInTxQueue(NodeNum from, PacketId id)
 
 void RadioLibInterface::updateNoiseFloor()
 {
+#if NEXUS_ENABLE_JENWAN
+    if (externalRadioOwner)
+        return;
+#endif
     // Only sample from idle receive mode. TX/RX-critical paths must return to radio work quickly.
     if (!isReceiving || isSending()) {
         return;
@@ -1307,6 +1317,10 @@ bool RadioLibInterface::queueRNodeFrame(const uint8_t *bytes, size_t len)
         return false;
     if (disabled || !config.lora.tx_enabled)
         return false;
+#if NEXUS_ENABLE_JENWAN
+    if (externalRadioOwner)
+        return false;
+#endif
     if (rnodeTxCount >= RNODE_TX_QUEUE_SIZE)
         return false;
 
@@ -1321,6 +1335,10 @@ bool RadioLibInterface::queueRNodeFrame(const uint8_t *bytes, size_t len)
 
 void RadioLibInterface::maybeSendRNodeFrame()
 {
+#if NEXUS_ENABLE_JENWAN
+    if (externalRadioOwner)
+        return;
+#endif
     if (rnodeTxCount == 0 || isSending() || !isReceiving || !canSendImmediately())
         return;
     if (isChannelActive()) {
@@ -1728,6 +1746,10 @@ void RadioLibInterface::handleReceiveInterrupt(const CapturedRxInfo *captured)
 
 void RadioLibInterface::startReceive()
 {
+#if NEXUS_ENABLE_JENWAN
+    if (externalRadioOwner)
+        return;
+#endif
 #ifdef MESHTASTIC_RX_READOUT_TASK
     if (!rxReadoutTaskTried)
         startRxReadoutTask();
@@ -1766,8 +1788,60 @@ void RadioLibInterface::startReceive()
 #endif
 }
 
+#if NEXUS_ENABLE_JENWAN
+bool RadioLibInterface::beginExternalRadioUse()
+{
+    if (externalRadioOwner)
+        return false;
+
+    // Let an in-flight TX finish; RX can be safely stood down. A frame arriving now
+    // is lost either way once the chip is handed to LoRaWAN.
+    for (int i = 0; i < 50 && isSending(); i++)
+        delay(10);
+    if (isSending())
+        return false;
+
+    externalRadioOwner = true;
+    {
+        RadioSequence seq(this);
+        disableInterrupt();
+        if (iface) {
+            iface->clearIrq((1UL << RADIOLIB_IRQ_RX_DONE) | (1UL << RADIOLIB_IRQ_CRC_ERR) |
+                            (1UL << RADIOLIB_IRQ_HEADER_VALID) | (1UL << RADIOLIB_IRQ_HEADER_ERR) |
+                            (1UL << RADIOLIB_IRQ_PREAMBLE_DETECTED));
+            iface->standby();
+        }
+    }
+    enabled = false;
+    setInterval(0x7FFFFFFF);
+    return true;
+}
+
+void RadioLibInterface::endExternalRadioUse()
+{
+    if (!externalRadioOwner)
+        return;
+    externalRadioOwner = false;
+    {
+        RadioSequence seq(this);
+        if (iface)
+            iface->clearIrq((1UL << RADIOLIB_IRQ_RX_DONE) | (1UL << RADIOLIB_IRQ_CRC_ERR) |
+                            (1UL << RADIOLIB_IRQ_HEADER_VALID) | (1UL << RADIOLIB_IRQ_HEADER_ERR) |
+                            (1UL << RADIOLIB_IRQ_PREAMBLE_DETECTED));
+    }
+    if (!reconfigure())
+        LOG_ERROR("JenWAN: radio restore failed");
+    enabled = true;
+    setIntervalFromNow(0);
+}
+#endif
+
 void RadioLibInterface::pollMissedIrqs()
 {
+#if NEXUS_ENABLE_JENWAN
+    if (externalRadioOwner)
+        return;
+#endif
     // RadioLibInterface::enableInterrupt uses EDGE-TRIGGERED interrupts. Poll as a backup to catch missed edges.
     // The main loop's flag reads are a sequence too: an LR11x0/LR20x0 status read zeroes RadioLib's per-Module SPI widths
     // for its transfer, so a readout landing inside one would take the chip's status bytes for the frame length.
@@ -1913,6 +1987,10 @@ void RadioLibInterface::checkStaleRxFlags()
 
 void RadioLibInterface::sampleChipState()
 {
+#if NEXUS_ENABLE_JENWAN
+    if (externalRadioOwner)
+        return;
+#endif
     // Internal throttle: NexusModule::runOnce() also fires early on activity
     // (setIntervalFromNow), so keep the effective sample rate at ~1 Hz regardless.
     if (Throttle::isWithinTimespanMs(lastChipStateMs, CHIP_STATE_SAMPLE_INTERVAL_MS))
@@ -1941,6 +2019,10 @@ uint8_t RadioLibInterface::readChipState()
 
 void RadioLibInterface::periodicRadioMaintenance()
 {
+#if NEXUS_ENABLE_JENWAN
+    if (externalRadioOwner)
+        return;
+#endif
     // Every startReceive() call site is event-driven (RX/TX ISR, the CAD-busy branch, reconfigure), and a
     // radio left with RX off can no longer raise an RX interrupt - on a node with nothing to transmit
     // nothing would ever re-arm it. This periodic tick is that retry; maybeRecoverChipStateLoss() throttles.
@@ -2158,6 +2240,10 @@ void RadioLibInterface::readOutFromTask()
     // Never between the RadioLib calls of a sequence on the radio thread: readData() below clears the chip's IRQ
     // flags, and on SX128x drops it to standby, either of which would break a scan, arm or transmit in flight.
     RadioSequence seq(this);
+#if NEXUS_ENABLE_JENWAN
+    if (externalRadioOwner)
+        return;
+#endif
     if (iface->checkIrq(RADIOLIB_IRQ_RX_DONE) != 1) {
         // A CAD handoff's RX that ends without a frame (TIMEOUT, or CRC_ERR / HEADER_ERR on a damaged header) can leave the
         // chip in standby. The radio thread clears the flags and re-arms; cleared here instead, the handoff stays open,

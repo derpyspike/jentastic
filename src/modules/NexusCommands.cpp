@@ -28,6 +28,9 @@
 #if NEXUS_ENABLE_MICRORETICULUM
 #include "mesh/MicroReticulumEngine.h"
 #endif
+#if NEXUS_ENABLE_JENWAN
+#include "mesh/JenWANEngine.h"
+#endif
 #include "mesh/Throttle.h"
 #include "modules/NexusModule.h"
 #include "modules/NexusTxHook.h"
@@ -729,12 +732,29 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
     // Safety: Critical identity commands MUST be targeted or DM
     bool isDM = (mp.to == myNodeInfo.my_node_num);
     bool isSensitive = (strncasecmp(cmd, "NAME ", 5) == 0 || strncasecmp(cmd, "OWNER ", 6) == 0);
+#if NEXUS_ENABLE_JENWAN
+    // LoRaWAN keys must never be broadcast: send JW OTAA/ABP as a DM.
+    isSensitive = isSensitive || strncasecmp(cmd, "JW OTAA ", 8) == 0 || strncasecmp(cmd, "JW ABP ", 7) == 0 ||
+                  strncasecmp(cmd, "LW OTAA ", 8) == 0 || strncasecmp(cmd, "LW ABP ", 7) == 0 ||
+                  strncasecmp(cmd, "JENWAN OTAA ", 12) == 0 || strncasecmp(cmd, "JENWAN ABP ", 11) == 0;
+#endif
 
     if (isSensitive && isBroadcast && !isDM) {
-        LOG_WARN("Nexus: Blocking broadcast NAME/OWNER for safety.");
+        LOG_WARN("Nexus: Blocking broadcast NAME/OWNER/OTAA-ABP for safety.");
         return; // Silent ignore to prevent mass-wiping a network
     }
 
+#if NEXUS_ENABLE_JENWAN
+    if (strcasecmp(cmd, "JW") == 0 || strncasecmp(cmd, "JW ", 3) == 0 || strcasecmp(cmd, "LW") == 0 ||
+        strncasecmp(cmd, "LW ", 3) == 0 || strcasecmp(cmd, "JENWAN") == 0 || strncasecmp(cmd, "JENWAN ", 7) == 0) {
+        const char *args = cmd;
+        while (*args && *args != ' ')
+            args++;
+        while (*args == ' ')
+            args++;
+        jenwan::engine.handleCommand(args, replyMsg, sizeof(replyMsg));
+    } else
+#endif
     if (strncasecmp(cmd, "HOPMASK ", 8) == 0) {
         const char *p = skipToken(cmd);
         if (strcasecmp(p, "OFF") == 0) {
@@ -9517,6 +9537,9 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             appendPaging("SYSTEM: SYS, HW, TELEMETRY, POS, INFO, COMPILATION, VAULT, STATS, SS, VS, HEAP, NODES, FNODE, GROUP, TIME, UTIL, PHONE, PMGT, SMI, GPIO, WIFIOTA, MCUINFO, SENSORS\n");
             appendPaging("TARGETS: FAV, UNFAV, IGNORE, UNIGNORE, NIGN\n");
             appendPaging("STORAGE: LS, RM, CAT, FS\n");
+#if NEXUS_ENABLE_JENWAN
+            appendPaging("LORAWAN (JenWAN): JW ON/OFF, REGION, OTAA/ABP, SOURCE, INTERVAL, UPLINK, DOWNLINK\n");
+#endif
             appendPaging("Try: HELP <topic> (e.g. HELP DROP)");
             snprintf(replyMsg, sizeof(replyMsg), "JT: Paging help categories...");
         } else if (strcasecmp(sub, "DROPS") == 0) {

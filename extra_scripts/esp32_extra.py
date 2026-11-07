@@ -3,13 +3,20 @@
 # trunk-ignore-all(flake8/F821): For SConstruct imports
 # trunk-ignore-all(ruff/E402): Hacky esptool import
 # trunk-ignore-all(flake8/E402): Hacky esptool import
+import os
 import sys
 from os.path import join
 
 Import("env")
 platform = env.PioPlatform()
 
-sys.path.append(join(platform.get_package_dir("tool-esptoolpy")))
+# PlatformIO 6.2 can return None here for a platform installed from a URL even
+# when the uploader package is present. Fall back to the standard packages dir
+# so the post-build merged image still works.
+esptool_dir = platform.get_package_dir("tool-esptoolpy")
+if not esptool_dir:
+    esptool_dir = os.path.expanduser("~/.platformio/packages/tool-esptoolpy")
+sys.path.append(join(esptool_dir))
 # IntelHex workaround, remove after fixed upstream
 # https://github.com/platformio/platform-espressif32/issues/1632
 try:

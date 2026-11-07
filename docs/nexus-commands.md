@@ -29,6 +29,7 @@
 15. [Aliases, Macros, Groups & Automation](#15-aliases-macros-groups--automation)
 16. [Filesystem & System Utilities](#16-filesystem--system-utilities)
 17. [Complete Alphabetical Command Index](#17-complete-alphabetical-command-index)
+18. [JenWAN (LoRaWAN end device)](#18-jenwan-lorawan-end-device)
 
 ---
 
@@ -1129,6 +1130,7 @@ Nexus stores its persistent configuration in an encrypted / versioned flash segm
 | `INVALIDS` / `INV` | §3 Firewall & Filtering | Packet sanity validation drop rules |
 | `JENCORE` / `JC` / `MC` | §7 Radio & RF Control | JenCore interop, repeater & companion bridge |
 | `JRNODE` / `RNODE` / `RN` | §7 Radio & RF Control | Reticulum RNode engine & KISS bridge |
+| `JW` / `LW` / `JENWAN` | §18 JenWAN | LoRaWAN end-device provisioning, telemetry uplinks & downlinks |
 | `LCS` / `LORACHIPSTATS` | §9 Observation & SIGINT | LoRa chip state time percentages |
 | `LNA` | §7 Radio & RF Control | Show LNA gain mode (Heltec V4.3) |
 | `LOAD` | §11 Vault & Persistence | Reload settings from flash vault |
@@ -1236,3 +1238,77 @@ Nexus stores its persistent configuration in an encrypted / versioned flash segm
 | `WIFIOTA` / `OTA` | §13 Hardware & Sensors | ESP32 OTA firmware metadata |
 | `ZH` | §4 Zero-Hop Routing (ZH) | Zero-Hop relay mask & routing state |
 
+
+
+---
+
+## 18. JenWAN (LoRaWAN end device)
+
+JenWAN is compiled only with `NEXUS_ENABLE_JENWAN=1` (`./build-nexus.sh
+--jenwan`, or the `*-jenwan` envs). It is a LoRaWAN Class A end device that
+uplinks Meshtastic telemetry and positions to TTN or another network server.
+Every runtime setting is user-configured and persisted in `/jenwan.bin`; keys
+are never compiled in.
+
+Aliases: `JW`, `LW`, `JENWAN`. Full guide: `docs/jenwan-lorawan.md`.
+
+Send `JW OTAA` / `JW ABP` as a DM or node-targeted command. The dispatcher
+blocks broadcasting key-setting commands so the AppKey/NwkSKey does not reach
+the whole mesh.
+
+### 18.1 Provisioning and activation
+
+| Command | Description |
+|---|---|
+| `JW REGION <EU868\|US915\|EU433\|AU915\|CN470\|AS923\|KR920\|IN865> [SUB n]` | LoRaWAN band plan. `SUB` 1–8 is required for US915/AU915. |
+| `JW OTAA <joinEUI-b64> <devEUI-b64> <appKey-b64> [nwkKey-b64]` | Store OTAA keys. 8/8/16/16 bytes; base64 or hex. For 1.0.x the AppKey is also the NwkKey. |
+| `JW ABP <devAddr4B> <nwkSKey16B> <appSKey16B>` | Store ABP keys. |
+| `JW JOIN` / `JW JOIN CLEAR` | Queue an immediate join window / wipe the session (keeps keys). |
+| `JW ON` / `JW OFF` | Enable or disable the engine. ON alone does not uplink until sources/intervals are set. |
+| `JW STATUS` | Band, join state, sources, intervals, last result, next due, downlink mode, fingerprints. |
+| `JW SAVE` / `JW CLEAR` / `JW RESTART` | Persist now / wipe keys+session / rebuild the node on the next window. |
+
+### 18.2 Uplink sources and timing
+
+| Command | Description |
+|---|---|
+| `JW SOURCE DEVICE\|PWR\|ENV\|POS ON\|OFF` | Enable a telemetry source. `POS` is also the position privacy switch. |
+| `JW INTERVAL <DEVICE\|PWR\|ENV\|POS> <seconds>` | Per-source interval, 60–604800 s; 0 disables. All due sources are coalesced. |
+| `JW PORT <1-223>` | Uplink fPort (default 1). |
+| `JW FORMAT CAYENNE` | CayenneLPP (COMPACT reserved). |
+| `JW CONFIRMED ON\|OFF` | Confirmed uplinks; default OFF (costs airtime). |
+| `JW DUTY ON\|OFF` | Enforce duty cycle; default ON. |
+| `JW ADR ON\|OFF` | Network-controlled data rate; default ON. |
+| `JW UPLINK <port> <hex\|b64:..\|txt:..>` | Manual payload, immediate window. |
+| `JW TELEMETRY` | Queue all enabled sources now. |
+
+### 18.3 Downlinks
+
+| Command | Description |
+|---|---|
+| `JW DOWNLINK OFF` | Ignore application downlinks (default). MAC commands still handled. |
+| `JW DOWNLINK STORE` | Keep the last 4 application downlinks for `JW DOWNLINK`. |
+| `JW DOWNLINK TEXT [CHAN n]` | Inject printable ASCII downlinks as a mesh text on channel `n`. |
+| `JW DOWNLINK` | Show the stored downlinks as hex. |
+
+Class A only: downlinks are received in the RX1/RX2 windows that follow an
+uplink. TTN recommends keeping them rare and small; the practical EU868
+application payload ceiling is 51 bytes, less when MAC commands are included.
+
+### 18.4 Example
+
+```text
+/nexus JW REGION EU868
+/nexus JW OTAA <joinEUI> <devEUI> <appKey>
+/nexus JW ON
+/nexus JW SOURCE DEVICE ON
+/nexus JW INTERVAL DEVICE 900
+/nexus JW SOURCE POS ON
+/nexus JW INTERVAL POS 3600
+/nexus JW DOWNLINK TEXT CHAN 0
+/nexus JW SAVE
+```
+
+Measured flash use (JenWAN enabled): cutretech-esp32s3 63.5%, T1000-E 86.4%,
+X1 94.4%. X1 is the tightest target; SX1262 and LR1110 are the validated
+first targets, LR2021 is experimental.

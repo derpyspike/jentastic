@@ -29,6 +29,9 @@
 #if NEXUS_ENABLE_MICRORETICULUM
 #include "mesh/MicroReticulumEngine.h"
 #endif
+#if NEXUS_ENABLE_JENWAN
+#include "mesh/JenWANEngine.h"
+#endif
 #if NEXUS_ENABLE_JENCORE_SNIFFER
 static_assert(::nexus::jen_core_meta::PATH_BYTES_MAX == JenCoreRepeater::MAX_PATH_SIZE,
               "JenCore display hop ceiling must match the wire path budget");
@@ -399,6 +402,9 @@ void NexusModule::initOnce() {
     // reads it for block/burner decisions and the trace alert.
     jenCoreVault::loadPolicy();
     JenCoreRepeater::setTraceObserver(&NexusModule::jenCoreTraceObserver);
+#endif
+#if NEXUS_ENABLE_JENWAN
+    jenwan::engine.begin();
 #endif
 
 #ifdef STATION_G3
@@ -2839,6 +2845,9 @@ int32_t NexusModule::runOnce() {
         microReticulumEngine.stop();
     }
 #endif
+#if NEXUS_ENABLE_JENWAN
+    jenwan::engine.loop();
+#endif
 
     // 0. Delayed InputBroker Hook (Ensure inputBroker is initialized)
     if (!input_hooked && inputBroker) {
@@ -3104,23 +3113,28 @@ int32_t NexusModule::runOnce() {
         }
 
         if (noise_sample_count < 100) {
-            // Fix: Check busy state AFTER reading to validate sample
-            bool isSending = false;
-            bool isReceiving = false;
-            if (RadioLibInterface::instance) {
-                isSending = RadioLibInterface::instance->isSending();
-                isReceiving = RadioLibInterface::instance->isActivelyReceiving();
-            }
-
-            float instRSSI = RadioLibInterface::instance ? RadioLibInterface::instance->getInstantaneousRSSI() : -1000.0f;
-
-            // Discard sample if radio is busy OR value is a hardware error code
-            if (!isSending && !isReceiving && instRSSI < -5.0f && instRSSI > -160.0f) {
-                noise_samples[noise_sample_count++] = instRSSI;
-                noise_sampling_next = now + 10; // Fast 10ms sampling interval
+            if (RadioLibInterface::instance && RadioLibInterface::instance->isExternalRadioOwned()) {
+                // LoRaWAN window owns the chip: do not read RSSI over SPI.
+                noise_sampling_next = now + 100;
             } else {
-                noise_retry_count++;
-                noise_sampling_next = now + 10; // Fast retry
+                // Fix: Check busy state AFTER reading to validate sample
+                bool isSending = false;
+                bool isReceiving = false;
+                if (RadioLibInterface::instance) {
+                    isSending = RadioLibInterface::instance->isSending();
+                    isReceiving = RadioLibInterface::instance->isActivelyReceiving();
+                }
+
+                float instRSSI = RadioLibInterface::instance ? RadioLibInterface::instance->getInstantaneousRSSI() : -1000.0f;
+
+                // Discard sample if radio is busy OR value is a hardware error code
+                if (!isSending && !isReceiving && instRSSI < -5.0f && instRSSI > -160.0f) {
+                    noise_samples[noise_sample_count++] = instRSSI;
+                    noise_sampling_next = now + 10; // Fast 10ms sampling interval
+                } else {
+                    noise_retry_count++;
+                    noise_sampling_next = now + 10; // Fast retry
+                }
             }
         } else {
             noise_sampling_active = false;
@@ -3148,7 +3162,8 @@ int32_t NexusModule::runOnce() {
             uint16_t curBw = config.lora.bandwidth;
 
             if (RadioLibInterface::instance) {
-                if (RadioLibInterface::instance->isSending()) rState = "TX";
+                if (RadioLibInterface::instance->isExternalRadioOwned()) rState = "LRS";
+                else if (RadioLibInterface::instance->isSending()) rState = "TX";
                 else if (RadioLibInterface::instance->isActivelyReceiving()) rState = "BUSY";
                 else rState = "RX";
             }
@@ -5677,6 +5692,9 @@ bool NexusModule::saveVault()
     delete v;
     if (!saved)
         LOG_ERROR("Nexus: Vault save failed; previous file preserved.");
+#if NEXUS_ENABLE_JENWAN
+    jenwan::engine.save();
+#endif
     return saved;
 }
 

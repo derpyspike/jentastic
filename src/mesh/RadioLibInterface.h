@@ -209,6 +209,11 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     /// has the radio IRQ ever been armed? latches true and is never cleared, so ISR context only reads it
     volatile bool isrEverArmed = false;
 
+#if NEXUS_ENABLE_JENWAN
+    /// JenWAN owns the chip for the duration of a LoRaWAN window.
+    volatile bool externalRadioOwner = false;
+#endif
+
   protected:
     // Noise floor tracking - rolling window of samples.
     static const uint8_t NOISE_FLOOR_SAMPLES = 20;
@@ -267,6 +272,27 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
      * byte is reported (Nexus-269 design, commit 86e833112).
      */
     [[nodiscard]] uint8_t getSyncWord() const { return syncWord; }
+
+#if NEXUS_ENABLE_JENWAN
+    /**
+     * JenWAN hand-off: the LoRaWAN stack needs the raw RadioLib PhysicalLayer.
+     * While the external owner is active the Meshtastic radio worker, ISR and
+     * RX readout task are stopped; call endExternalRadioUse() to reprogram the
+     * chip from the Meshtastic config and resume RX.
+     */
+    PhysicalLayer *getPhysicalLayer() const { return iface; }
+    bool beginExternalRadioUse();
+    void endExternalRadioUse();
+#endif
+    /// True while JenWAN owns the chip (always false when the gate is off).
+    bool isExternalRadioOwned() const
+    {
+#if NEXUS_ENABLE_JENWAN
+        return externalRadioOwner;
+#else
+        return false;
+#endif
+    }
 
     /**
      * Get the current calculated noise floor in dBm

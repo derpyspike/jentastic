@@ -99,6 +99,7 @@ STATSBOT_OVERRIDE=-1
 REPLYBOT_OVERRIDE=-1
 JENTAG_OVERRIDE=-1
 MICRORETICULUM_OVERRIDE=-1
+JENWAN_OVERRIDE=-1
 # FLASH DIET toggles: 0 = explicit off, 1 = explicit on, -1 = default (off).
 # These append compile-time excludes; none are enabled unless the CLI asks.
 DEBUG_LOG_OVERRIDE=-1    # 1 = MESHTASTIC_EXCLUDE_DEBUG_LOG (drop LOG_DEBUG only)
@@ -162,6 +163,10 @@ Options:
                               (-DNEXUS_ENABLE_MICRORETICULUM=1 + RNode). Requires a
                               -mrrns env with the microReticulum library, PSRAM.
   --no-microreticulum         Explicitly keep microReticulum disabled (default).
+  --jenwan                    Enable the native LoRaWAN end-device persona
+                              (-DNEXUS_ENABLE_JENWAN=1, LoRaWAN compiled in).
+                              Configure at runtime with /nexus JW; keys are user-supplied.
+  --no-jenwan                 Explicitly keep JenWAN disabled (default).
   --no-debug-log              Drop LOG_DEBUG format strings only; INFO/WARN/ERROR stay
                               (-DMESHTASTIC_EXCLUDE_DEBUG_LOG=1, ~28 KB on nRF52).
   --debug-log                 Keep LOG_DEBUG (default).
@@ -197,6 +202,7 @@ Examples:
   $0 javi --targets tracker-t1000-e --jencore --rnode   # default-off bridges enabled
   $0 jenny --targets tracker-t1000-e --jentag            # JenTag Find My beacon
   $0 jenny --targets station-g2-mrrns --microreticulum   # native Reticulum transport node
+  $0 jenny --targets cutretech-esp32s3 --jenwan          # LoRaWAN (TTN) telemetry uplinks
   $0 jenny --targets nrf52_promicro_diy_sx1262 --jencore --rnode \
       --no-debug-log --no-emoji --no-beacon             # screen-on nRF52 flash diet
 EOF
@@ -306,6 +312,12 @@ parse_args() {
                 ;;
             --no-microreticulum|--no-mrrns)
                 MICRORETICULUM_OVERRIDE=0
+                ;;
+            --jenwan|--lorawan)
+                JENWAN_OVERRIDE=1
+                ;;
+            --no-jenwan|--no-lorawan)
+                JENWAN_OVERRIDE=0
                 ;;
             --no-debug-log)
                 DEBUG_LOG_OVERRIDE=1
@@ -610,6 +622,12 @@ run_builder() {
     elif [[ "$MICRORETICULUM_OVERRIDE" == "0" ]]; then
         microreticulum_source="CLI --no-microreticulum"
     fi
+    local jenwan_active=0 jenwan_source="default (disabled)"
+    if [[ "$JENWAN_OVERRIDE" == "1" ]]; then
+        jenwan_active=1; jenwan_source="CLI --jenwan"
+    elif [[ "$JENWAN_OVERRIDE" == "0" ]]; then
+        jenwan_source="CLI --no-jenwan"
+    fi
 
     # FLASH DIET: opt-in compile-time excludes (default off; CLI-only)
     local debug_mute=0 debug_log_off=0 inputbroker_off=0 emoji_off=0 beacon_off=0
@@ -664,6 +682,9 @@ run_builder() {
     fi
     if [[ "$microreticulum_active" == "1" ]]; then
         base_flags+=" -DNEXUS_ENABLE_RNODE=1 -DNEXUS_ENABLE_MICRORETICULUM=1"
+    fi
+    if [[ "$jenwan_active" == "1" ]]; then
+        base_flags+=" -DNEXUS_ENABLE_JENWAN=1 -URADIOLIB_EXCLUDE_LORAWAN"
     fi
     if [[ "$debug_mute" == "1" ]]; then
         base_flags+=" -DDEBUG_MUTE=1"
@@ -728,6 +749,11 @@ run_builder() {
         echo "║  MRRNS   : ON  (-DNEXUS_ENABLE_MICRORETICULUM=1) source: $microreticulum_source"
     else
         echo "║  MRRNS   : OFF (disabled by default)      source: $microreticulum_source"
+    fi
+    if [[ "$jenwan_active" == "1" ]]; then
+        echo "║  JENWAN  : ON  (-DNEXUS_ENABLE_JENWAN=1)  source: $jenwan_source"
+    else
+        echo "║  JENWAN  : OFF (disabled by default)      source: $jenwan_source"
     fi
     echo "║  DIET    : $diet_summary"
     if [[ -n "$PIO_EXTRA_TARGET" ]]; then

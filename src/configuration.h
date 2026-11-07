@@ -224,6 +224,17 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #error "NEXUS_ENABLE_MICRORETICULUM requires a PSRAM target"
 #endif
 
+// ===== JenWAN (LoRaWAN end-device persona) master gate =====
+// NEXUS_ENABLE_JENWAN compiles the native LoRaWAN engine, /nexus JW command
+// family, /jenwan.bin vault and CayenneLPP telemetry uplinks in (=1) or out (=0).
+// DEFAULT OFF: enable per variant (-DNEXUS_ENABLE_JENWAN=1 in its build_flags),
+// at build time (PLATFORMIO_BUILD_FLAGS), or via ./build-nexus.sh --jenwan.
+// Everything is opt-in at runtime too: JW ON with nothing configured only joins
+// if credentials exist and never transmits telemetry until sources/intervals are set.
+#ifndef NEXUS_ENABLE_JENWAN
+#define NEXUS_ENABLE_JENWAN 0
+#endif
+
 // ===== Nexus BaseUI weight reduction (DEFAULT OFF) =====
 // Unlike MESHTASTIC_EXCLUDE_SCREEN, these leave the display in place and drop
 // individual feature frames from the legacy BaseUI frame loop. A variant opts
