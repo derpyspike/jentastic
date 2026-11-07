@@ -241,6 +241,25 @@ void hexTail(const uint8_t *data, size_t len, char *out, size_t cap)
     snprintf(out, cap, "%02X%02X", data[len - 2], data[len - 1]);
 }
 
+/// Scope guard for the Meshtastic radio. Acquire on construction, always release on
+/// destruction - a missed endExternalRadioUse() leaves the node permanently deaf.
+class RadioLease
+{
+  public:
+    explicit RadioLease(RadioLibInterface *r) : rli((r && r->beginExternalRadioUse()) ? r : nullptr) {}
+    ~RadioLease()
+    {
+        if (rli)
+            rli->endExternalRadioUse();
+    }
+    RadioLease(const RadioLease &) = delete;
+    RadioLease &operator=(const RadioLease &) = delete;
+    bool ok() const { return rli != nullptr; }
+
+  private:
+    RadioLibInterface *rli;
+};
+
 bool hasKeys(const Config &c)
 {
     if (c.join_mode == (uint8_t)JoinMode::OTAA)
@@ -347,7 +366,9 @@ void Engine::processRequest()
     const bool ok = runWindow(kind, sources, port, len ? data : nullptr, len);
     const uint32_t now = Time::getMillis();
     if (ok) {
-        backoffMs = 60000;
+        // Reset to 0, not to the first rung: leaving 60 s here made the next failure double
+        // it and start the ladder at 2 minutes instead of 1.
+        backoffMs = 0;
         nextAttemptMs = 0;
         if (kind == WindowKind::UPLINK && sources) {
             for (uint8_t s = 0; s < NUM_SOURCES; s++) {
@@ -404,11 +425,37 @@ bool Engine::ensureNode(const Config &local)
     node->setDutyCycle((local.flags & (1u << CFG_DUTY)) != 0);
     node->setADR((local.flags & (1u << CFG_ADR)) != 0);
 
-    // beginOTAA/beginABP clear both buffers, so restore them afterwards.
-    if (local.nonces_len == RADIOLIB_LORAWAN_NONCES_BUF_SIZE)
-        (void)node->setBufferNonces(local.nonces);
-    if (local.session_len == RADIOLIB_LORAWAN_SESSION_BUF_SIZE)
-        (void)node->setBufferSession(local.session);
+    // beginOTAA/beginABP clear both buffers, so restore them afterwards. A rejected restore
+    // must never be silent: RadioLib validates a version, a checksum and the band plan
+    // inside setBufferNonces, and dropping the error leaves DevNonce at 0, which the network
+    // server rejects as a replay for good. The length test is separate from the content
+    // check so a RadioLib upgrade that resizes the buffer is reported rather than ignored.
+    noncesRestored = false;
+    if (local.nonces_len) {
+        if (local.nonces_len != RADIOLIB_LORAWAN_NONCES_BUF_SIZE) {
+            LOG_ERROR("JenWAN: stored nonces are %u bytes, this RadioLib wants %u; DevNonce restarts at 0 "
+                      "and the network will refuse to re-join until its nonce state is reset",
+                      (unsigned)local.nonces_len, (unsigned)RADIOLIB_LORAWAN_NONCES_BUF_SIZE);
+        } else {
+            const int16_t nr = node->setBufferNonces(local.nonces);
+            if (nr != RADIOLIB_ERR_NONE)
+                LOG_ERROR("JenWAN: stored nonces rejected (%d); DevNonce restarts at 0 and the network "
+                          "will refuse to re-join until its nonce state is reset",
+                          (int)nr);
+            else
+                noncesRestored = true;
+        }
+    }
+    if (local.session_len) {
+        if (local.session_len != RADIOLIB_LORAWAN_SESSION_BUF_SIZE) {
+            LOG_WARN("JenWAN: stored session is %u bytes, this RadioLib wants %u; will re-join",
+                     (unsigned)local.session_len, (unsigned)RADIOLIB_LORAWAN_SESSION_BUF_SIZE);
+        } else {
+            const int16_t sr = node->setBufferSession(local.session);
+            if (sr != RADIOLIB_ERR_NONE)
+                LOG_WARN("JenWAN: stored session rejected (%d); will re-join", (int)sr);
+        }
+    }
     activated = node->isActivated();
     return true;
 }
@@ -471,8 +518,10 @@ void Engine::updateSession()
 
 bool Engine::runWindow(WindowKind kind, uint8_t sources, uint8_t port, const uint8_t *data, size_t len)
 {
-    RadioLibInterface *rli = RadioLibInterface::instance;
-    if (!rli || !rli->beginExternalRadioUse()) {
+    // Scoped so the radio is always handed back. Missing a release leaves Meshtastic in
+    // standby with enabled=false and no watchdog to recover it: the node goes deaf.
+    RadioLease lease(RadioLibInterface::instance);
+    if (!lease.ok()) {
         lastState = RADIOLIB_ERR_UNKNOWN;
         return false;
     }
@@ -493,12 +542,22 @@ bool Engine::runWindow(WindowKind kind, uint8_t sources, uint8_t port, const uin
         if (node->isActivated()) {
             uint8_t payload[LPP_MAX_PAYLOAD];
             size_t plen = 0;
+            // Honour the live data rate: RadioLib rejects anything over getMaxPayloadLen()
+            // outright (LoRaWAN.cpp:1289), ADR can park US915/AU915 at DR0 (11 bytes), and
+            // pending MAC commands shrink the budget further on any band.
+            size_t budget = sizeof(payload);
+            const uint8_t drMax = node->getMaxPayloadLen();
+            if (drMax && drMax < budget)
+                budget = drMax;
             if (kind == WindowKind::UPLINK) {
                 if (data && len) {
-                    plen = (len > sizeof(payload)) ? sizeof(payload) : len;
+                    plen = (len > budget) ? budget : len;
+                    if (plen < len)
+                        LOG_WARN("JenWAN: manual uplink truncated %u -> %u by the current DR", (unsigned)len,
+                                 (unsigned)plen);
                     memcpy(payload, data, plen);
                 } else {
-                    plen = encodeSources(sources, payload, sizeof(payload));
+                    plen = encodeSources(sources, payload, budget);
                 }
             }
             if (plen) {
@@ -528,41 +587,45 @@ bool Engine::runWindow(WindowKind kind, uint8_t sources, uint8_t port, const uin
         }
     }
 
-    rli->endExternalRadioUse();
     // Persist whenever the radio actually transmitted, not only on success. A failed join
     // has already burned a DevNonce and a failed uplink may have advanced fcntUp; losing
     // either lets a reboot replay a counter the network server has seen, which it rejects.
+    // Done before the lease is released only because save() does not touch the radio.
     if (ok || touchedAir)
         save();
     return ok;
 }
 
-uint8_t Engine::dueSources(uint32_t nowMs) const
+// Both schedule helpers work from a caller-supplied snapshot rather than reading `cfg`
+// directly: the command thread writes it under cfgLock, so an unlocked read here could see
+// a half-applied change.
+uint8_t Engine::dueSources(const Config &c, uint32_t nowMs) const
 {
     uint8_t due = 0;
     for (uint8_t s = 0; s < NUM_SOURCES; s++) {
-        if (!(cfg.sources & sourceBit(s)))
+        if (!(c.sources & sourceBit(s)))
             continue;
-        if (s == SRC_POS && !(cfg.flags & (1u << CFG_POS)))
+        if (s == SRC_POS && !(c.flags & (1u << CFG_POS)))
             continue;
-        const uint32_t interval = cfg.intervals[s];
+        const uint32_t interval = c.intervals[s];
         if (interval < 60)
             continue;
         if (lastSentMs[s] == 0 || Throttle::hasElapsed(lastSentMs[s], interval * 1000))
             due |= sourceBit(s);
     }
+    (void)nowMs; // elapsed time comes from Throttle, not from the caller's clock
     return due;
 }
 
-uint32_t Engine::nextDueMs(uint32_t nowMs) const
+uint32_t Engine::nextDueMs(const Config &c, uint32_t nowMs) const
 {
     uint32_t best = 0;
     for (uint8_t s = 0; s < NUM_SOURCES; s++) {
-        if (!(cfg.sources & sourceBit(s)))
+        if (!(c.sources & sourceBit(s)))
             continue;
-        if (s == SRC_POS && !(cfg.flags & (1u << CFG_POS)))
+        if (s == SRC_POS && !(c.flags & (1u << CFG_POS)))
             continue;
-        const uint32_t interval = cfg.intervals[s];
+        const uint32_t interval = c.intervals[s];
         if (interval < 60)
             continue;
         const uint32_t due = lastSentMs[s] ? lastSentMs[s] + interval * 1000 : nowMs;
@@ -652,8 +715,6 @@ bool Engine::sendPendingDownlinkText()
 
 void Engine::loop()
 {
-    if (!cfg.enabled)
-        return;
     if (windowActive || windowRequested)
         return;
 
@@ -664,7 +725,14 @@ void Engine::loop()
     if (nextAttemptMs && !Throttle::deadlinePassedAt(now, nextAttemptMs))
         return;
 
-    if (!hasKeys(cfg))
+    // One snapshot for the whole tick, so the enable check, the key check and the schedule
+    // all see the same config even if a JW command lands mid-loop.
+    Config local;
+    {
+        concurrency::LockGuard guard(&cfgLock);
+        local = cfg;
+    }
+    if (!local.enabled || !hasKeys(local))
         return;
 
     if (!activated) {
@@ -672,9 +740,9 @@ void Engine::loop()
         return;
     }
 
-    const uint8_t due = dueSources(now);
+    const uint8_t due = dueSources(local, now);
     if (due)
-        requestWindow(WindowKind::UPLINK, due, cfg.port);
+        requestWindow(WindowKind::UPLINK, due, local.port);
 }
 
 bool Engine::save()
@@ -689,33 +757,46 @@ bool Engine::save()
 
 void Engine::appendStatus(char *reply, size_t cap)
 {
+    Config local;
+    {
+        concurrency::LockGuard guard(&cfgLock);
+        local = cfg;
+    }
+
     const uint32_t now = Time::getMillis();
-    const uint32_t next = nextDueMs(now);
+    const uint32_t next = nextDueMs(local, now);
     const uint32_t ago = lastUplinkMs ? (now - lastUplinkMs) / 1000 : 0;
     char devfp[5] = "----";
-    if (cfg.join_mode == (uint8_t)JoinMode::OTAA)
-        hexTail(cfg.dev_eui, EUI_LEN, devfp, sizeof(devfp));
-    else if (cfg.join_mode == (uint8_t)JoinMode::ABP)
-        hexTail(cfg.dev_addr, 4, devfp, sizeof(devfp));
+    if (local.join_mode == (uint8_t)JoinMode::OTAA)
+        hexTail(local.dev_eui, EUI_LEN, devfp, sizeof(devfp));
+    else if (local.join_mode == (uint8_t)JoinMode::ABP)
+        hexTail(local.dev_addr, 4, devfp, sizeof(devfp));
 
-    const char *mode = cfg.join_mode == (uint8_t)JoinMode::OTAA  ? "OTAA"
-                       : cfg.join_mode == (uint8_t)JoinMode::ABP ? "ABP"
-                                                                 : "none";
-    const char *dl = cfg.downlink == (uint8_t)DownlinkMode::STORE  ? "STORE"
-                     : cfg.downlink == (uint8_t)DownlinkMode::TEXT ? "TEXT"
-                                                                   : "OFF";
+    const char *mode = local.join_mode == (uint8_t)JoinMode::OTAA  ? "OTAA"
+                       : local.join_mode == (uint8_t)JoinMode::ABP ? "ABP"
+                                                                   : "none";
+    const char *dl = local.downlink == (uint8_t)DownlinkMode::STORE  ? "STORE"
+                     : local.downlink == (uint8_t)DownlinkMode::TEXT ? "TEXT"
+                                                                     : "OFF";
+    // A stored-but-unrestorable nonce buffer means joins are about to be rejected; say so
+    // rather than leaving the operator to guess. "held" explains a silent mesh: a LoRaWAN
+    // window owns the radio for several seconds at a time.
+    const char *warn = (local.nonces_len && !noncesRestored) ? " NONCE!" : "";
+    const bool held = RadioLibInterface::instance && RadioLibInterface::instance->isExternalRadioOwned();
 
     snprintf(reply, cap,
-             "JT JW:%s %s SUB%u %s %s dev=%s\n"
+             "JT JW:%s %s SUB%u %s %s dev=%s%s\n"
              "DEV/%lus POS/%lus ENV/%lus PWR/%lus src=%X\n"
-             "last=%s p%u %uB %lus ago next=%lus\n"
+             "last=%s p%u %uB %lus ago next=%lus radio=%s\n"
              "dl=%s ch%u duty=%u adr=%u conf=%u ups=%lu",
-             cfg.enabled ? "ON" : "OFF", bandName((Band)cfg.band), (unsigned)cfg.sub_band, mode, activated ? "joined" : "idle",
-             devfp, (unsigned long)cfg.intervals[SRC_DEVICE], (unsigned long)cfg.intervals[SRC_POS],
-             (unsigned long)cfg.intervals[SRC_ENV], (unsigned long)cfg.intervals[SRC_POWER], (unsigned)cfg.sources,
-             lastState >= 0 ? "OK" : "ERR", (unsigned)lastPort, (unsigned)lastLen, (unsigned long)ago,
-             (unsigned long)(next / 1000), dl, (unsigned)cfg.downlink_chan, (cfg.flags & (1u << CFG_DUTY)) ? 1u : 0u,
-             (cfg.flags & (1u << CFG_ADR)) ? 1u : 0u, (cfg.flags & (1u << CFG_CONFIRMED)) ? 1u : 0u, (unsigned long)uplinkCount);
+             local.enabled ? "ON" : "OFF", bandName((Band)local.band), (unsigned)local.sub_band, mode,
+             activated ? "joined" : "idle", devfp, warn, (unsigned long)local.intervals[SRC_DEVICE],
+             (unsigned long)local.intervals[SRC_POS], (unsigned long)local.intervals[SRC_ENV],
+             (unsigned long)local.intervals[SRC_POWER], (unsigned)local.sources, lastState >= 0 ? "OK" : "ERR",
+             (unsigned)lastPort, (unsigned)lastLen, (unsigned long)ago, (unsigned long)(next / 1000),
+             held ? "held" : "free", dl, (unsigned)local.downlink_chan, (local.flags & (1u << CFG_DUTY)) ? 1u : 0u,
+             (local.flags & (1u << CFG_ADR)) ? 1u : 0u, (local.flags & (1u << CFG_CONFIRMED)) ? 1u : 0u,
+             (unsigned long)uplinkCount);
 }
 
 bool Engine::handleCommand(const char *args, char *reply, size_t cap)
@@ -737,14 +818,23 @@ bool Engine::handleCommand(const char *args, char *reply, size_t cap)
         return true;
     }
 
+    // Every cfg mutation below takes cfgLock: the window task copies the whole struct under
+    // it in runWindow() and writes cfg.nonces/cfg.session under it in updateSession(), so an
+    // unlocked write here can interleave with either.
     if (strcasecmp(sub, "ON") == 0) {
-        cfg.enabled = 1;
+        {
+            concurrency::LockGuard guard(&cfgLock);
+            cfg.enabled = 1;
+        }
         save();
         snprintf(reply, cap, "JT JW: ON. Configure sources with JW SOURCE/INTERVAL.");
         return true;
     }
     if (strcasecmp(sub, "OFF") == 0) {
-        cfg.enabled = 0;
+        {
+            concurrency::LockGuard guard(&cfgLock);
+            cfg.enabled = 0;
+        }
         save();
         snprintf(reply, cap, "JT JW: OFF.");
         return true;
@@ -802,12 +892,26 @@ bool Engine::handleCommand(const char *args, char *reply, size_t cap)
         }
         if (b != Band::US915 && b != Band::AU915)
             subBand = 0;
-        cfg.band = (uint8_t)b;
-        cfg.sub_band = (uint8_t)subBand;
+        {
+            concurrency::LockGuard guard(&cfgLock);
+            cfg.band = (uint8_t)b;
+            cfg.sub_band = (uint8_t)subBand;
+            // Nonces carry the band plan and the session carries the channel masks, so both
+            // are region-specific. Keeping them across a region change makes the restore
+            // either fail or install channel state for the wrong region. Keys are
+            // unaffected, and activated=false already forces the re-join this costs.
+            cfg.nonces_len = 0;
+            cfg.session_len = 0;
+            memset(cfg.nonces, 0, sizeof(cfg.nonces));
+            memset(cfg.session, 0, sizeof(cfg.session));
+        }
         needRestart = true;
         activated = false;
         save();
-        snprintf(reply, cap, "JT JW: region %s%s%u.", bandName(b), subBand ? " SUB " : "", (unsigned)subBand);
+        if (subBand)
+            snprintf(reply, cap, "JT JW: region %s SUB %u (session cleared).", bandName(b), (unsigned)subBand);
+        else
+            snprintf(reply, cap, "JT JW: region %s (session cleared).", bandName(b));
         return true;
     }
     if (strcasecmp(sub, "OTAA") == 0) {
@@ -908,19 +1012,24 @@ bool Engine::handleCommand(const char *args, char *reply, size_t cap)
             snprintf(reply, cap, "JT JW: SOURCE DEV|PWR|ENV|POS ON|OFF");
             return true;
         }
-        if (on)
-            cfg.sources |= sourceBit((uint8_t)src);
-        else
-            cfg.sources &= (uint8_t)~sourceBit((uint8_t)src);
-        if (src == SRC_POS) {
+        uint32_t shownInterval;
+        {
+            concurrency::LockGuard guard(&cfgLock);
             if (on)
-                cfg.flags |= (uint8_t)(1u << CFG_POS);
+                cfg.sources |= sourceBit((uint8_t)src);
             else
-                cfg.flags &= (uint8_t)~(1u << CFG_POS);
+                cfg.sources &= (uint8_t)~sourceBit((uint8_t)src);
+            if (src == SRC_POS) {
+                if (on)
+                    cfg.flags |= (uint8_t)(1u << CFG_POS);
+                else
+                    cfg.flags &= (uint8_t)~(1u << CFG_POS);
+            }
+            shownInterval = cfg.intervals[src];
         }
         save();
         snprintf(reply, cap, "JT JW: %s %s (interval %lus).", sourceName(src), on ? "ON" : "OFF",
-                 (unsigned long)cfg.intervals[src]);
+                 (unsigned long)shownInterval);
         return true;
     }
     if (strcasecmp(sub, "INTERVAL") == 0) {
@@ -932,7 +1041,10 @@ bool Engine::handleCommand(const char *args, char *reply, size_t cap)
             snprintf(reply, cap, "JT JW: INTERVAL <DEV|PWR|ENV|POS> <60..604800|0>");
             return true;
         }
-        cfg.intervals[src] = (uint32_t)sec;
+        {
+            concurrency::LockGuard guard(&cfgLock);
+            cfg.intervals[src] = (uint32_t)sec;
+        }
         save();
         snprintf(reply, cap, "JT JW: %s interval %lus.", sourceName(src), (unsigned long)sec);
         return true;
@@ -944,7 +1056,10 @@ bool Engine::handleCommand(const char *args, char *reply, size_t cap)
             snprintf(reply, cap, "JT JW: PORT 1..223");
             return true;
         }
-        cfg.port = (uint8_t)v;
+        {
+            concurrency::LockGuard guard(&cfgLock);
+            cfg.port = (uint8_t)v;
+        }
         save();
         snprintf(reply, cap, "JT JW: port %d.", v);
         return true;
@@ -955,7 +1070,10 @@ bool Engine::handleCommand(const char *args, char *reply, size_t cap)
             snprintf(reply, cap, "JT JW: FORMAT CAYENNE (COMPACT reserved)");
             return true;
         }
-        cfg.format = (uint8_t)PayloadFormat::CAYENNE;
+        {
+            concurrency::LockGuard guard(&cfgLock);
+            cfg.format = (uint8_t)PayloadFormat::CAYENNE;
+        }
         save();
         snprintf(reply, cap, "JT JW: format CayenneLPP.");
         return true;
@@ -968,10 +1086,13 @@ bool Engine::handleCommand(const char *args, char *reply, size_t cap)
             return true;
         }
         const uint8_t bit = strcasecmp(sub, "CONFIRMED") == 0 ? CFG_CONFIRMED : strcasecmp(sub, "DUTY") == 0 ? CFG_DUTY : CFG_ADR;
-        if (on)
-            cfg.flags |= (uint8_t)(1u << bit);
-        else
-            cfg.flags &= (uint8_t)~(1u << bit);
+        {
+            concurrency::LockGuard guard(&cfgLock);
+            if (on)
+                cfg.flags |= (uint8_t)(1u << bit);
+            else
+                cfg.flags &= (uint8_t)~(1u << bit);
+        }
         needRestart = true;
         save();
         snprintf(reply, cap, "JT JW: %s %s.", sub, on ? "ON" : "OFF");
@@ -1016,8 +1137,11 @@ bool Engine::handleCommand(const char *args, char *reply, size_t cap)
                 return true;
             }
         }
-        cfg.downlink = (uint8_t)mode;
-        cfg.downlink_chan = (uint8_t)ch;
+        {
+            concurrency::LockGuard guard(&cfgLock);
+            cfg.downlink = (uint8_t)mode;
+            cfg.downlink_chan = (uint8_t)ch;
+        }
         save();
         snprintf(reply, cap, "JT JW: downlink %s ch%d.", val, ch);
         return true;
@@ -1053,19 +1177,27 @@ bool Engine::handleCommand(const char *args, char *reply, size_t cap)
         return true;
     }
     if (strcasecmp(sub, "TELEMETRY") == 0) {
-        if (!cfg.enabled) {
+        uint8_t src;
+        uint8_t txPort;
+        bool on;
+        {
+            concurrency::LockGuard guard(&cfgLock);
+            on = cfg.enabled != 0;
+            src = cfg.sources;
+            if (!(cfg.flags & (1u << CFG_POS)))
+                src &= (uint8_t)~sourceBit(SRC_POS);
+            txPort = cfg.port;
+        }
+        if (!on) {
             snprintf(reply, cap, "JT JW: OFF (JW ON first).");
             return true;
         }
-        uint8_t src = cfg.sources;
-        if (!(cfg.flags & (1u << CFG_POS)))
-            src &= (uint8_t)~sourceBit(SRC_POS);
         if (!src) {
             snprintf(reply, cap, "JT JW: no sources enabled.");
             return true;
         }
         snprintf(reply, cap,
-                 requestWindow(WindowKind::UPLINK, src, cfg.port) ? "JT JW: telemetry queued." : "JT JW: window busy.");
+                 requestWindow(WindowKind::UPLINK, src, txPort) ? "JT JW: telemetry queued." : "JT JW: window busy.");
         return true;
     }
 

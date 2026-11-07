@@ -67,6 +67,9 @@ class Engine
     volatile bool taskStarted = false;
     volatile bool activated = false;
     volatile bool needRestart = false;
+    /// False when stored nonces existed but could not be restored into RadioLib. Reported by
+    /// JW STATUS as "nonce!" - the device is heading for rejected joins and should be told.
+    volatile bool noncesRestored = false;
     volatile WindowKind requestKind = WindowKind::NONE;
     uint8_t requestSources = 0;
     uint8_t requestPort = 1;
@@ -97,8 +100,8 @@ class Engine
     bool runWindow(WindowKind kind, uint8_t sources, uint8_t port, const uint8_t *data, size_t len);
     void processRequest();
     bool requestWindow(WindowKind kind, uint8_t sources = 0, uint8_t port = 1, const uint8_t *data = nullptr, size_t len = 0);
-    uint8_t dueSources(uint32_t nowMs) const;
-    uint32_t nextDueMs(uint32_t nowMs) const;
+    uint8_t dueSources(const Config &c, uint32_t nowMs) const;
+    uint32_t nextDueMs(const Config &c, uint32_t nowMs) const;
     void handleDownlink(const uint8_t *data, size_t len);
     bool sendPendingDownlinkText();
     void appendStatus(char *reply, size_t cap);

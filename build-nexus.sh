@@ -783,6 +783,32 @@ run_builder() {
     fi
     echo "╚══════════════════════════════════════════════════════════════════"
 
+    # microReticulum needs three lib_deps (microReticulum, microStore, Crypto) and a set of
+    # RNS_*/USTORE_* defines that only the per-variant -mrrns envs declare. The CLI can pass
+    # defines via PLATFORMIO_BUILD_FLAGS but cannot add lib_deps, so --microreticulum on a
+    # target whose env does not already provide them fails ~9 minutes in on a missing
+    # microReticulum.h. Say so up front instead.
+    if [[ "$microreticulum_active" == "1" ]]; then
+        for target in $targets; do
+            # Only the [env:<target>] section counts, not the whole file: a variant's base env
+            # and its -mrrns env live in the same platformio.ini, so a file-wide grep always
+            # matches and would never catch this.
+            local env_block
+            env_block="$(find variants -name platformio.ini -print0 2>/dev/null \
+                | xargs -0 -r awk -v want="[env:${target}]" '
+                    $0 == want { inblock = 1; next }
+                    /^\[/      { inblock = 0 }
+                    inblock    { print }')"
+            if ! grep -q "attermann/microReticulum" <<<"$env_block"; then
+                echo "ERROR: --microreticulum needs an env that declares the microReticulum libraries." >&2
+                echo "       [env:${target}] does not. Build its -mrrns env instead, e.g.:" >&2
+                echo "         ./bin/build-firmware.sh ${target}-mrrns" >&2
+                echo "       (PLATFORMIO_BUILD_FLAGS can carry -D flags but cannot add lib_deps.)" >&2
+                exit 1
+            fi
+        done
+    fi
+
     for target in $targets; do
         build_one "$builder_name" "$app_repo" "$target" "$full_flags" "$PIO_EXTRA_TARGET"
     done
