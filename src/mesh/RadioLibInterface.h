@@ -179,7 +179,7 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     /** JenCore's sync word (RADIOLIB_SX126X_SYNC_WORD_PRIVATE), used to transmit relayed JenCore frames. */
     const uint8_t jencoreSyncWord = 0x12;
 
-#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+#if NEXUS_ENABLE_HYBRID_SYNC
     bool hybridSyncEnabled = true;
 #endif
 

@@ -683,7 +683,7 @@ template <typename T> void SX126xInterface<T>::configHardwareForSend()
     rearmState = REARM_NONE; // only this TX's TX_DONE may re-arm, never a stale one from a TX the poll completed
     rxArmedBeforeTxDone = false;
 #endif
-#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+#if NEXUS_ENABLE_HYBRID_SYNC
     // Use the packet's own sync word: JenCore frames go out with 0x12, Meshtastic with our normal sync word (0x2B or override).
     int err = lora.setSyncWord(isRawSending() ? jencoreSyncWord : syncWord);
     if (err != RADIOLIB_ERR_NONE)
@@ -710,7 +710,7 @@ template <typename T> void SX126xInterface<T>::configHardwareForSend()
     RadioLibInterface::configHardwareForSend();
 }
 
-#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+#if NEXUS_ENABLE_HYBRID_SYNC
 template <typename T> void SX126xInterface<T>::setSyncWordRegister(uint16_t registerValue)
 {
     // RadioLib packs (syncWord, controlBits) nibble-wise into the register: MSB = sw.hi|cb.hi, LSB = sw.lo|cb.lo
@@ -729,7 +729,7 @@ template <typename T> void SX126xInterface<T>::setSyncWordRegister(uint16_t regi
 
 template <typename T> void SX126xInterface<T>::applyReceiveConfig()
 {
-#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+#if NEXUS_ENABLE_HYBRID_SYNC
     if (this->hybridSyncEnabled) {
         setSyncWordRegister(NEXUS_JENCORE_RX_SYNCWORD);
     } else {
@@ -744,13 +744,25 @@ template <typename T> void SX126xInterface<T>::applyReceiveConfig()
     }
 #endif
 #if NEXUS_ENABLE_RNODE
-    if (rnodeEngine.isRadioExclusive()) {
+    if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
         lora.setSyncWord(0x12);
         lora.setSpreadingFactor(rnodeEngine.getSf());
         rnodeRadioDirty = false;
         rnodeWasStandalone = true;
+    } else if (rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM) {
+        // Hybrid RX (0x14B4) hears both RNode 0x12 and Meshtastic 0x2B; keep
+        // it when compiled in, otherwise the RNode word is the only one heard.
+#if NEXUS_ENABLE_HYBRID_SYNC
+        if (!this->hybridSyncEnabled)
+            lora.setSyncWord(0x12);
+#else
+        lora.setSyncWord(0x12);
+#endif
+        lora.setSpreadingFactor(rnodeEngine.getSf());
+        rnodeRadioDirty = false;
+        rnodeWasStandalone = true; // restore the main config when leaving micro
     } else if (rnodeRadioDirty || rnodeWasStandalone) {
-#if !NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+#if !NEXUS_ENABLE_HYBRID_SYNC
         lora.setSyncWord(this->syncWord);
 #endif
         lora.setSpreadingFactor(this->sf);

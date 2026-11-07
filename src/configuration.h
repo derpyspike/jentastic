@@ -190,6 +190,14 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #error "NEXUS_ENABLE_JENCORE_HYBRID_SYNC requires NEXUS_ENABLE_JENCORE_SNIFFER"
 #endif
 
+// Hybrid RX syncword for microReticulum without compiling the full JenCore
+// bridge. The radio hears both RNode 0x12 and Meshtastic 0x2B on the hybrid
+// word; the RNode sink classifies frames, so Meshtastic traffic can continue.
+#ifndef NEXUS_ENABLE_RNS_HYBRID_SYNC
+#define NEXUS_ENABLE_RNS_HYBRID_SYNC 0
+#endif
+#define NEXUS_ENABLE_HYBRID_SYNC (NEXUS_ENABLE_JENCORE_HYBRID_SYNC || NEXUS_ENABLE_RNS_HYBRID_SYNC)
+
 // ===== JenTag (OpenHaystack-compatible Find My beacon) =====
 // nRF52 only for now: the advertisement lives in the Bluefruit BLE layer.
 // Enable per variant or with ./build-nexus.sh --jentag. NEXUS_ENABLE_AIRTAG is

@@ -819,7 +819,9 @@ template <typename T> int16_t LR20x0Interface<T>::setSpreadingFactorLive(uint8_t
 
         bool sideDetectorsUsable = !meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0;
 #if NEXUS_ENABLE_RNODE
-        sideDetectorsUsable = sideDetectorsUsable && (!rnodeEngine.isRadioExclusive());
+        // Micro mode deliberately keeps the side table: an LR2021 RNode tier
+        // is the receiver for the native Reticulum stack.
+        sideDetectorsUsable = sideDetectorsUsable && (rnodeEngine.getMode() != RNODE_MODE_STANDALONE);
 #endif
         if (sideDetectorsUsable)
             static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
@@ -1012,11 +1014,19 @@ template <typename T> void LR20x0Interface<T>::applyReceiveConfig()
     if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
         lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent. Not sure why this is needed.
 #if NEXUS_ENABLE_RNODE
-        if (rnodeEngine.isRadioExclusive()) {
+        if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
             lora.setSyncWord(0x12);
             lora.setSpreadingFactor(rnodeEngine.getSf());
             rnodeRadioDirty = false;
             rnodeWasStandalone = true;
+        } else if (rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM) {
+            // Keep the LR2021 TIER main detector for Meshtastic and re-arm the
+            // stored table (including the RNode side detector) after a raw TX.
+            lora.setSyncWord(effectiveMainSyncword());
+            lora.setSpreadingFactor(this->sf);
+            rnodeRadioDirty = false;
+            rnodeWasStandalone = false;
+            static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
         } else if (rnodeRadioDirty || rnodeWasStandalone) {
             lora.setSyncWord(effectiveMainSyncword());
             lora.setSpreadingFactor(this->sf);

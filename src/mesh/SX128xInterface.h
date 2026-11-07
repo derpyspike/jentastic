@@ -114,7 +114,7 @@ template <class T> class SX128xInterface : public RadioLibInterface
     void applyCadDetPeak();
 
   private:
-#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+#if NEXUS_ENABLE_HYBRID_SYNC
     /** Write a raw 16-bit value into the LoRa sync word register (e.g. 0x14B4 hybrid). */
     void setSyncWordRegister(uint16_t registerValue);
 #endif

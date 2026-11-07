@@ -548,7 +548,7 @@ template <typename T> void SX128xInterface<T>::configHardwareForSend()
 #endif
 #endif
 
-#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+#if NEXUS_ENABLE_HYBRID_SYNC
     if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
         // TX uses the frame's protocol syncword; RX uses the 0x14B4 hybrid.
         int16_t syncErr = lora.setSyncWord(isRawSending() ? jencoreSyncWord : syncWord);
@@ -580,7 +580,7 @@ template <typename T> void SX128xInterface<T>::configHardwareForSend()
 // For power draw measurements, helpful to force radio to stay sleeping
 // #define SLEEP_ONLY
 
-#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+#if NEXUS_ENABLE_HYBRID_SYNC
 template <typename T> void SX128xInterface<T>::setSyncWordRegister(uint16_t registerValue)
 {
     const uint8_t msb = registerValue >> 8;
@@ -621,7 +621,7 @@ template <typename T> void SX128xInterface<T>::startReceive()
         if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
             (void)lora.variablePacketLengthMode(maxFrameLen());
         } else {
-#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+#if NEXUS_ENABLE_HYBRID_SYNC
             if (this->hybridSyncEnabled) {
                 setSyncWordRegister(NEXUS_JENCORE_RX_SYNCWORD);
             } else {
@@ -635,13 +635,23 @@ template <typename T> void SX128xInterface<T>::startReceive()
             }
 #endif
 #if NEXUS_ENABLE_RNODE
-            if (rnodeEngine.isRadioExclusive()) {
+            if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
                 lora.setSyncWord(0x12);
                 lora.setSpreadingFactor(rnodeEngine.getSf());
                 rnodeRadioDirty = false;
                 rnodeWasStandalone = true;
+            } else if (rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM) {
+#if NEXUS_ENABLE_HYBRID_SYNC
+                if (!this->hybridSyncEnabled)
+                    lora.setSyncWord(0x12);
+#else
+                lora.setSyncWord(0x12);
+#endif
+                lora.setSpreadingFactor(rnodeEngine.getSf());
+                rnodeRadioDirty = false;
+                rnodeWasStandalone = true;
             } else if (rnodeRadioDirty || rnodeWasStandalone) {
-#if !NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+#if !NEXUS_ENABLE_HYBRID_SYNC
                 lora.setSyncWord(this->syncWord);
 #endif
                 lora.setSpreadingFactor(this->sf);
@@ -659,7 +669,7 @@ template <typename T> void SX128xInterface<T>::startReceive()
             if (meshtastic::nexusModule && meshtastic::nexusModule->altModem.mode != 0) {
                 (void)lora.variablePacketLengthMode(maxFrameLen());
             } else {
-#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+#if NEXUS_ENABLE_HYBRID_SYNC
                 if (this->hybridSyncEnabled)
                     setSyncWordRegister(NEXUS_JENCORE_RX_SYNCWORD);
                 else

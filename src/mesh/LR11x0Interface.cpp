@@ -655,7 +655,7 @@ template <typename T> void LR11x0Interface<T>::configHardwareForSend()
     rearmState = REARM_NONE; // only this TX's TX_DONE may re-arm, never a stale one from a TX the poll completed
     rxArmedBeforeTxDone = false;
 #endif
-#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+#if NEXUS_ENABLE_HYBRID_SYNC
     // RX parks on the hybrid word; each TX goes out with its own protocol's word (JenCore/RNode 0x12,
     // Meshtastic 0x2B or the operator override). Skipped in the alt modem: the chip is on GFSK.
     if (hybridSyncEnabled && (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0))
@@ -686,7 +686,7 @@ template <typename T> void LR11x0Interface<T>::configHardwareForSend()
 
 template <typename T> void LR11x0Interface<T>::applyMainSyncWord()
 {
-#if NEXUS_ENABLE_JENCORE_HYBRID_SYNC
+#if NEXUS_ENABLE_HYBRID_SYNC
     // 0x1B hears both Meshtastic 0x2B and JenCore/MeshCore 0x12 on this SF. It is the same hybrid
     // word the SX126x programs as register 0x14B4, just written as the single byte this chip takes.
     const uint8_t word = hybridSyncEnabled ? NEXUS_JENCORE_RX_SYNCWORD_BYTE : this->syncWord;
@@ -703,8 +703,21 @@ template <typename T> void LR11x0Interface<T>::applyReceiveConfig()
     if (!meshtastic::nexusModule || meshtastic::nexusModule->altModem.mode == 0) {
         lora.setPreambleLength(preambleLength); // Solve RX ack fail after direct message sent. Not sure why this is needed.
 #if NEXUS_ENABLE_RNODE
-        if (rnodeEngine.isRadioExclusive()) {
+        if (rnodeEngine.getMode() == RNODE_MODE_STANDALONE) {
             lora.setSyncWord(jencoreSyncWord);
+            lora.setSpreadingFactor(rnodeEngine.getSf());
+            rnodeRadioDirty = false;
+            rnodeWasStandalone = true;
+        } else if (rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM) {
+            // Hybrid RX (0x1B) hears both RNode 0x12 and Meshtastic 0x2B.
+#if NEXUS_ENABLE_HYBRID_SYNC
+            if (this->hybridSyncEnabled)
+                applyMainSyncWord();
+            else
+                lora.setSyncWord(jencoreSyncWord);
+#else
+            lora.setSyncWord(jencoreSyncWord);
+#endif
             lora.setSpreadingFactor(rnodeEngine.getSf());
             rnodeRadioDirty = false;
             rnodeWasStandalone = true;

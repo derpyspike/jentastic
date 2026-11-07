@@ -3123,25 +3123,67 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
     else if (strcasecmp(cmd, "RNS") == 0 || strncasecmp(cmd, "RNS ", 4) == 0) {
         const char *sub = skipToken(cmd);
         if (!*sub || strcasecmp(sub, "STATUS") == 0) {
+            const char *hybrid = "N/A";
+#if NEXUS_ENABLE_HYBRID_SYNC
+            RadioLibInterface *rli = static_cast<RadioLibInterface *>(RadioLibInterface::instance);
+            hybrid = (rli && rli->hybridSyncEnabled) ? "ON" : "OFF";
+#endif
             if (microReticulumEngine.isActive())
-                snprintf(replyMsg, sizeof(replyMsg), "JT RNS: ON role=transport rx=%u tx=%u drop=%u",
+                snprintf(replyMsg, sizeof(replyMsg), "JT RNS: ON role=transport rx=%u tx=%u drop=%u hybrid=%s",
                          (unsigned)microReticulumEngine.rxPackets, (unsigned)microReticulumEngine.txPackets,
-                         (unsigned)microReticulumEngine.dropped);
+                         (unsigned)microReticulumEngine.dropped, hybrid);
             else
-                snprintf(replyMsg, sizeof(replyMsg), "JT RNS: OFF (mode=%s)",
-                         rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM ? "requested" : "off");
+                snprintf(replyMsg, sizeof(replyMsg), "JT RNS: OFF (mode=%s) hybrid=%s",
+                         rnodeEngine.getMode() == RNODE_MODE_MICRORETICULUM ? "requested" : "off", hybrid);
         } else if (strcasecmp(sub, "ON") == 0) {
             rnodeEngine.setMode(RNODE_MODE_MICRORETICULUM);
             rnodeEngine.setSf(config.lora.spread_factor);
-            snprintf(replyMsg, sizeof(replyMsg), "JT RNS: MICRORETICULUM requested (save with /nexus SAVE)");
+#if (defined(USE_LR2021) || defined(ARCH_PORTDUINO)) && !RADIOLIB_EXCLUDE_LR2021
+            bool hasRnodeTier = multiSFConfig.enabled &&
+                                nexus::tierCarriesProtocol(multiSFConfig.main_protocol, nexus::TIER_RNODE);
+            if (!hasRnodeTier) {
+                for (uint8_t i = 0; i < multiSFConfig.side_count; ++i) {
+                    if (multiSFConfig.side[i].enabled &&
+                        nexus::tierCarriesProtocol(multiSFConfig.side[i].protocol, nexus::TIER_RNODE)) {
+                        hasRnodeTier = true;
+                        break;
+                    }
+                }
+            }
+            if (!hasRnodeTier)
+                snprintf(replyMsg, sizeof(replyMsg),
+                         "JT RNS: LR2021 needs a TIER RNODE side (TIER SIDE <n> <sf> RNODE 0x12)");
+            else
+#endif
+                snprintf(replyMsg, sizeof(replyMsg), "JT RNS: MICRORETICULUM requested (save with /nexus SAVE)");
         } else if (strcasecmp(sub, "OFF") == 0) {
             rnodeEngine.setMode(RNODE_MODE_OFF);
             snprintf(replyMsg, sizeof(replyMsg), "JT RNS: OFF");
         } else if (strcasecmp(sub, "RESTART") == 0) {
             microReticulumEngine.stop();
             snprintf(replyMsg, sizeof(replyMsg), "JT RNS: restarting native stack");
+#if NEXUS_ENABLE_HYBRID_SYNC
+        } else if (strcasecmp(sub, "HYBRID ON") == 0 || strcasecmp(sub, "HYBRID OFF") == 0) {
+            RadioLibInterface *rli = static_cast<RadioLibInterface *>(RadioLibInterface::instance);
+            if (!rli) {
+                snprintf(replyMsg, sizeof(replyMsg), "JT RNS: radio interface unavailable");
+            } else {
+                rli->hybridSyncEnabled = (strcasecmp(sub, "HYBRID ON") == 0);
+                snprintf(replyMsg, sizeof(replyMsg), "JT RNS: hybrid RX %s (applies on next arm)",
+                         rli->hybridSyncEnabled ? "ON" : "OFF");
+            }
+#else
+        } else if (strcasecmp(sub, "HYBRID ON") == 0 || strcasecmp(sub, "HYBRID OFF") == 0) {
+            snprintf(replyMsg, sizeof(replyMsg), "JT RNS: hybrid syncword not compiled in");
+#endif
         } else {
-            snprintf(replyMsg, sizeof(replyMsg), "JT RNS: usage: RNS ON|OFF|STATUS|RESTART");
+            snprintf(replyMsg, sizeof(replyMsg), "JT RNS: usage: RNS ON|OFF|STATUS|RESTART%s",
+#if NEXUS_ENABLE_HYBRID_SYNC
+                     "|HYBRID ON|HYBRID OFF"
+#else
+                     ""
+#endif
+            );
         }
     }
 #endif

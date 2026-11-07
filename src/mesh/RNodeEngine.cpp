@@ -302,6 +302,12 @@ bool RNodeEngine::handleReceivedRadioPacket(const uint8_t *raw, size_t len, floa
     if (!raw || len == 0 || mode == RNODE_MODE_OFF || radio_state == RNODE_RADIO_STATE_OFF)
         return false;
 
+    // Hybrid RX sees Meshtastic 0x2B as well as RNode 0x12. Only hand
+    // Reticulum-looking frames to the native stack; the rest must continue to
+    // the Meshtastic router.
+    if (mode == RNODE_MODE_MICRORETICULUM && !looksLikeReticulumPacket(raw, len))
+        return false;
+
     if (mode == RNODE_MODE_BRIDGE) {
         if ((!tcpConnected && !bleConnected) || !looksLikeReticulumPacket(raw, len)) {
             return false;
