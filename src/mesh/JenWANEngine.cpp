@@ -441,10 +441,13 @@ bool Engine::doJoin(const Config &local)
 
     lastState = st;
     activated = node->isActivated();
-    if (activated || st == RADIOLIB_LORAWAN_NEW_SESSION || st == RADIOLIB_LORAWAN_SESSION_RESTORED) {
-        updateSession();
+    // RadioLib increments DevNonce when the Join-Request is *sent*, not when a Join-Accept
+    // arrives, so a failed join has already consumed one on air. Capture it either way: if
+    // it never reaches flash, a reboot replays a DevNonce the network server has seen and
+    // every future join is rejected as a replay.
+    updateSession();
+    if (activated || st == RADIOLIB_LORAWAN_NEW_SESSION || st == RADIOLIB_LORAWAN_SESSION_RESTORED)
         return true;
-    }
     LOG_WARN("JenWAN: join failed (%d)", (int)st);
     return false;
 }
@@ -481,12 +484,11 @@ bool Engine::runWindow(WindowKind kind, uint8_t sources, uint8_t port, const uin
     }
 
     bool ok = false;
+    bool touchedAir = false;
     if (ensureNode(local)) {
         if (!node->isActivated()) {
-            if (!doJoin(local)) {
-                rli->endExternalRadioUse();
-                return false;
-            }
+            touchedAir = true; // a Join-Request goes out even when no Join-Accept comes back
+            (void)doJoin(local);
         }
         if (node->isActivated()) {
             uint8_t payload[LPP_MAX_PAYLOAD];
@@ -507,6 +509,7 @@ bool Engine::runWindow(WindowKind kind, uint8_t sources, uint8_t port, const uin
                 lastState = st;
                 lastPort = port;
                 lastLen = (uint8_t)plen;
+                touchedAir = true; // fcntUp advances on transmit, even if the RX windows fail
                 if (st >= 0) {
                     ok = true;
                     lastUplinkMs = Time::getMillis();
@@ -515,6 +518,8 @@ bool Engine::runWindow(WindowKind kind, uint8_t sources, uint8_t port, const uin
                         handleDownlink(down, downLen);
                     updateSession();
                 } else {
+                    // The frame may still have gone out; capture the counters either way.
+                    updateSession();
                     LOG_WARN("JenWAN: uplink failed (%d)", (int)st);
                 }
             } else if (kind == WindowKind::JOIN) {
@@ -524,7 +529,10 @@ bool Engine::runWindow(WindowKind kind, uint8_t sources, uint8_t port, const uin
     }
 
     rli->endExternalRadioUse();
-    if (ok)
+    // Persist whenever the radio actually transmitted, not only on success. A failed join
+    // has already burned a DevNonce and a failed uplink may have advanced fcntUp; losing
+    // either lets a reboot replay a counter the network server has seen, which it rejects.
+    if (ok || touchedAir)
         save();
     return ok;
 }

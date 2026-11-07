@@ -841,6 +841,13 @@ bool RadioLibInterface::removePendingTXPacket(NodeNum from, PacketId id, uint32_
 
 bool RadioLibInterface::sendRawFrame(const uint8_t *bytes, size_t len)
 {
+#if NEXUS_ENABLE_JENWAN
+    // An external owner (JenWAN) has the modem programmed for LoRaWAN and is inside a join
+    // or RX window. Transmitting here would collide on SPI and clobber that window. Guarded
+    // at this chokepoint so every raw sender inherits it, not just the ones known today.
+    if (externalRadioOwner)
+        return false;
+#endif
     // Must not collide with the normal packet TX path or an in-flight raw frame. Listen-before-talk
     // is the caller's job (see maybeSendJenCoreFrame), which leaves the radio in standby.
     if (len == 0 || len > sizeof(rawTxBuf) || isSending()) {
@@ -920,6 +927,15 @@ bool RadioLibInterface::queueJenCoreFrame(const uint8_t *bytes, size_t len)
 #if NEXUS_ENABLE_JENCORE_COMPANION
     if (!JenCoreRepeater::isJenCoreEnabled() || !bytes || len == 0 || len > JenCoreRepeater::MAX_FRAME_LEN)
         return false;
+
+#if NEXUS_ENABLE_JENWAN
+    // Refuse at admission while JenWAN holds the radio, rather than queueing a frame the
+    // relay tick will retry on every pass for the length of the LoRaWAN window.
+    if (externalRadioOwner) {
+        LOG_WARN("JenCore TX refused: the radio is held by JenWAN");
+        return false;
+    }
+#endif
 
     if (!jencoreTxAllowed()) {
         LOG_WARN("JenCore TX refused: tx disabled or duty cycle exceeded");

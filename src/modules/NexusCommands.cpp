@@ -501,6 +501,31 @@ static void sendNexusStatusMessage(const char *text, uint8_t channel = 0)
     service->sendToMesh(p);
 }
 
+#if NEXUS_ENABLE_JENWAN
+// True for "<JW|LW|JENWAN> <OTAA|ABP> ...", the forms that carry LoRaWAN root keys.
+// Classified on parsed tokens rather than a raw byte prefix on purpose: the executor
+// below skips arbitrary whitespace, so a prefix test would pass "JW  OTAA <keys>"
+// (two spaces) through as non-sensitive and broadcast the AppKey in the clear.
+static bool isJenWanKeyCommand(const char *cmd)
+{
+    if (!cmd)
+        return false;
+    const char *p = cmd;
+    while (*p == ' ')
+        p++;
+    const size_t verb = strcspn(p, " ");
+    const bool isJenWan = (verb == 2 && (strncasecmp(p, "JW", 2) == 0 || strncasecmp(p, "LW", 2) == 0)) ||
+                          (verb == 6 && strncasecmp(p, "JENWAN", 6) == 0);
+    if (!isJenWan)
+        return false;
+    p += verb;
+    while (*p == ' ')
+        p++;
+    const size_t sub = strcspn(p, " ");
+    return (sub == 4 && strncasecmp(p, "OTAA", 4) == 0) || (sub == 3 && strncasecmp(p, "ABP", 3) == 0);
+}
+#endif
+
 // === END FILE-SCOPE HELPERS ===
 
 // === BEGIN handleNexusCommand (from NexusModule.cpp:1651-8873) ===
@@ -734,9 +759,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
     bool isSensitive = (strncasecmp(cmd, "NAME ", 5) == 0 || strncasecmp(cmd, "OWNER ", 6) == 0);
 #if NEXUS_ENABLE_JENWAN
     // LoRaWAN keys must never be broadcast: send JW OTAA/ABP as a DM.
-    isSensitive = isSensitive || strncasecmp(cmd, "JW OTAA ", 8) == 0 || strncasecmp(cmd, "JW ABP ", 7) == 0 ||
-                  strncasecmp(cmd, "LW OTAA ", 8) == 0 || strncasecmp(cmd, "LW ABP ", 7) == 0 ||
-                  strncasecmp(cmd, "JENWAN OTAA ", 12) == 0 || strncasecmp(cmd, "JENWAN ABP ", 11) == 0;
+    isSensitive = isSensitive || isJenWanKeyCommand(cmd);
 #endif
 
     if (isSensitive && isBroadcast && !isDM) {
