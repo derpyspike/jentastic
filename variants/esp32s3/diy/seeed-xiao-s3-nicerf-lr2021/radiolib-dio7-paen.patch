@@ -1,0 +1,23 @@
+RadioLib LR2021: DIO7 as static PA enable (NiceRF LoRa2021F33-2G4)
+==================================================================
+
+The NiceRF vendor demo configures DIO7 as FUNC_GPIO_HIGH + pull-up
+("2.4G VCC PAEN"), while RadioLib's setRfSwitchTable() only programs it
+as an RF-switch output. Apply this patch to
+.pio/libdeps/<env>/RadioLib/src/modules/LR2021/LR2021_config.cpp and
+build with -D LR2021_DIO7_PAEN_ALWAYS_HIGH.
+
+--- a/src/modules/LR2021/LR2021_config.cpp
++++ b/src/modules/LR2021/LR2021_config.cpp
+@@
+     // enable RF control for this pin and set the modes in which it is active
+     (void)this->setDioFunction(dioNum + 5, RADIOLIB_LR2021_DIO_FUNCTION_RF_SWITCH, pull);
+     (void)this->setDioRfSwitchConfig(dioNum + 5, dioConfigs[dioNum]);
+   }
++
++#ifdef LR2021_DIO7_PAEN_ALWAYS_HIGH
++  // NiceRF LoRa2021F33-2G4: DIO7 is the 2.4 GHz PA VCC enable. The vendor demo
++  // drives it as a static high GPIO with pull-up, not as an RF-switch output.
++  (void)this->setDioFunction(7, RADIOLIB_LR2021_DIO_FUNCTION_GPIO_OUTPUT_HIGH, RADIOLIB_LR2021_DIO_SLEEP_PULL_UP);
++#endif
+ }
