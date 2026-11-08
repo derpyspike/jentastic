@@ -502,12 +502,24 @@ static void sendNexusStatusMessage(const char *text, uint8_t channel = 0)
 }
 
 #if NEXUS_ENABLE_JENWAN
+// Length of the run of non-whitespace bytes starting at p, by the same isspace()
+// definition JenWAN's own nextToken() tokenizes on (JenWANEngine.cpp). Deliberately not
+// strcspn() with a hand-picked separator set: that was tried twice (once for a run of
+// spaces, once extended to "\t\r\n") and still drifted from isspace(), which also treats
+// \v and \f as whitespace - leaving "JW OTAA\v<keys>" able to execute while classifying
+// as non-sensitive. Matching the real tokenizer's predicate directly cannot drift again.
+static size_t tokenLen(const char *p)
+{
+    size_t n = 0;
+    while (p[n] && !isspace((unsigned char)p[n]))
+        n++;
+    return n;
+}
+
 // True for "<JW|LW|JENWAN> <OTAA|ABP> ...", the forms that carry LoRaWAN root keys.
 // Classified on parsed tokens rather than a raw byte prefix on purpose: the executor
-// below skips arbitrary whitespace, so a prefix test would pass "JW  OTAA <keys>"
-// (two spaces) through as non-sensitive and broadcast the AppKey in the clear. The
-// tokenizer also treats tabs/CR/LF as separators, so this must too - otherwise
-// "JW OTAA\t<keys>" executes while testing as non-sensitive.
+// below tokenizes on arbitrary whitespace, so a prefix test would pass "JW  OTAA <keys>"
+// (extra separator) through as non-sensitive and broadcast the AppKey in the clear.
 static bool isJenWanKeyCommand(const char *cmd)
 {
     if (!cmd)
@@ -515,7 +527,7 @@ static bool isJenWanKeyCommand(const char *cmd)
     const char *p = cmd;
     while (*p && isspace((unsigned char)*p))
         p++;
-    const size_t verb = strcspn(p, " \t\r\n");
+    const size_t verb = tokenLen(p);
     const bool isJenWan = (verb == 2 && (strncasecmp(p, "JW", 2) == 0 || strncasecmp(p, "LW", 2) == 0)) ||
                           (verb == 6 && strncasecmp(p, "JENWAN", 6) == 0);
     if (!isJenWan)
@@ -523,7 +535,7 @@ static bool isJenWanKeyCommand(const char *cmd)
     p += verb;
     while (*p && isspace((unsigned char)*p))
         p++;
-    const size_t sub = strcspn(p, " \t\r\n");
+    const size_t sub = tokenLen(p);
     return (sub == 4 && strncasecmp(p, "OTAA", 4) == 0) || (sub == 3 && strncasecmp(p, "ABP", 3) == 0);
 }
 #endif
