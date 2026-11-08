@@ -2192,6 +2192,9 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                           "DISABLE_AGC_RESET:            %s\n",
                           (m & FEATURE_DISABLE_AGC_RESET) ? "ON" : "off");
             l += snprintf(replyMsg + l, sizeof(replyMsg) - l,
+                          "RAW_TUNNEL_TO_PHONE:          %s\n",
+                          (m & FEATURE_RAW_TUNNEL_TO_PHONE) ? "ON" : "off");
+            l += snprintf(replyMsg + l, sizeof(replyMsg) - l,
                           "LATEBASE:                     %s",
                           (m & FEATURE_LATEBASE) ? "ON" : "off");
         } else if (strcasecmp(sub, "OFF") == 0) {
@@ -2276,10 +2279,14 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                            strcasecmp(name, "LBASE") == 0 || strcasecmp(name, "LB") == 0) {
                     bit = FEATURE_LATEBASE;
                     displayName = "LATEBASE";
+                } else if (strcasecmp(name, "RAW_TUNNEL_TO_PHONE") == 0 ||
+                           strcasecmp(name, "RAW_TUNNEL") == 0 || strcasecmp(name, "RAW") == 0) {
+                    bit = FEATURE_RAW_TUNNEL_TO_PHONE;
+                    displayName = "RAW_TUNNEL_TO_PHONE";
                 }
                 if (bit == 0) {
                     snprintf(replyMsg, sizeof(replyMsg),
-                             "JT FEATURES: unknown name '%s' (try FORWARD_OPAQUE_TO_PHONE / FORWARD_FOREIGN_PKI_TO_PHONE / DISABLE_AGC_RESET / LATEBASE)",
+                             "JT FEATURES: unknown name '%s' (try FORWARD_OPAQUE_TO_PHONE / FORWARD_FOREIGN_PKI_TO_PHONE / DISABLE_AGC_RESET / RAW_TUNNEL / LATEBASE)",
                              name);
                 } else {
                     bool turnOn = true;
@@ -9082,11 +9089,12 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
 
         if (hopsUsed == 0) {
             l += snprintf(replyMsg + l, sizeof(replyMsg) - l, "(Direct)\n");
+        } else if (isJC) {
+            // JC has its own path line; mp.relay_node is not meaningful.
+            l += snprintf(replyMsg + l, sizeof(replyMsg) - l, "\n");
         } else {
             static char relayNames[64];
             memset(relayNames, 0, sizeof(relayNames));
-            // JenCore-synthesized packets resolve their relay into jc_relay_node;
-            // mp.relay_node is only filled by the Meshtastic router.
             uint32_t relayId = mp.jc_relay_node ? mp.jc_relay_node : mp.relay_node;
             uint8_t targetSuffix = (uint8_t)(relayId & 0xFF);
             getRelayNames(relayNames, sizeof(relayNames), targetSuffix);
@@ -9101,35 +9109,39 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
 
         if (l < 0 || (size_t)l >= sizeof(replyMsg)) l = sizeof(replyMsg) - 1;
         NexusModule::appendJenCorePath(replyMsg, sizeof(replyMsg), l, mp);
+        if (isJC)
+            NexusModule::appendJenCoreFlags(replyMsg, sizeof(replyMsg), l, mp);
         if (l < 0 || (size_t)l >= sizeof(replyMsg)) l = sizeof(replyMsg) - 1;
         l += snprintf(replyMsg + l, sizeof(replyMsg) - l, "📶 RSSI:%d SNR:%.1f\n🔬 Δf: %.0fHz CR:%d\n", (int)mp.rx_rssi, mp.rx_snr, mp.rx_frequency_error, nexusCRDisplay(mp.rx_coding_rate));
         if (l < 0 || (size_t)l >= sizeof(replyMsg)) l = sizeof(replyMsg) - 1;
-        bool om = (mp.decoded.has_bitfield && (mp.decoded.bitfield & BITFIELD_OK_TO_MQTT_MASK));
-        int written = snprintf(replyMsg + l, sizeof(replyMsg) - l, "🌐 OM:%d%s MQTT:%d%s UDP:%d PKI:%d",
-                 om ? 1 : 0, !om ? "⚠️" : "",
-                 mp.via_mqtt ? 1 : 0, mp.via_mqtt ? "⚠️" : "",
-                 (mp.transport_mechanism == meshtastic_MeshPacket_TransportMechanism_TRANSPORT_MULTICAST_UDP) ? 1 : 0,
-                 mp.pki_encrypted ? 1 : 0);
-        // (SIGNATURE FLAG 2026-08-23) Append S:<emoji> to the flags line. Same three-state
-        // palette as PPING (NexusModule.cpp:1898); consistent with the auto-prefix 4-state
-        // gate one block up so operators reading S: here and S: there see the same picture:
-        //   🔴 — no signature field on the wire (decoded.xeddsa_signature.size == 0)
-        //   🟠 — signature present but xeddsa_verify() failed (size != 0, !xeddsa_signed)
-        //   🟢 — signature present AND verified (xeddsa_signed)
-        // Note: PKI:%d above is encryption status, orthogonal to XEdDSA signature status —
-        // both fields coexist intentionally. Auto-prefix (🔒/🟢/🟠/🔴) covers the
-        // trust-list dimension that this surface doesn't (RSSI is a one-shot diagnostic,
-        // not an auth gate).
-        const char *sigEmoji;
-        if (mp.decoded.xeddsa_signature.size == 0) {
-            sigEmoji = "🔴";
-        } else if (!mp.xeddsa_signed) {
-            sigEmoji = "🟠";
-        } else {
-            sigEmoji = "🟢";
-        }
-        if (written > 0 && (size_t)written < sizeof(replyMsg) - l) {
-            snprintf(replyMsg + l + written, sizeof(replyMsg) - l - written, " S:%s", sigEmoji);
+        if (!isJC) {
+            bool om = (mp.decoded.has_bitfield && (mp.decoded.bitfield & BITFIELD_OK_TO_MQTT_MASK));
+            int written = snprintf(replyMsg + l, sizeof(replyMsg) - l, "🌐 OM:%d%s MQTT:%d%s UDP:%d PKI:%d",
+                     om ? 1 : 0, !om ? "⚠️" : "",
+                     mp.via_mqtt ? 1 : 0, mp.via_mqtt ? "⚠️" : "",
+                     (mp.transport_mechanism == meshtastic_MeshPacket_TransportMechanism_TRANSPORT_MULTICAST_UDP) ? 1 : 0,
+                     mp.pki_encrypted ? 1 : 0);
+            // (SIGNATURE FLAG 2026-08-23) Append S:<emoji> to the flags line. Same three-state
+            // palette as PPING (NexusModule.cpp:1898); consistent with the auto-prefix 4-state
+            // gate one block up so operators reading S: here and S: there see the same picture:
+            //   🔴 — no signature field on the wire (decoded.xeddsa_signature.size == 0)
+            //   🟠 — signature present but xeddsa_verify() failed (size != 0, !xeddsa_signed)
+            //   🟢 — signature present AND verified (xeddsa_signed)
+            // Note: PKI:%d above is encryption status, orthogonal to XEdDSA signature status —
+            // both fields coexist intentionally. Auto-prefix (🔒/🟢/🟠/🔴) covers the
+            // trust-list dimension that this surface doesn't (RSSI is a one-shot diagnostic,
+            // not an auth gate).
+            const char *sigEmoji;
+            if (mp.decoded.xeddsa_signature.size == 0) {
+                sigEmoji = "🔴";
+            } else if (!mp.xeddsa_signed) {
+                sigEmoji = "🟠";
+            } else {
+                sigEmoji = "🟢";
+            }
+            if (written > 0 && (size_t)written < sizeof(replyMsg) - l) {
+                snprintf(replyMsg + l + written, sizeof(replyMsg) - l - written, " S:%s", sigEmoji);
+            }
         }
     }
     else if (strncasecmp(cmd, "TEXT ", 5) == 0) {
@@ -9619,14 +9631,14 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             appendPaging("Bulk: SETHEX [hex] | SETHEXOUT [hex]");
             snprintf(replyMsg, sizeof(replyMsg), "JT: Paging FIREWALL help...");
         } else if (strcasecmp(sub, "FEATURES") == 0) {
-            // Nexus v66: FEATURES help. Four bits today (FORWARD_OPAQUE_TO_PHONE,
-            // FORWARD_FOREIGN_PKI_TO_PHONE, DISABLE_AGC_RESET, LATEBASE). RAM-only — persist via /nexus SAVE.
+            // Nexus v66: FEATURES help. Five bits today (FORWARD_OPAQUE_TO_PHONE,
+            // FORWARD_FOREIGN_PKI_TO_PHONE, DISABLE_AGC_RESET, RAW_TUNNEL_TO_PHONE, LATEBASE). RAM-only — persist via /nexus SAVE.
             startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "Help FEATURES");
             appendPaging("Usage: FEATURES [LIST]                  -> Show mask + named bits ON/OFF\n");
             appendPaging("Usage: FEATURES OFF                     -> Clear all bits\n");
             appendPaging("Usage: FEATURES <hex>|0x<hex>           -> Set mask directly (uint64)\n");
             appendPaging("Usage: FEATURES <NAME> [ON|OFF]         -> Toggle named bit (default ON)\n");
-            appendPaging("Names: FORWARD_OPAQUE_TO_PHONE (alias OPAQUE), FORWARD_FOREIGN_PKI_TO_PHONE (alias PKI), DISABLE_AGC_RESET (alias AGC), LATEBASE (alias LB)\n");
+            appendPaging("Names: FORWARD_OPAQUE_TO_PHONE (alias OPAQUE), FORWARD_FOREIGN_PKI_TO_PHONE (alias PKI), DISABLE_AGC_RESET (alias AGC), RAW_TUNNEL_TO_PHONE (alias RAW_TUNNEL/RAW), LATEBASE (alias LB)\n");
             appendPaging("Persistence: RAM-only. /nexus SAVE to write features_mask to /nexus.bin vault.");
             snprintf(replyMsg, sizeof(replyMsg), "JT: Paging FEATURES help...");
         } else if (strcasecmp(sub, "SIGINT") == 0 || strcasecmp(sub, "SCAN") == 0) {

@@ -14,6 +14,7 @@
 #include "FSCommon.h"
 #include "MeshRadio.h"
 #include "MeshService.h"
+#include "NexusRawTunnel.h"
 #include "NodeDB.h"
 #include "PacketHistory.h"
 #include "PacketProfiler.h"
@@ -1801,6 +1802,11 @@ PhoneAPI::LocalAdminGate PhoneAPI::classifyLocalAdminPacket(const meshtastic_Mes
  */
 bool PhoneAPI::handleToRadioPacket(meshtastic_MeshPacket &p)
 {
+    // Raw MeshCore/RNode tunnel packets are already-addressed opaque frames, not
+    // Meshtastic payloads. Consume them before any decoded-field access.
+    if (nexus::rawtunnel::handleFromPhone(p))
+        return true;
+
     printPacket("PACKET FROM PHONE", &p);
 
 #if defined(MESHTASTIC_ENCRYPTED_STORAGE) && defined(MESHTASTIC_PHONEAPI_ACCESS_CONTROL)

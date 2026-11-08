@@ -659,6 +659,28 @@ void MeshService::sendToPhone(meshtastic_MeshPacket *p)
     fromNum++;
 }
 
+void MeshService::sendOpaqueToPhone(meshtastic_MeshPacket *p)
+{
+    // Deliberately skips perhapsDecode()/coerceNodeInfoUserId(): these packets are
+    // already fully formed opaque frames and must not be reinterpreted as Meshtastic
+    // payloads. Queue-full behavior mirrors sendToPhone's drop path.
+    if (toPhoneQueue.numFree() == 0) {
+        LOG_WARN("ToPhone queue full, drop opaque tunnel packet");
+        releaseToPool(p);
+        fromNum++; // notify observers so phone can resync
+        return;
+    }
+
+    PROF_DO(prof::mark(p->id, prof::SLOT_PQ));
+    if (toPhoneQueue.enqueue(p, 0) == false) {
+        LOG_CRIT("Queue to toPhoneQueue failed");
+        releaseToPool(p);
+        fromNum++;
+        return;
+    }
+    fromNum++;
+}
+
 void MeshService::sendMqttMessageToClientProxy(meshtastic_MqttClientProxyMessage *m)
 {
     LOG_DEBUG("Send mqtt msg on topic '%s' to proxy client", m->topic);

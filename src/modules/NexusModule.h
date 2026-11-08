@@ -54,6 +54,12 @@ static constexpr uint64_t FEATURE_DISABLE_AGC_RESET            = (1ULL << 2);
 //                                         favorited from/to packets. Off (default)
 //                                         = JT behavior: client/router window.
 static constexpr uint64_t FEATURE_LATEBASE                     = (1ULL << 3);
+//   bit4  RAW_TUNNEL_TO_PHONE           — forward raw MeshCore and RNode/Reticulum
+//                                         frames to the phone as opaque MeshPackets
+//                                         ("JRAW" magic), and accept raw sends back
+//                                         from the app. Upstream apps ignore the
+//                                         encrypted variant. Off by default.
+static constexpr uint64_t FEATURE_RAW_TUNNEL_TO_PHONE          = (1ULL << 4);
 
 // Nexus v67 nexusVariantBits carve-out. Each variant that needs persisted
 // state gets its own bit range from this 64-bit field. Layout is append-only:
@@ -1030,6 +1036,11 @@ public:
     // synthesized from a JenCore frame; no-op for ordinary Meshtastic packets.
     // pos stays inside [0, cap-1]. Returns true when a line was appended.
     static bool appendJenCorePath(char *buf, size_t cap, int &pos, const meshtastic_MeshPacket &mp);
+
+    // Append a compact "🧩 R:<route> P:<payload> RGN:<n|-> [SC] [T]" line for a
+    // JenCore packet; no-op for ordinary Meshtastic packets. The path itself is
+    // in appendJenCorePath(), so this line carries the JC header flags only.
+    static bool appendJenCoreFlags(char *buf, size_t cap, int &pos, const meshtastic_MeshPacket &mp);
 
 #if NEXUS_ENABLE_JENCORE_SNIFFER
     /// Radio-thread trampoline registered on JenCoreRepeater.

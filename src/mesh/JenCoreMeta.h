@@ -104,6 +104,74 @@ inline uint8_t pathHashSize(uint16_t flags)
     return size > HASH_SIZE_MAX ? HASH_SIZE_MAX : size;
 }
 
+/// Route type packed into jc_flags (0..3).
+inline uint8_t routeType(uint16_t flags)
+{
+    return (uint8_t)((flags >> ROUTE_SHIFT) & ROUTE_MASK);
+}
+
+/// MeshCore payload type packed into jc_flags (0x00..0x0B, 0x0F).
+inline uint8_t payloadType(uint16_t flags)
+{
+    return (uint8_t)((flags >> PAYLOAD_SHIFT) & PAYLOAD_MASK);
+}
+
+/// Region index packed into jc_flags, or REGION_NONE.
+inline uint8_t regionIndex(uint16_t flags)
+{
+    return (uint8_t)((flags >> REGION_SHIFT) & REGION_MASK);
+}
+
+inline const char *routeName(uint8_t route)
+{
+    switch (route) {
+    case 0:
+        return "TF"; // transport-flood
+    case 1:
+        return "FL"; // flood
+    case 2:
+        return "DIR"; // direct
+    case 3:
+        return "TD"; // transport-direct
+    default:
+        return "?";
+    }
+}
+
+inline const char *payloadName(uint8_t payload)
+{
+    switch (payload) {
+    case 0x00:
+        return "REQ";
+    case 0x01:
+        return "RSP";
+    case 0x02:
+        return "TXT";
+    case 0x03:
+        return "ACK";
+    case 0x04:
+        return "ADV";
+    case 0x05:
+        return "GRP";
+    case 0x06:
+        return "GRPD";
+    case 0x07:
+        return "ANON";
+    case 0x08:
+        return "PATH";
+    case 0x09:
+        return "TRACE";
+    case 0x0A:
+        return "MULTI";
+    case 0x0B:
+        return "CTRL";
+    case 0x0F:
+        return "RAW";
+    default:
+        return "?";
+    }
+}
+
 /// Wire path budget shared by every JenCore node (MAX_PATH_SIZE in JenCoreRepeater).
 constexpr size_t PATH_BYTES_MAX = 64;
 

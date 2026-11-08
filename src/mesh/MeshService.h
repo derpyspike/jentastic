@@ -211,6 +211,10 @@ class MeshService
     /// Send a packet to the phone
     void sendToPhone(meshtastic_MeshPacket *p);
 
+    /// Send an already-encrypted/opaque packet to the phone without attempting
+    /// perhapsDecode() or node-info coercion. Used by the raw frame tunnel.
+    void sendOpaqueToPhone(meshtastic_MeshPacket *p);
+
     /// Send an MQTT message to the phone for client proxying
     virtual void sendMqttMessageToClientProxy(meshtastic_MqttClientProxyMessage *m);
 

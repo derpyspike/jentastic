@@ -9,6 +9,7 @@
 
 #if NEXUS_ENABLE_RNODE
 
+#include "NexusRawTunnel.h"
 #include "RadioLibInterface.h"
 #include <Arduino.h>
 #include <math.h>
@@ -277,6 +278,13 @@ bool RNodeEngine::queueMicroReticulumFrame(const uint8_t *data, size_t len)
     return sendFramedToRadio(data, len);
 }
 
+bool RNodeEngine::sendReticulumPayload(const uint8_t *data, size_t len)
+{
+    if (!data || len == 0 || mode == RNODE_MODE_OFF)
+        return false;
+    return sendFramedToRadio(data, len);
+}
+
 void RNodeEngine::queueTxToRadio(const uint8_t *data, size_t len)
 {
     if (!data || len == 0 || mode == RNODE_MODE_OFF)
@@ -351,6 +359,8 @@ void RNodeEngine::deliverCompleteFrame(const uint8_t *payload, size_t len, float
     lastRssi = rssi;
     rxPackets++;
     rxBytes += len;
+
+    nexus::rawtunnel::forward(nexus::rawtunnel::RNODE, payload, len, rssi, snr, 0.0f, 0);
 
     if (mode == RNODE_MODE_MICRORETICULUM) {
         if (frameSink)

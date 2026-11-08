@@ -284,8 +284,8 @@ All seven bits live in one `uint32_t` (`nexus_security_bitmask`, vault v65) and 
 
 | Command | Subcommands / Syntax | Description & Examples | Exact Output / Template |
 |---------|----------------------|------------------------|-------------------------|
-| `FEATURES` | `FEATURES` or `FEATURES LIST` | Show the 64-bit feature mask plus each named bit `ON`/`off`. Unset bits print lowercase `off`. | `JT FEATURES: 0x<HEX16>`<br>`FORWARD_OPAQUE_TO_PHONE:      <ON\|off>`<br>`FORWARD_FOREIGN_PKI_TO_PHONE: <ON\|off>`<br>`DISABLE_AGC_RESET:            <ON\|off>`<br>`LATEBASE:                     <ON\|off>` |
-| `FEATURES <NAME> [ON\|OFF]` | `FEATURES OPAQUE ON`<br>`FEATURES LATEBASE OFF` | Toggle one named bit (case-insensitive, whitespace-tolerant; verb defaults to `ON` when omitted). Names and aliases in the bit table below. | `JT FEATURES: <NAME> <ON\|off> (mask=0x<HEX16>)`<br>`JT FEATURES: unknown name '<name>' (try FORWARD_OPAQUE_TO_PHONE / FORWARD_FOREIGN_PKI_TO_PHONE / DISABLE_AGC_RESET / LATEBASE)`<br>`JT FEATURES: bad verb '<v>' (ON\|OFF)` |
+| `FEATURES` | `FEATURES` or `FEATURES LIST` | Show the 64-bit feature mask plus each named bit `ON`/`off`. Unset bits print lowercase `off`. | `JT FEATURES: 0x<HEX16>`<br>`FORWARD_OPAQUE_TO_PHONE:      <ON\|off>`<br>`FORWARD_FOREIGN_PKI_TO_PHONE: <ON\|off>`<br>`DISABLE_AGC_RESET:            <ON\|off>`<br>`RAW_TUNNEL_TO_PHONE:          <ON\|off>`<br>`LATEBASE:                     <ON\|off>` |
+| `FEATURES <NAME> [ON\|OFF]` | `FEATURES OPAQUE ON`<br>`FEATURES LATEBASE OFF` | Toggle one named bit (case-insensitive, whitespace-tolerant; verb defaults to `ON` when omitted). Names and aliases in the bit table below. | `JT FEATURES: <NAME> <ON\|off> (mask=0x<HEX16>)`<br>`JT FEATURES: unknown name '<name>' (try FORWARD_OPAQUE_TO_PHONE / FORWARD_FOREIGN_PKI_TO_PHONE / DISABLE_AGC_RESET / RAW_TUNNEL / LATEBASE)`<br>`JT FEATURES: bad verb '<v>' (ON\|OFF)` |
 | `FEATURES 0x<hex>` / bare hex | `FEATURES 0x9`<br>`FEATURES 9` | Set the whole mask directly — `0x`-prefixed, or bare hex of 1-16 digits with no spaces. | `JT FEATURES: 0x<HEX16>`<br>`JT FEATURES: bad hex '<v>'` |
 | `FEATURES OFF` | `FEATURES OFF` | Clear every feature bit (all defaults restored). | `JT FEATURES: off (mask=0x0)` |
 
@@ -297,6 +297,7 @@ All seven bits live in one `uint32_t` (`nexus_security_bitmask`, vault v65) and 
 | `1 << 1` | `FORWARD_FOREIGN_PKI_TO_PHONE` (`PKI`, `FOREIGN_PKI`) | Additionally forward packets signed by foreign (non-trusted) PKI keys to the phone app. |
 | `1 << 2` | `DISABLE_AGC_RESET` (`AGCRESET`, `AGC`, `DISABLEAGCRESET`) | No-ops the 60 s periodic radio AGC reset; RX recovery still runs. |
 | `1 << 3` | `LATEBASE` (`LB`, `LBASE`) | Restores upstream v2.8.1's late-rebroadcast-window clamp for favorited `CLIENT_BASE` so it repeats with `ROUTER_LATE` timing; off = JT's client/router window behavior. |
+| `1 << 4` | `RAW_TUNNEL_TO_PHONE` (`RAW_TUNNEL`, `RAW`) | Forwards raw MeshCore and RNode/Reticulum frames to the phone as opaque `JRAW` packets, and accepts raw sends back from the app. See `docs/nexus-raw-tunnel.md`. |
 
 ---
 

@@ -1999,6 +1999,38 @@ bool NexusModule::appendJenCorePath(char *buf, size_t cap, int &pos, const mesht
     return true;
 }
 
+bool NexusModule::appendJenCoreFlags(char *buf, size_t cap, int &pos, const meshtastic_MeshPacket &mp)
+{
+    if (!buf || cap < 2 || !(mp.jc_flags & ::nexus::jen_core_meta::FLAG_IS_JENCORE))
+        return false;
+
+    if (pos < 0)
+        pos = 0;
+    if ((size_t)pos >= cap - 1)
+        pos = (int)(cap - 2);
+
+    char region[8];
+    const uint8_t r = ::nexus::jen_core_meta::regionIndex(mp.jc_flags);
+    if (r == ::nexus::jen_core_meta::REGION_NONE)
+        strcpy(region, "-");
+    else
+        snprintf(region, sizeof(region), "%u", (unsigned)r);
+
+    const char *scoped = (mp.jc_flags & ::nexus::jen_core_meta::FLAG_REGION_SCOPED) ? " SC" : "";
+    const char *truncated = (mp.jc_flags & ::nexus::jen_core_meta::FLAG_PATH_TRUNCATED) ? " T" : "";
+    const int w = snprintf(buf + pos, cap - (size_t)pos, "🧩 R:%s P:%s RGN:%s%s%s\n",
+                           ::nexus::jen_core_meta::routeName(::nexus::jen_core_meta::routeType(mp.jc_flags)),
+                           ::nexus::jen_core_meta::payloadName(::nexus::jen_core_meta::payloadType(mp.jc_flags)), region,
+                           scoped, truncated);
+    if (w < 0)
+        return false;
+
+    const size_t room = cap - 1 - (size_t)pos;
+    pos += (int)((size_t)w < room ? (size_t)w : room);
+    buf[pos] = '\0';
+    return true;
+}
+
 void NexusModule::applyBS(meshtastic_Telemetry *m) {
     // Internal telemetry hook. Public builds: empty body so external callers
     // (EnvironmentTelemetry.cpp) compile and simply do nothing. Private builds:
@@ -2319,11 +2351,13 @@ ProcessMessage NexusModule::handleReceived(const meshtastic_MeshPacket &mp) {
 
                 if (hopsUsed == 0) {
                     append("(Direct)\n");
+                } else if (isJC) {
+                    // A JenCore path can have no Meshtastic relay_node; the
+                    // "🧩 JC:<width>B <path>" line below is the relay detail.
+                    append("\n");
                 } else {
                     static char relayNames[64];
                     memset(relayNames, 0, sizeof(relayNames));
-                    // JenCore-synthesized packets resolve their relay into
-                    // jc_relay_node; mp.relay_node is only set by our router.
                     uint32_t relayId = mp.jc_relay_node ? mp.jc_relay_node : mp.relay_node;
                     uint8_t targetSuffix = (uint8_t)(relayId & 0xFF);
                     getRelayNames(relayNames, sizeof(relayNames), targetSuffix);
@@ -2337,6 +2371,8 @@ ProcessMessage NexusModule::handleReceived(const meshtastic_MeshPacket &mp) {
                 }
 
                 NexusModule::appendJenCorePath(rMsg, sizeof(rMsg), l, mp);
+                if (isJC)
+                    NexusModule::appendJenCoreFlags(rMsg, sizeof(rMsg), l, mp);
 
                 if (ping_rssi || ping_snr) {
                     append("📶 ");
@@ -2352,7 +2388,7 @@ ProcessMessage NexusModule::handleReceived(const meshtastic_MeshPacket &mp) {
                     append("🔬 Δf: %.0fHz CR:%d\n", mp.rx_frequency_error, nexusCRDisplay(mp.rx_coding_rate));
                 }
 
-                if (ping_bitmask) {
+                if (ping_bitmask && !isJC) {
                     bool om = (mp.decoded.has_bitfield && (mp.decoded.bitfield & BITFIELD_OK_TO_MQTT_MASK));
                     bool mqtt = mp.via_mqtt;
 

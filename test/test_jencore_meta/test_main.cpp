@@ -65,6 +65,21 @@ static void test_flags_zero_when_not_jencore(void)
     TEST_ASSERT_EQUAL_HEX16(0, packFlags(false, false, false, 0, 0, 0, 0xFF));
 }
 
+static void test_route_payload_region_accessors(void)
+{
+    const uint16_t f = packFlags(true, true, false, 3, 0x05, 2, 2);
+    TEST_ASSERT_EQUAL_UINT8(3, routeType(f));
+    TEST_ASSERT_EQUAL_UINT8(0x05, payloadType(f));
+    TEST_ASSERT_EQUAL_UINT8(2, regionIndex(f));
+    TEST_ASSERT_EQUAL_STRING("TD", routeName(routeType(f)));
+    TEST_ASSERT_EQUAL_STRING("GRP", payloadName(payloadType(f)));
+    TEST_ASSERT_EQUAL_STRING("?", routeName(9));
+    TEST_ASSERT_EQUAL_STRING("?", payloadName(0x0E));
+
+    const uint16_t none = packFlags(true, false, false, 0, 0, 1, 0xFF);
+    TEST_ASSERT_EQUAL_UINT8(REGION_NONE, regionIndex(none));
+}
+
 static void test_path_tail_keeps_last_hashes(void)
 {
     uint8_t src[39];
@@ -335,6 +350,7 @@ void setup()
     RUN_TEST(test_flags_truncated_bit);
     RUN_TEST(test_flags_region_none);
     RUN_TEST(test_flags_zero_when_not_jencore);
+    RUN_TEST(test_route_payload_region_accessors);
     RUN_TEST(test_path_tail_keeps_last_hashes);
     RUN_TEST(test_path_tail_short_path_not_truncated);
     RUN_TEST(test_path_tail_one_byte_hashes);

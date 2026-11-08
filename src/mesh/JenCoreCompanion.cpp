@@ -15,6 +15,7 @@
 
 #include "Channels.h"
 #include "JenCoreMeta.h"
+#include "NexusRawTunnel.h"
 #include "NodeDB.h"
 #include "RadioInterface.h"
 #include "Router.h"
@@ -737,6 +738,7 @@ void JenCoreCompanion::handleFrame(const uint8_t *raw, size_t len, float snr, in
     static_assert(FRAME_PATH_CAP == nexus::jen_core_meta::PATH_CAP, "path caps must agree");
     if (!raw || !router)
         return;
+    nexus::rawtunnel::forward(nexus::rawtunnel::MESHCORE, raw, len, rssi, snr, freqErr, codingRate);
     lastRxFreqErr = freqErr;
     lastRxCodingRate = codingRate;
     lastRxSnr = snr;

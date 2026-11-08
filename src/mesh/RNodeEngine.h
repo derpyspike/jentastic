@@ -116,6 +116,10 @@ class RNodeEngine
     /// Framed TX for the native microReticulum engine (RNode header + split).
     bool queueMicroReticulumFrame(const uint8_t *data, size_t len);
 
+    /// Raw RNode/Reticulum TX for the phone tunnel: adds the RNode header and
+    /// splits like queueMicroReticulumFrame, but works in every non-OFF mode.
+    bool sendReticulumPayload(const uint8_t *data, size_t len);
+
     uint8_t getSf() const { return lora_sf; }
     void setSf(uint8_t sf) { lora_sf = sf; }
 
