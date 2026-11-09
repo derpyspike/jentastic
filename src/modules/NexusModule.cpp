@@ -69,6 +69,7 @@ static_assert(::nexus::jen_core_meta::PATH_BYTES_MAX == JenCoreRepeater::MAX_PAT
 #include "configuration.h"
 #include "main.h"
 #include "mesh/Throttle.h"
+#include <cstdlib>
 #include <new>
 #include <stdarg.h>
 #ifdef ARCH_NRF52
@@ -5510,7 +5511,9 @@ int NexusModule::findChannelByNameOrIndex(const char* input, const char** nextTo
 
 bool NexusModule::saveVault()
 {
-    NexusVault *v = new (std::nothrow) NexusVault();
+    // malloc, not new(std::nothrow): on nRF52 the custom operator new asserts and on
+    // ESP32 the runtime aborts, so a failed nothrow new reboots instead of returning null.
+    NexusVault *v = static_cast<NexusVault *>(malloc(sizeof(NexusVault)));
     if (!v) {
         LOG_ERROR("Nexus: Heap allocation failed for saveVault!");
         return false;
@@ -5731,7 +5734,7 @@ bool NexusModule::saveVault()
         concurrency::LockGuard guard(spiLock);
         saved = nexus::writeVault(FSCom, v, sizeof(*v), FILE_O_READ, FILE_O_WRITE);
     }
-    delete v;
+    free(v);
     if (!saved)
         LOG_ERROR("Nexus: Vault save failed; previous file preserved.");
 #if NEXUS_ENABLE_JENWAN
@@ -5757,13 +5760,13 @@ bool NexusModule::readVaultForDisplay(NexusVault *out, const char **reason) {
 
 bool NexusModule::loadVault()
 {
-    NexusVault *v = new (std::nothrow) NexusVault();
+    NexusVault *v = static_cast<NexusVault *>(malloc(sizeof(NexusVault)));
     if (!v)
         return false;
     const char *reason = nullptr;
     if (!readVaultForDisplay(v, &reason)) {
         LOG_WARN("Nexus: Vault not loaded: %s. RAM unchanged.", reason ? reason : "allocation failure");
-        delete v;
+        free(v);
         return false;
     }
     {
@@ -6089,7 +6092,7 @@ bool NexusModule::loadVault()
 
         LOG_INFO("Nexus: Vault loaded successfully (v%u).", (unsigned int)v->version);
     }
-    delete v;
+    free(v);
     return true;
 }
 

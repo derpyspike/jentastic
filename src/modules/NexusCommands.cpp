@@ -6085,12 +6085,9 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         // operation; costs ~2.35 KB heap only if you actually call VST/VDF.
         static NexusVault *v = nullptr;
         if (!v) {
-            v = new NexusVault();
-            // Guard against OOM: ESP-IDF's default newlib new returns
-            // nullptr rather than throwing. Without this, the memset below
-            // would dereference null. On OOM we surface the failure to the
-            // operator via replyMsg and bail; the trailing dispatch will
-            // route the message back via replyId.
+            // malloc, not new: a failed new aborts on ESP32 (no C++ exceptions) and
+            // asserts on nRF52, so it cannot report OOM here.
+            v = static_cast<NexusVault *>(malloc(sizeof(NexusVault)));
             if (!v) {
                 snprintf(replyMsg, sizeof(replyMsg),
                          "JT VAULT: OOM allocating scratch vault (%u B)",
@@ -6141,10 +6138,8 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         // BSS, costs same in heap only if VST/VDF is ever called).
         static NexusVault *v = nullptr;
         if (!v) {
-            v = new NexusVault();
-            // Guard against OOM: see VST block above. Same pattern: surface
-            // the failure via replyMsg and bail; the trailing dispatch will
-            // route it back to the operator.
+            // malloc, not new: see the VST block above.
+            v = static_cast<NexusVault *>(malloc(sizeof(NexusVault)));
             if (!v) {
                 snprintf(replyMsg, sizeof(replyMsg),
                          "JT VAULT DIFF: OOM allocating scratch vault (%u B)",
@@ -10488,7 +10483,8 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             snprintf(replyMsg, sizeof(replyMsg), "JT: JenTag beacon DISABLED");
         } else if (strcasecmp(p, "ON") == 0) {
             if (!haveKey) {
-                snprintf(replyMsg, sizeof(replyMsg), "JT: JenTag error - no key set (use JENTAG !<base64>)");
+                snprintf(replyMsg, sizeof(replyMsg),
+                         "JT: JenTag error - no key set (use JENTAG !<base64> or KEY <base64>)");
             } else {
                 nexus_jentag_enabled = true;
                 snprintf(replyMsg, sizeof(replyMsg), "JT: JenTag beacon ENABLED");
@@ -10497,11 +10493,13 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             memset(nexus_jentag_key, 0, sizeof(nexus_jentag_key));
             nexus_jentag_enabled = false;
             snprintf(replyMsg, sizeof(replyMsg), "JT: JenTag key cleared; save with /nexus SAVE");
-        } else if (*p == '!') {
+        } else if (*p == '!' || (strncasecmp(p, "KEY", 3) == 0 && (p[3] == ' ' || p[3] == '\0'))) {
             // OpenHaystack public keys are base64 and exactly 28 bytes (P-224).
+            const char *b64 = (*p == '!') ? p + 1 : p + 3;
+            while (*b64 == ' ') b64++;
             uint8_t key[::nexus::jentag::KEY_LEN] = {};
             size_t written = 0;
-            if (nexus_base64_decode(key, sizeof(key), &written, p + 1) == 0 &&
+            if (*b64 != '\0' && nexus_base64_decode(key, sizeof(key), &written, b64) == 0 &&
                 written == ::nexus::jentag::KEY_LEN && ::nexus::jentag::keyIsSet(key)) {
                 memcpy(nexus_jentag_key, key, sizeof(nexus_jentag_key));
                 nexus_jentag_enabled = true;
@@ -10510,7 +10508,8 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 snprintf(replyMsg, sizeof(replyMsg), "JT: JenTag error - need a 28-byte base64 key");
             }
         } else {
-            snprintf(replyMsg, sizeof(replyMsg), "JT: JenTag usage: JENTAG ON|OFF|STATUS|CLEAR|!<base64>");
+            snprintf(replyMsg, sizeof(replyMsg),
+                     "JT: JenTag usage: JENTAG ON|OFF|STATUS|CLEAR|!<base64>|KEY <base64>");
         }
     }
 #endif

@@ -123,7 +123,8 @@ bool save(const Config &in)
         v.config.session_len = 0;
     v.crc32 = crc32Buffer(&v, offsetof(Vault, crc32));
 
-    concurrency::LockGuard guard(spiLock);
+    // SafeFile takes spiLock internally; spiLock is a binary semaphore, so holding it
+    // here would self-deadlock on the same task (and wedge /nexus SAVE).
     SafeFile file(VAULT_PATH, true);
     const size_t written = file.write(reinterpret_cast<const uint8_t *>(&v), sizeof(v));
     return written == sizeof(v) && file.close();
