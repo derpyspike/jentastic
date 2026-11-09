@@ -7,6 +7,7 @@
 #include "error.h"
 #include "mesh/NodeDB.h"
 #include "modules/NexusModule.h" // Nexus SETFSK/SETFLRC: altModem state (Phase 2: LR2021/X1)
+#include "mesh/RadioTxHook.h"
 #if NEXUS_ENABLE_RNODE
 #include "mesh/RNodeEngine.h"
 #endif
@@ -811,9 +812,13 @@ template <typename T> int16_t LR20x0Interface<T>::setSpreadingFactorLive(uint8_t
     // SetLoraModulationParams disables every side detector on LR2021, so skip it when the SF is unchanged
     // and re-arm the stored table after a real change (the apply guard parks it while sf is above a side SF).
     if (targetSf != sf) {
+        const uint8_t fromSf = sf;
         int16_t err = lora.setSpreadingFactor(targetSf);
-        if (err != RADIOLIB_ERR_NONE)
+        if (err != RADIOLIB_ERR_NONE) {
+            LOG_WARN("LR20x0 setSpreadingFactorLive(%u) chip rejected: %s%d (was SF%u, side table now unknown)",
+                     targetSf, radioLibErr, err, fromSf);
             return err;
+        }
         sf = targetSf;
         applyDcdcWorkaround();
 
@@ -878,23 +883,33 @@ template <typename T> uint8_t LR20x0Interface<T>::getSyncWord() const
     return effectiveMainSyncword();
 }
 
-template <typename T> uint8_t LR20x0Interface<T>::readRxTierProtocol()
+template <typename T> bool LR20x0Interface<T>::readRxDetector(uint8_t &detector)
 {
-    if (!meshtastic::nexusModule || !meshtastic::nexusModule->multiSFConfig.enabled)
-        return meshtastic::nexus::TIER_MESHTASTIC;
 #if (defined(USE_LR2021) || defined(ARCH_PORTDUINO)) && RADIOLIB_EXCLUDE_LR2021 != 1
     uint8_t rxCR = 0;
     bool hasCRC = true;
     float snr = 0.0f;
     float rssi = 0.0f;
-    uint8_t detector = 0;
-    if (lora.getLoRaPacketStatus(&rxCR, &hasCRC, nullptr, &snr, &rssi, nullptr, &detector) != RADIOLIB_ERR_NONE)
-        return meshtastic::nexus::TIER_MESHTASTIC;
-    lastRxDetector = detector;
-    return meshtastic::nexusModule->multiSFProtocolForDetector(detector);
+    uint8_t det = 0;
+    if (lora.getLoRaPacketStatus(&rxCR, &hasCRC, nullptr, &snr, &rssi, nullptr, &det) != RADIOLIB_ERR_NONE)
+        return false;
+    detector = det;
+    lastRxDetector = det;
+    return true;
 #else
-    return meshtastic::nexus::TIER_MESHTASTIC;
+    (void)detector;
+    return false;
 #endif
+}
+
+template <typename T> uint8_t LR20x0Interface<T>::readRxTierProtocol()
+{
+    if (!meshtastic::nexusModule || !meshtastic::nexusModule->multiSFConfig.enabled)
+        return meshtastic::nexus::TIER_MESHTASTIC;
+    uint8_t detector = 0;
+    if (!readRxDetector(detector))
+        return meshtastic::nexus::TIER_MESHTASTIC;
+    return meshtastic::nexusModule->multiSFProtocolForDetector(detector);
 }
 
 /**
@@ -1044,6 +1059,12 @@ template <typename T> void LR20x0Interface<T>::applyReceiveConfig()
             // Keep RX on the main word every arm: a side-tier TX override or a raw send may have
             // left the chip on another sync.
             lora.setSyncWord(effectiveMainSyncword());
+            // This branch runs whenever RNode's own dirty state didn't need a rearm, but every real RX
+            // arm still re-runs SetLoraModulationParams on the chip, which silently disables every side
+            // detector. Re-arm the multi-SF table here too, or TIER mode goes deaf on its side SFs after
+            // the first TX once RNode settles back to idle.
+            if (meshtastic::nexusModule && meshtastic::nexusModule->multiSFConfig.enabled)
+                static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
         }
 #elif NEXUS_ENABLE_JENCORE_SNIFFER
         if (rnodeRadioDirty) {
@@ -1053,7 +1074,18 @@ template <typename T> void LR20x0Interface<T>::applyReceiveConfig()
             static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
         } else {
             lora.setSyncWord(effectiveMainSyncword());
+            // See the matching comment in the NEXUS_ENABLE_RNODE branch above: a real RX arm disables
+            // every side detector on the chip regardless of the sniffer's own dirty flag.
+            if (meshtastic::nexusModule && meshtastic::nexusModule->multiSFConfig.enabled)
+                static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
         }
+#else
+        // Neither RNode nor the JenCore sniffer is compiled in, so nothing above re-applies the sync
+        // word or the side-detector table on a real RX arm. TIER/multi-SF still needs both: the SPI
+        // write is cheap (applyMultiSFTiers no-ops/parks on its own when the main SF can't take it).
+        lora.setSyncWord(effectiveMainSyncword());
+        if (meshtastic::nexusModule && meshtastic::nexusModule->multiSFConfig.enabled)
+            static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
 #endif
     } else {
         (void)lora.variablePacketLengthMode(maxFrameLen());
@@ -1095,6 +1127,12 @@ template <typename T> void LR20x0Interface<T>::startReceive()
         rxOffline = true;
         return;
     }
+
+    // The side-detector table does not survive a fresh SetRx: the chip resets its correlator state on
+    // entry to Rx regardless of what applyReceiveConfig() wrote beforehand, so a write made before this
+    // lora.startReceive() call above is already gone. Re-poke it live now that Rx is confirmed running.
+    if (meshtastic::nexusModule && meshtastic::nexusModule->multiSFConfig.enabled)
+        static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
 
     RadioLibInterface::startReceive();
     rxArmedContinuous = true; // RADIOLIB_LR2021_RX_TIMEOUT_INF: continuous
@@ -1169,6 +1207,19 @@ template <typename T> void LR20x0Interface<T>::rearmReceiveFromTask()
     RadioSequence seq(this);
     if (rearmState != REARM_PENDING)
         return;
+    // This task is woken directly from the TX_DONE ISR (isrTxLevel0 -> rearmReceiveFromIsr), deliberately
+    // before the main radio thread's own onTransmitDone() gets a chance to run - that is the whole point of
+    // the task, so a main-loop hold elsewhere cannot leave the radio deaf in standby. But NexusTxHook's own
+    // SF/syncword/power restore for the packet that just went out also lives in onTransmitDone() (via
+    // handleTransmitInterrupt() -> detachSentPacket() -> RadioTxHooks::packetReleased()), so this task was
+    // consistently winning that race and re-arming Rx while the chip was still parked at the TX-override SF
+    // (e.g. SF7 for a TIER MADRID fast-path send) - the side-detector table can never be programmed at a
+    // main SF that high, so every post-TX rearm silently kept Rx on the wrong SF with multi-SF disabled.
+    // Do the restore here first: it is idempotent (NexusTxHook's own guards no-op the later, redundant call
+    // from the main thread) and must happen before applyReceiveConfig()/lora.startReceive() below for the
+    // side-detector table to have any chance of applying correctly on this arm.
+    if (sendingPacket)
+        RadioTxHooks::packetReleased(this, sendingPacket);
     // What startReceive() sends, less the standby: after TX_DONE the chip has already fallen back to standby.
     // Restore the RX preamble/persona/alt-modem framing too: the last TX may have left a raw RNode or
     // FLRC/GFSK config behind, and the side detectors need re-arming after a main-modem write.
@@ -1182,6 +1233,10 @@ template <typename T> void LR20x0Interface<T>::rearmReceiveFromTask()
     }
     rearmState = REARM_ARMED;
     rxArmedContinuous = true; // so a frame the task reads before the thread adopts finds the chip still listening
+    // Same reset-on-SetRx behavior as LR20x0Interface::startReceive(): the write applyReceiveConfig() just
+    // made is already gone now that lora.startReceive() above has re-entered Rx. Re-poke it live.
+    if (meshtastic::nexusModule && meshtastic::nexusModule->multiSFConfig.enabled)
+        static_cast<LR2021Interface *>(this)->applyStoredSideDetectors();
     // The TX_DONE interrupt detached the radio's interrupt. Attach the RX one now, so a frame that ends before the radio
     // thread runs wakes this task to read it, rather than waiting in the chip for the next frame to overwrite it.
     rxArmedBeforeTxDone = true;

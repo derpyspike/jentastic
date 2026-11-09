@@ -160,9 +160,18 @@ bool LR2021Interface::applyMultiSFTiers()
         }
     }
 
-    if (!configureSideDetectors(sfs, cfg.side_count, syncs))
+    // There was previously no success log for this path at all - only the reject path (via the
+    // caller) and the park path above. This is the only confirmation that the table actually
+    // reached the chip, as opposed to the park case silently leaving a stale or absent table in
+    // place.
+    if (!configureSideDetectors(sfs, cfg.side_count, syncs)) {
+        LOG_WARN("LR2021 multi-SF SPI reject: main SF%u sides=%u,%u,%u sync=0x%02X,0x%02X,0x%02X", sf, sfs[0],
+                 sfs[1], sfs[2], syncs[0], syncs[1], syncs[2]);
         return false;
+    }
     setSideDetectors(sfs, cfg.side_count, syncs);
+    LOG_INFO("LR2021 multi-SF applied: main SF%u sides=%u,%u,%u sync=0x%02X,0x%02X,0x%02X", sf, sfs[0], sfs[1],
+             sfs[2], syncs[0], syncs[1], syncs[2]);
     return true;
 }
 

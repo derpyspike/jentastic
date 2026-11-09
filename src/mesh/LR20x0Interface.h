@@ -98,6 +98,7 @@ template <class T> class LR20x0Interface : public RadioLibInterface
     virtual int16_t setSyncWordLive(uint8_t syncword) override;
     virtual uint8_t getSyncWord() const override;
     virtual uint8_t readRxTierProtocol() override;
+    virtual bool readRxDetector(uint8_t &detector) override;
 
     /// Main-detector syncword: the multi-SF main tier when enabled, else the
     /// normal Meshtastic/operator syncword.

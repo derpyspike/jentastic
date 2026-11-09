@@ -562,6 +562,8 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
         uint8_t rxCR;         // the LoRa header's raw coding rate, read with the frame
         bool hasCRC;          // the LoRa header's CRC flag, likewise
         bool headerInfoValid; // false where the chip would not report them
+        uint8_t detector;     // which LR2021 multi-SF detector matched (0 = main), read with the frame
+        bool detectorValid;   // false where the chip would not report it (non-LR2021, or the read failed)
     };
 
     /** Read out and deliver the frame behind RX_DONE; with captured, deliver one the readout task already took */
@@ -798,6 +800,12 @@ class RadioLibInterface : public RadioInterface, protected concurrency::Notified
     /** The LoRa header's raw coding rate and CRC flag for the frame the chip holds now; false where it cannot report
      *  them. Read with the frame, not later: on a chip left listening the status describes whatever it is receiving. */
     virtual bool readRxHeaderInfo(uint8_t &, bool &) { return false; }
+
+    /** Which LR2021 multi-SF detector matched the frame the chip holds now; false where it cannot report it. Read
+     *  with the frame, not later, for the same reason as readRxHeaderInfo() above - a stale read here does not
+     *  merely mislabel a frame's coding rate, it hands a Meshtastic side-tier frame to the wrong protocol handler
+     *  and the frame is dropped there, silently. */
+    virtual bool readRxDetector(uint8_t &) { return false; }
 
     /** Corrected frequency offset for the frame the chip holds now. Read with the frame on the readout-task path, so
      *  the phone/Nexus stats get this frame's offset rather than the next one's. Defaults to none. */

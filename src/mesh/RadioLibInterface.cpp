@@ -1552,7 +1552,15 @@ void RadioLibInterface::handleReceiveInterrupt(const CapturedRxInfo *captured)
 #endif
 #if HAS_NEXUS
         if (multiSF) {
-            const uint8_t tier = readRxTierProtocol();
+            // The readout task already captured which detector matched, at the only point that read is
+            // guaranteed fresh; a live re-read here would describe whatever the chip has moved on to.
+            const bool usedCaptured = captured && captured->detectorValid;
+            const uint8_t tier = usedCaptured ? meshtastic::nexusModule->multiSFProtocolForDetector(captured->detector)
+                                               : readRxTierProtocol();
+            // "captured=0" means the live (uncaptured) path ran, which only happens when the readout
+            // task did not hand this frame to us.
+            LOG_DEBUG("LR2021 multi-SF frame: captured=%d detector=%u tier=%u len=%u", (int)usedCaptured,
+                      (unsigned)(usedCaptured ? captured->detector : 0xFF), (unsigned)tier, (unsigned)length);
             if (meshtastic::nexus::isSharedTier(tier)) {
                 // One detector carries several protocols on the same SF/sync. Classify by frame
                 // content, like the non-multi-SF 0x12 path. TRIPLESHARED falls through to the
@@ -1977,9 +1985,18 @@ void RadioLibInterface::checkStaleRxFlags()
         LOG_DEBUG("RX header stale, re-arm");
         startReceive(); // clears rxFlagsSeenMs
         break;
-    case StaleRxFlagAction::ClearHeaderErr:
+    case StaleRxFlagAction::ClearHeaderErr: {
         // A clear never aborts a reception, unlike the standby inside startReceive().
-        LOG_DEBUG("RX header err stale, cleared");
+        // Which detector (0=main, 1-3=side) the failed header came in on, read before the clear
+        // below retires it. A header error on a side detector's SF means the chip is locking onto
+        // something there but failing to decode it - a different problem than the table never
+        // being programmed at all.
+        uint8_t staleDetector = 0;
+        const bool staleDetectorValid = readRxDetector(staleDetector);
+        if (staleDetectorValid)
+            LOG_DEBUG("RX header err stale, cleared (detector=%u)", (unsigned)staleDetector);
+        else
+            LOG_DEBUG("RX header err stale, cleared (detector=?)");
         if (validSeen) { // a valid header beside it keeps the window this error did not start
             iface->clearIrq(1UL << RADIOLIB_IRQ_HEADER_ERR);
             break;
@@ -1992,14 +2009,23 @@ void RadioLibInterface::checkStaleRxFlags()
         rxFlagsSeenHeader = false;
         rxFlagsSeenValidHeader = false;
         break;
-    case StaleRxFlagAction::ClearPreamble:
+    }
+    case StaleRxFlagAction::ClearPreamble: {
         // Also a clear, so also safe over a frame that may be arriving behind it.
-        LOG_DEBUG("RX preamble stale, cleared");
+        // See the comment on ClearHeaderErr above - same question, for a preamble that never got
+        // as far as a header.
+        uint8_t staleDetector = 0;
+        const bool staleDetectorValid = readRxDetector(staleDetector);
+        if (staleDetectorValid)
+            LOG_DEBUG("RX preamble stale, cleared (detector=%u)", (unsigned)staleDetector);
+        else
+            LOG_DEBUG("RX preamble stale, cleared (detector=?)");
         iface->clearIrq(1UL << RADIOLIB_IRQ_PREAMBLE_DETECTED);
         rxFlagsSeenMs = 0;
         rxFlagsSeenHeader = false;
         rxFlagsSeenValidHeader = false;
         break;
+    }
     }
 }
 
@@ -2305,6 +2331,10 @@ void RadioLibInterface::readOutFromTask()
     // Here, not where the radio thread accounts for the frame: by then the chip has been put back in RX - after a
     // resume it never left it - and its packet status describes the frame it is receiving now, not this one.
     f.info.headerInfoValid = readRxHeaderInfo(f.info.rxCR, f.info.hasCRC);
+    // Same reasoning applies to which detector matched: readRxTierProtocol()'s live read, called later from
+    // handleReceiveInterrupt() on the radio thread, would otherwise classify this frame by whatever the chip is
+    // receiving by then instead of what matched it.
+    f.info.detectorValid = readRxDetector(f.info.detector);
     rxReadoutFrames = rxReadoutFrames + 1;
     __asm__ __volatile__("" ::: "memory"); // the entry is written before the head that publishes it
     rxRingHead = next;
