@@ -56,6 +56,7 @@
 #include <FSCommon.h>
 #include <ctype.h>
 #include <climits>  // Nexus-28005: FEATURES hex parser uses ULLONG_MAX for strtoull range check
+#include <cstring>
 #if defined(ARCH_ESP32) && !MESHTASTIC_EXCLUDE_WIFI
 #include "MeshtasticOTA.h"
 #endif
@@ -171,6 +172,26 @@ using namespace meshtastic;
 // External helper needed by handleNexusCommand. Defined in main.cpp /
 // NRF52 port (platform-specific; we just forward-declare here).
 extern void getMacAddr(uint8_t *dmac);
+
+/// Copy the next whitespace-delimited token from `p` into `out` (NUL-terminated)
+/// and advance `p` past it. Unlike skipToken(), this gives callers a real token
+/// string for strcasecmp()/strtol(), which otherwise see the rest of the line.
+static bool copyCommandToken(const char *&p, char *out, size_t cap)
+{
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (!*p)
+        return false;
+    const char *start = p;
+    while (*p && *p != ' ' && *p != '\t')
+        p++;
+    const size_t n = (size_t)(p - start);
+    if (n == 0 || n >= cap)
+        return false;
+    memcpy(out, start, n);
+    out[n] = '\0';
+    return true;
+}
 
 // === BEGIN FILE-SCOPE HELPERS (TU-local, used only by handleNexusCommand) ===
 // These were `static` in NexusModule.cpp before the NexusCommands.cpp split
@@ -5427,16 +5448,13 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                             "SF5 JenRNode main, SF6 Meshtastic, SF7 Meshtastic+MeshCore on 0x1B; Meshtastic TX SF7",
                             nexus::makeCataloniaPreset);
         } else if (strncasecmp(sub, "MAIN", 4) == 0 && (sub[4] == '\0' || sub[4] == ' ')) {
-            const char *rest = sub + 4;
-            while (*rest == ' ')
-                rest++;
-            const char *protoTok = rest;
-            rest = skipToken(rest);
-            const char *syncTok = rest;
+            const char *p = sub + 4;
+            char protoTok[24] = {};
+            char syncTok[16] = {};
             uint8_t proto = 0;
-            uint8_t sync = 0;
             char *end = nullptr;
-            if (!*protoTok || !*syncTok || !nexus::parseTierProtocol(protoTok, proto)) {
+            if (!copyCommandToken(p, protoTok, sizeof(protoTok)) || !copyCommandToken(p, syncTok, sizeof(syncTok)) ||
+                !nexus::parseTierProtocol(protoTok, proto)) {
                 snprintf(replyMsg, sizeof(replyMsg),
                          "JT TIER: usage: MAIN <MESHTASTIC|RNODE|MESHCORE|"
                          "DOUBLESHARED|TRIPLESHARED> <syncword>");
@@ -5482,20 +5500,21 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                     snprintf(replyMsg, sizeof(replyMsg), "JT TIER: side %d removed", slot);
                 }
             } else {
-                const char *sfTok = rest;
-                rest = skipToken(rest);
-                const char *protoTok = rest;
-                rest = skipToken(rest);
-                const char *syncTok = rest;
+                const char *p = rest;
+                char sfTok[8] = {};
+                char protoTok[24] = {};
+                char syncTok[16] = {};
+                const bool gotTokens = copyCommandToken(p, sfTok, sizeof(sfTok)) &&
+                                       copyCommandToken(p, protoTok, sizeof(protoTok)) &&
+                                       copyCommandToken(p, syncTok, sizeof(syncTok));
                 const char *sfNum = sfTok;
                 if (strncasecmp(sfNum, "SF", 2) == 0)
                     sfNum += 2;
                 char *end = nullptr;
-                const long sfv = strtol(sfNum, &end, 10);
+                const long sfv = gotTokens ? strtol(sfNum, &end, 10) : 0;
                 uint8_t proto = 0;
-                uint8_t sync = 0;
-                if (!*sfTok || !*protoTok || !*syncTok || end == sfNum || (end && *end != '\0') || sfv < 5 || sfv > 12 ||
-                    !nexus::parseTierProtocol(protoTok, proto)) {
+                if (!gotTokens || !*sfTok || !*protoTok || !*syncTok || end == sfNum || (end && *end != '\0') ||
+                    sfv < 5 || sfv > 12 || !nexus::parseTierProtocol(protoTok, proto)) {
                     snprintf(replyMsg, sizeof(replyMsg),
                              "JT TIER: usage: SIDE <1-3> <SF5-12> <MESHTASTIC|RNODE|MESHCORE|"
                              "DOUBLESHARED|TRIPLESHARED> <syncword>");
