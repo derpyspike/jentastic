@@ -34,6 +34,9 @@
 #include "mesh/Throttle.h"
 #include "modules/NexusModule.h"
 #include "modules/NexusTxHook.h"
+#if NEXUS_ENABLE_EXTERNAL_FLASH && defined(ARCH_NRF52)
+#include "platform/nrf52/NexusExtStorage.h"
+#endif
 // Decaf-split (Nexus-28006): NexusModule_private.h is only present
 // in private builds. Gate the include so public builds compile cleanly
 // when the header is absent (the public tree strips it via
@@ -3560,6 +3563,21 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
         snprintf(replyMsg, sizeof(replyMsg), "JT FS: N/A");
 #endif
     }
+#if NEXUS_ENABLE_EXTERNAL_FLASH && defined(ARCH_NRF52)
+    else if (strcasecmp(cmd, "EXT") == 0 || strncasecmp(cmd, "EXT ", 4) == 0 || strcasecmp(cmd, "XFLASH") == 0 ||
+             strncasecmp(cmd, "XFLASH ", 7) == 0) {
+        const char *sub = skipToken(cmd);
+        if (!*sub || strcasecmp(sub, "STATUS") == 0) {
+            ::nexus::extstorage::status(replyMsg, sizeof(replyMsg));
+        } else if (strncasecmp(sub, "FORMAT", 6) == 0 && (sub[6] == '\0' || sub[6] == ' ')) {
+            ::nexus::extstorage::format(skipToken(sub), replyMsg, sizeof(replyMsg));
+        } else if (strncasecmp(sub, "TEST", 4) == 0 && (sub[4] == '\0' || sub[4] == ' ')) {
+            ::nexus::extstorage::selfTest(skipToken(sub), replyMsg, sizeof(replyMsg));
+        } else {
+            snprintf(replyMsg, sizeof(replyMsg), "JT EXT: EXT [STATUS|FORMAT ext|secondary|all|TEST ext|secondary]");
+        }
+    }
+#endif
     else if (strcasecmp(cmd, "FAVS") == 0) {
         startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "Favorites");
         for (size_t i = 0; i < nodeDB->getNumMeshNodes(); i++) {

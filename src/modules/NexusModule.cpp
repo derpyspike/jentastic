@@ -75,6 +75,9 @@ static_assert(::nexus::jen_core_meta::PATH_BYTES_MAX == JenCoreRepeater::MAX_PAT
 #ifdef ARCH_NRF52
 #include "main.h"
 #endif
+#if NEXUS_ENABLE_EXTERNAL_FLASH && defined(ARCH_NRF52)
+#include "platform/nrf52/NexusExtStorage.h"
+#endif
 #ifdef ARCH_PORTDUINO
 #include "unistd.h"
 #endif
@@ -2891,6 +2894,9 @@ int32_t NexusModule::runOnce() {
 #if NEXUS_ENABLE_JENWAN
     jenwan::engine.loop();
 #endif
+#if NEXUS_ENABLE_EXTERNAL_FLASH && defined(ARCH_NRF52)
+    const bool extStorageBusy = ::nexus::extstorage::loop();
+#endif
 
     // 0. Delayed InputBroker Hook (Ensure inputBroker is initialized)
     if (!input_hooked && inputBroker) {
@@ -3315,6 +3321,10 @@ int32_t NexusModule::runOnce() {
 
 #if NEXUS_ENABLE_MICRORETICULUM
     if (microReticulumEngine.isActive())
+        return 20;
+#endif
+#if NEXUS_ENABLE_EXTERNAL_FLASH && defined(ARCH_NRF52)
+    if (extStorageBusy)
         return 20;
 #endif
 

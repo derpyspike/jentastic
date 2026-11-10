@@ -118,6 +118,19 @@ extern "C" {
 #define LR2021_DIO3_TCXO_VOLTAGE 1.6
 // #define LR2021_DIO_AS_RF_SWITCH
 
+// GD25Q64E 8 MB QSPI flash (all of it currently unused by the firmware).
+// P0.15 enables the switched 3V3 rail feeding the part; the driver must wait
+// for it to settle before probing or the JEDEC read comes back 00/FF.
+#define PIN_QSPI_SCK (0 + 19)
+#define PIN_QSPI_CS (0 + 20)
+#define PIN_QSPI_IO0 (0 + 21)
+#define PIN_QSPI_IO1 (0 + 22)
+#define PIN_QSPI_IO2 (0 + 23)
+#define PIN_QSPI_IO3 (32 + 0)
+#define PIN_QSPI_POWER (0 + 15)
+#define EXTERNAL_FLASH_DEVICES GD25Q64C
+#define EXTERNAL_FLASH_USE_QSPI
+
 // GPS
 #define HAS_GPS 1
 #define GPS_RX_PIN PIN_SERIAL1_RX

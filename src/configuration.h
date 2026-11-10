@@ -238,6 +238,14 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define NEXUS_ENABLE_JENWAN 0
 #endif
 
+// ===== External QSPI flash bring-up (nRF52 boards that populate one) =====
+// Compiles the nRF QSPI probe and the read-only /nexus EXT health command.
+// DEFAULT OFF; enable per variant with -DNEXUS_ENABLE_EXTERNAL_FLASH=1.
+// No data is routed to the chip yet.
+#ifndef NEXUS_ENABLE_EXTERNAL_FLASH
+#define NEXUS_ENABLE_EXTERNAL_FLASH 0
+#endif
+
 // ===== Nexus BaseUI weight reduction (DEFAULT OFF) =====
 // Unlike MESHTASTIC_EXCLUDE_SCREEN, these leave the display in place and drop
 // individual feature frames from the legacy BaseUI frame loop. A variant opts
