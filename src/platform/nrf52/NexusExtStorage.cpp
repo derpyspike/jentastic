@@ -289,6 +289,17 @@ int partitionIndex(const char *which)
         return 1;
     return -1;
 }
+
+bool idOk()
+{
+#if defined(MESH_TRACKER_X1)
+    return extflash::jedec() == 0xC84017; // GD25Q64E
+#elif defined(SEEED_WIO_TRACKER_L1) || defined(SEEED_XIAO_NRF52840_KIT)
+    return extflash::jedec() == 0x856015; // P25Q16H
+#else
+    return true;
+#endif
+}
 } // namespace
 
 bool loop()
@@ -329,9 +340,12 @@ void status(char *out, size_t cap)
         return;
     }
 
+    uint8_t probe[8] = {};
+    const bool readOk = extflash::read(0, probe, sizeof(probe));
+
     size_t pos = 0;
-    appendf(out, cap, pos, "JT EXT: JEDEC:%06lX %luKB\n", (unsigned long)extflash::jedec(),
-            (unsigned long)(extflash::capacity() / 1024));
+    appendf(out, cap, pos, "JT EXT: JEDEC:%06lX %luKB id:%s rd:%s\n", (unsigned long)extflash::jedec(),
+            (unsigned long)(extflash::capacity() / 1024), idOk() ? "ok" : "MISMATCH", readOk ? "ok" : "FAIL");
     for (auto &p : parts)
         appendPartitionStatus(out, cap, pos, p);
     if (pos && pos < cap && out[pos - 1] == '\n')

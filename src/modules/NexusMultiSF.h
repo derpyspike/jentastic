@@ -228,6 +228,22 @@ inline void makeCataloniaPreset(MultiSFConfig &cfg)
     cfg.side[1] = TierConfig{1, 7, 0x1B, TIER_TRIPLESHARED, MULTISF_DEFAULT_POWER, 0};
 }
 
+/// EU868: SF7 Meshtastic main, SF8/9/11 Meshtastic. Meshtastic TX defaults to
+/// SF11 (standard EU868 LongFast). Pure Meshtastic; no RNode/JenCore.
+inline void makeEU868Preset(MultiSFConfig &cfg)
+{
+    cfg = MultiSFConfig{};
+    cfg.enabled = 1;
+    cfg.main_protocol = TIER_MESHTASTIC;
+    cfg.main_syncword = 0x2B;
+    cfg.main_tx_power = MULTISF_DEFAULT_POWER;
+    cfg.side_count = 3;
+    cfg.meshtastic_tx_slot = 2; // SF11
+    cfg.side[0] = TierConfig{1, 8, 0x2B, TIER_MESHTASTIC, MULTISF_DEFAULT_POWER, 0};
+    cfg.side[1] = TierConfig{1, 9, 0x2B, TIER_MESHTASTIC, MULTISF_DEFAULT_POWER, 0};
+    cfg.side[2] = TierConfig{1, 11, 0x2B, TIER_MESHTASTIC, MULTISF_DEFAULT_POWER, 0};
+}
+
 inline bool multiSFHasProtocol(const MultiSFConfig &cfg, uint8_t protocol)
 {
     if (!cfg.enabled)

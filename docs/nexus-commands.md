@@ -381,6 +381,8 @@ Again: The 2.8 already does this automatically, but if you wanna override it man
 | Spain / Tactical | `NARROWPROMAX` | `NARROWPREMIUM` | 5 | 62 | 4/5 | 869.6180 | `EU_868` |
 | Spain / Tactical | `SP` | `SHORTPLUS` | 6 | 250 | 4/5 | 869.5250 | `EU_868` |
 | Spain / Tactical | `SPM` | `SHORTPROMAX` | 5 | 250 | 4/5 | 869.5250 | `EU_868` |
+| **Czechia** | `CZ` | `CZECHIA` | 7 | 62 | 4/5 | 869.4320 | `EU_868` |
+| **Madrid Mesh** | `MM` | `MADMESH` | 8 | 62 | 4/5 | 869.6180 | `EU_868` |
 | **Upstream Narrow** | `NF` | `NARROWFAST` / `NARF` | 7 | 62 | 4/6 | 869.4417 | `EU_N_868` |
 | Upstream Narrow | `NS` | `NARROWSLOW` / `NARS` | 8 | 62 | 4/6 | 869.4417 | `EU_N_868` |
 | **Upstream Lite** | `LITEFAST` | `LITEF` | 9 | 125 | 4/5 | 866.3000 | `EU_866` |
@@ -567,6 +569,7 @@ three sides while the bandwidth is over 500 kHz or the main SF is 10 or higher.
 | `TIER` / `TIER STATUS` | Prints mode, main SF/protocol/syncword, sides, TX slot, per-channel override count and the validation result. |
 | `TIER MADRID` | Loads the Madrid preset, disables `SPLIT`, enables `JRNODE BRIDGE` and `JENCORE`, and stages the matching LoRa settings: SF5, BW 62.5 kHz, CR 4/5, 869.618 MHz. Meshtastic TX defaults to **SF7**. Applies in 5 s; run `/nexus SAVE` to persist. |
 | `TIER CAT` | Loads the Catalonia preset: SF5 RNode main, SF6 Meshtastic, SF7 `TRIPLESHARED` on the `0x1B` hybrid (Meshtastic + MeshCore). Meshtastic TX defaults to **SF7**. Same carrier/apply as Madrid. Aliases `CATALONIA`, `CATALUNYA`. |
+| `TIER EU868` | Loads the EU868 preset: SF7 Meshtastic main, SF8/SF9/SF11 Meshtastic. Meshtastic TX defaults to **SF11**. Stages SF7 / BW250 / CR4/5 / 869.525 MHz. Aliases `EU`, `DE`. Pure Meshtastic; no RNode/JenCore. |
 | `TIER MAIN <protocol> <syncword>` | Sets the main detector's protocol and syncword. The main SF is **not** part of this command; set it with `SETLORA`/`PRESET` first. Enables the table. |
 | `TIER SIDE <1-3> <SF5-12> <protocol> <syncword>` | Adds or replaces a side detector. Sides are added in order from 1, each SF must be above the main SF, and duplicate SFs are rejected. The first Meshtastic-capable side becomes the TX side when none is set. |
 | `TIER SIDE <1-3> OFF` | Removes a side, shifts the remaining sides down, and adjusts the TX slot. Removing the last side disables the table. |

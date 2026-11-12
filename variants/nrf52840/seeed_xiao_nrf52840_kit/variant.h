@@ -239,19 +239,18 @@ static const uint8_t SCK = PIN_SPI_SCK;
 static const uint8_t SDA = PIN_WIRE_SDA; // Not sure if this is needed
 static const uint8_t SCL = PIN_WIRE_SCL; // Not sure if this is needed
 
-// // QSPI Pins
-// // ---------
-// #define PIN_QSPI_SCK (24)
-// #define PIN_QSPI_CS (25)
-// #define PIN_QSPI_IO0 (26)
-// #define PIN_QSPI_IO1 (27)
-// #define PIN_QSPI_IO2 (28)
-// #define PIN_QSPI_IO3 (29)
+// On-board QSPI flash (P25Q16H, 2 MB). Logical D24..D29 map through
+// g_ADigitalPinMap to P0.21 SCK / P0.25 CS / P0.20 IO0 / P0.24 IO1 /
+// P0.22 IO2 / P0.23 IO3. Always powered on the XIAO module.
+#define PIN_QSPI_SCK (24)
+#define PIN_QSPI_CS (25)
+#define PIN_QSPI_IO0 (26)
+#define PIN_QSPI_IO1 (27)
+#define PIN_QSPI_IO2 (28)
+#define PIN_QSPI_IO3 (29)
 
-// // On-board QSPI Flash
-// // -------------------
-// #define EXTERNAL_FLASH_DEVICES P25Q16H
-// #define EXTERNAL_FLASH_USE_QSPI
+#define EXTERNAL_FLASH_DEVICES P25Q16H
+#define EXTERNAL_FLASH_USE_QSPI
 
 /*
  * Buttons

@@ -5275,6 +5275,10 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
                 targetSf = 6; targetBw = 250; targetCr = 5; targetFreq = 869.5250f;
             } else if (strcasecmp(targetTok, "SPM") == 0 || strcasecmp(targetTok, "SHORTPROMAX") == 0) {
                 targetSf = 5; targetBw = 250; targetCr = 5; targetFreq = 869.5250f;
+            } else if (strcasecmp(targetTok, "CZ") == 0 || strcasecmp(targetTok, "CZECHIA") == 0) {
+                targetSf = 7; targetBw = 62; targetCr = 5; targetFreq = 869.4320f;
+            } else if (strcasecmp(targetTok, "MM") == 0 || strcasecmp(targetTok, "MADMESH") == 0) {
+                targetSf = 8; targetBw = 62; targetCr = 5; targetFreq = 869.6180f;
             } else if (strcasecmp(targetTok, "NF") == 0 || strcasecmp(targetTok, "NARROWFAST") == 0 || strcasecmp(targetTok, "NARF") == 0 ||
                        strcasecmp(targetTok, "NARROW_FAST") == 0 || strcasecmp(targetTok, "NARROW-FAST") == 0) {
                 targetSf = 7; targetBw = 62; targetCr = 6; targetFreq = 869.4417f;
@@ -5407,29 +5411,32 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
     else if (strcasecmp(cmd, "TIER") == 0 || strncasecmp(cmd, "TIER ", 5) == 0) {
         LR2021Interface *lr2021 = static_cast<LR2021Interface *>(RadioLibInterface::instance);
         const char *sub = skipToken(cmd);
-        auto stageTierPreset = [&](const char *label, const char *desc, void (*make)(nexus::MultiSFConfig &)) {
+        auto stageTierPreset = [&](const char *label, const char *desc, void (*make)(nexus::MultiSFConfig &), uint8_t sf,
+                                   float bwKHz, float freqMHz, bool enableBridges) {
             make(multiSFConfig);
             splitConfig.mode = NEXUS_SPLIT_OFF;
             const char *reason = nullptr;
-            if (!nexus::validateMultiSF(multiSFConfig, 5, 62.5f, &reason)) {
+            if (!nexus::validateMultiSF(multiSFConfig, sf, bwKHz, &reason)) {
                 multiSFConfig.enabled = 0;
                 snprintf(replyMsg, sizeof(replyMsg), "JT TIER: %s rejected: %s", label, reason ? reason : "invalid");
                 return;
             }
+            if (enableBridges) {
 #if NEXUS_ENABLE_RNODE
-            rnodeEngine.setMode(RNODE_MODE_BRIDGE);
+                rnodeEngine.setMode(RNODE_MODE_BRIDGE);
 #endif
 #if NEXUS_ENABLE_JENCORE_SNIFFER
-            JenCoreRepeater::setJenCoreEnabled(true);
+                JenCoreRepeater::setJenCoreEnabled(true);
 #endif
+            }
             memset(&pendingConfig, 0, sizeof(pendingConfig));
             pendingConfig.which_payload_variant = meshtastic_Config_lora_tag;
             pendingConfig.payload_variant.lora = config.lora;
             pendingConfig.payload_variant.lora.use_preset = false;
-            pendingConfig.payload_variant.lora.spread_factor = 5;
-            pendingConfig.payload_variant.lora.bandwidth = bwKHzToCode(62.5f);
+            pendingConfig.payload_variant.lora.spread_factor = sf;
+            pendingConfig.payload_variant.lora.bandwidth = bwKHzToCode(bwKHz);
             pendingConfig.payload_variant.lora.coding_rate = 5;
-            pendingConfig.payload_variant.lora.override_frequency = 869.618f;
+            pendingConfig.payload_variant.lora.override_frequency = freqMHz;
             pendingLoRaConfig = true;
             pendingLoRaApplyAt = Time::getMillis() + 5000;
             snprintf(replyMsg, sizeof(replyMsg), "JT TIER: %s staged (%s). Applying in 5s. Run /nexus SAVE.", label, desc);
@@ -5459,12 +5466,15 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             }
         } else if (strcasecmp(sub, "MADRID") == 0) {
             stageTierPreset("Madrid", "SF5 JenRNode main, SF6/7 Meshtastic, SF8 MeshCore; Meshtastic TX SF7",
-                            nexus::makeMadridPreset);
+                            nexus::makeMadridPreset, 5, 62.5f, 869.618f, true);
         } else if (strcasecmp(sub, "CAT") == 0 || strcasecmp(sub, "CATALONIA") == 0 ||
                    strcasecmp(sub, "CATALUNYA") == 0) {
             stageTierPreset("Catalonia",
                             "SF5 JenRNode main, SF6 Meshtastic, SF7 Meshtastic+MeshCore on 0x1B; Meshtastic TX SF7",
-                            nexus::makeCataloniaPreset);
+                            nexus::makeCataloniaPreset, 5, 62.5f, 869.618f, true);
+        } else if (strcasecmp(sub, "EU868") == 0 || strcasecmp(sub, "EU") == 0 || strcasecmp(sub, "DE") == 0) {
+            stageTierPreset("EU868", "SF7 Meshtastic main, SF8/9/11 Meshtastic; Meshtastic TX SF11",
+                            nexus::makeEU868Preset, 7, 250.0f, 869.525f, false);
         } else if (strncasecmp(sub, "MAIN", 4) == 0 && (sub[4] == '\0' || sub[4] == ' ')) {
             const char *p = sub + 4;
             char protoTok[24] = {};
@@ -5704,7 +5714,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             }
         } else {
             snprintf(replyMsg, sizeof(replyMsg),
-                     "JT TIER: usage: TIER [STATUS|MADRID|CAT|MAIN <proto> <sync>|SIDE <1-3> <SF5-12> <proto> <sync>|SIDE <1-3> OFF|CLEAR|OFF|APPLY|SAVE|TX <1-3|SF5-12>|TXCHANNEL <ch> <1-3|SF5-12|OFF>]");
+                     "JT TIER: usage: TIER [STATUS|MADRID|CAT|EU868|MAIN <proto> <sync>|SIDE <1-3> <SF5-12> <proto> <sync>|SIDE <1-3> OFF|CLEAR|OFF|APPLY|SAVE|TX <1-3|SF5-12>|TXCHANNEL <ch> <1-3|SF5-12|OFF>]");
         }
     }
 #endif
@@ -6986,6 +6996,12 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             }
             else if (strcasecmp(p, "SPM") == 0 || strcasecmp(p, "SHORTPROMAX") == 0) {
                 target = {5, 250, 5, 869.5250f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "CZ") == 0 || strcasecmp(p, "CZECHIA") == 0) {
+                target = {7, 62, 5, 869.4320f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
+            }
+            else if (strcasecmp(p, "MM") == 0 || strcasecmp(p, "MADMESH") == 0) {
+                target = {8, 62, 5, 869.6180f, meshtastic_Config_LoRaConfig_RegionCode_EU_868};
             }
 
             // 7. NAP Series (EU_866, BW 125 kHz, SF7, CR 4/5)
@@ -9758,7 +9774,7 @@ void NexusModule::handleNexusCommand(const meshtastic_MeshPacket &mp, const char
             snprintf(replyMsg, sizeof(replyMsg), "JT: Paging SKEY help...");
         } else if (strcasecmp(sub, "LORA") == 0 || strcasecmp(sub, "PRESET") == 0 || strcasecmp(sub, "SETLORA") == 0) {
             startPaging(mp.to == myNodeInfo.my_node_num ? mp.from : 0xFFFFFFFF, mp.channel, replyId, "Help LORA");
-            appendPaging("PRESET <name>: EU_868 (LF, MS, MF, SS, SF, LM, LS, ST, LT, P1, P7, SP, SPM, NARROWPROMAX)\n");
+            appendPaging("PRESET <name>: EU_868 (LF, MS, MF, SS, SF, LM, LS, ST, LT, P1, P7, SP, SPM, NARROWPROMAX, CZ/CZECHIA, MM/MADMESH)\n");
             appendPaging("EU_N_868 (NarrowFast/NF, NarrowSlow/NS) | EU_866 (LiteFast, LiteSlow, NAP-1..5, NAPN-1..5, Mini-1..8)\n");
             appendPaging("LORA_24 (Madrid24, LF24, MS24, MF24, SS24, SF24, LM24, LS24, ST24, LT24)\n");
             appendPaging("SETLORA: [SF] [BW] [CR] [Freq]");
